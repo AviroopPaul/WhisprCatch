@@ -145,6 +145,8 @@ mod linux {
     pub fn listen(key: PttKey) -> Result<Receiver<PttEvent>> {
         let code = key.code();
         let devices: Vec<(std::path::PathBuf, Device)> = evdev::enumerate()
+            // our own injector (wc-inject) must never feed the PTT state machine
+            .filter(|(_, d)| d.name() != Some("whisper-catch virtual keyboard"))
             .filter(|(_, d)| {
                 d.supported_keys()
                     .map(|keys| keys.contains(code))

@@ -1,44 +1,89 @@
 //! Types transcribed text into the focused window.
 //!
-//! X11: enigo → XTEST, works everywhere. Wayland: enigo tries libei/portal,
-//! flaky — the uinput virtual-keyboard cascade lands post-MVP (SCOPE.md §3).
+//! X11: enigo → XTEST, works everywhere. Wayland: in-process uinput virtual
+//! keyboard with a layout-aware keymap (SCOPE.md §1 cascade — XTEST never
+//! reaches Wayland-native windows). If /dev/uinput isn't writable we fall
+//! back to XTEST so XWayland windows still work.
 
 use anyhow::{Context, Result};
 use enigo::{Enigo, Keyboard, Settings};
 
+#[cfg(target_os = "linux")]
+mod uinput;
+
+enum Backend {
+    #[cfg(target_os = "linux")]
+    Uinput(uinput::UinputKeyboard),
+    Enigo(Enigo),
+}
+
 pub struct Injector {
-    enigo: Enigo,
+    backend: Backend,
     #[cfg(target_os = "linux")]
     x11: Option<x11rb::rust_connection::RustConnection>,
 }
 
 impl Injector {
     pub fn new() -> Result<Self> {
-        let enigo = Enigo::new(&Settings::default())
-            .map_err(|e| anyhow::anyhow!("{e}"))
-            .context("initializing input injection")?;
+        let backend = Self::pick_backend()?;
         #[cfg(target_os = "linux")]
         let x11 = x11rb::connect(None).ok().map(|(c, _)| c);
         Ok(Self {
-            enigo,
+            backend,
             #[cfg(target_os = "linux")]
             x11,
         })
     }
 
-    pub fn type_text(&mut self, text: &str) -> Result<()> {
-        self.enigo
-            .text(text)
-            .map_err(|e| anyhow::anyhow!("{e}"))
-            .context("typing text")
+    #[cfg(target_os = "linux")]
+    fn pick_backend() -> Result<Backend> {
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            match uinput::UinputKeyboard::new() {
+                Ok(kb) => {
+                    log::info!("injector: uinput virtual keyboard (Wayland)");
+                    return Ok(Backend::Uinput(kb));
+                }
+                Err(e) => log::warn!(
+                    "injector: uinput unavailable ({e:#}); falling back to XTEST — \
+                     text will only reach XWayland windows"
+                ),
+            }
+        }
+        Ok(Backend::Enigo(Self::new_enigo()?))
     }
 
-    /// Fakes a release of a physically-held key at the display-server level,
+    #[cfg(not(target_os = "linux"))]
+    fn pick_backend() -> Result<Backend> {
+        Ok(Backend::Enigo(Self::new_enigo()?))
+    }
+
+    fn new_enigo() -> Result<Enigo> {
+        Enigo::new(&Settings::default())
+            .map_err(|e| anyhow::anyhow!("{e}"))
+            .context("initializing input injection")
+    }
+
+    pub fn type_text(&mut self, text: &str) -> Result<()> {
+        match &mut self.backend {
+            #[cfg(target_os = "linux")]
+            Backend::Uinput(kb) => kb.type_text(text).context("typing text (uinput)"),
+            Backend::Enigo(enigo) => enigo
+                .text(text)
+                .map_err(|e| anyhow::anyhow!("{e}"))
+                .context("typing text"),
+        }
+    }
+
+    /// Fakes a release of a physically-held key at the input-stack level,
     /// so text injected *while the PTT modifier is held* doesn't turn into
     /// modifier+letter shortcuts. The kernel-level evdev listener still sees
-    /// the real release later. Best-effort; no-op off X11.
+    /// the real release later. Best-effort.
     #[cfg(target_os = "linux")]
     pub fn lift_key(&mut self, evdev_code: u16) {
+        if let Backend::Uinput(kb) = &mut self.backend {
+            kb.lift_key(evdev_code);
+            return;
+        }
         use x11rb::protocol::xtest::ConnectionExt as _;
         if let Some(conn) = &self.x11 {
             let keycode = (evdev_code + 8) as u8;
