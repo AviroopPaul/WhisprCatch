@@ -364,7 +364,9 @@ fn run_ptt(
     // resolve before any upgrade can replace the binary under us
     let self_exe = std::env::current_exe().context("resolving own binary path")?;
 
-    let events = wc_hotkey::listen(key)?;
+    // The injector's virtual keyboard is a real evdev device; without this the
+    // listener would read our own injected keystrokes back as PTT input.
+    let events = wc_hotkey::listen(key, &[wc_inject::VIRTUAL_KEYBOARD_NAME])?;
     let mut injector = if print_only {
         None
     } else {

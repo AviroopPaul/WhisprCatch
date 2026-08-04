@@ -61,7 +61,7 @@ impl UinputKeyboard {
         }
         let device = VirtualDevice::builder()
             .context("opening /dev/uinput")?
-            .name("whisper-catch virtual keyboard")
+            .name(crate::VIRTUAL_KEYBOARD_NAME)
             .with_keys(&keys)
             .context("registering keys")?
             .build()

@@ -13,6 +13,15 @@ pub mod layouts;
 #[cfg(target_os = "linux")]
 mod uinput;
 
+/// Name of the uinput device the Wayland backend creates.
+///
+/// Public because the daemon has to hand it to the hotkey listener: kernel
+/// injection is indistinguishable from real typing, so an evdev reader that
+/// doesn't skip this device feeds our own keystrokes back into the PTT state
+/// machine. Defined here because this crate creates the device — anyone who
+/// needs to recognise it should ask, not re-spell it.
+pub const VIRTUAL_KEYBOARD_NAME: &str = "whisper-catch virtual keyboard";
+
 enum Backend {
     #[cfg(target_os = "linux")]
     Uinput(uinput::UinputKeyboard),
