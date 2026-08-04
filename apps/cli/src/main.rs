@@ -368,7 +368,7 @@ fn run_ptt(
     let mut injector = if print_only {
         None
     } else {
-        Some(Injector::new()?)
+        Some(Injector::new(cfg.layout.as_deref())?)
     };
     eprintln!("ready — hold {key:?} and speak, release to type. Ctrl-C to quit.");
     if gui_session() {

@@ -85,6 +85,17 @@ struct App {
     copied: Option<Instant>,
     /// In-flight model download, if any.
     dl: Option<ModelDl>,
+    /// Every XKB layout the Wayland typing picker can offer. Read from
+    /// xkeyboard-config once — the file doesn't change under us.
+    #[cfg(target_os = "linux")]
+    layouts: Vec<wc_inject::layouts::Layout>,
+    /// What auto-detect currently resolves to, resolved once at startup:
+    /// detection shells out to `gsettings`, so it can't run per frame.
+    #[cfg(target_os = "linux")]
+    detected_layout: String,
+    /// Filter text for the layout picker — the catalogue runs to ~600 entries.
+    #[cfg(target_os = "linux")]
+    layout_filter: String,
     shot: crate::shot::Shot,
 }
 
@@ -93,6 +104,17 @@ impl App {
         let autostart_on = autostart::is_enabled();
         let entries = history::load(500).unwrap_or_default();
         let selected = entries.first().map(|e| e.ts);
+        #[cfg(target_os = "linux")]
+        let layouts = wc_inject::layouts::available();
+        #[cfg(target_os = "linux")]
+        let detected_layout = {
+            let id = wc_inject::layouts::detected_id();
+            layouts
+                .iter()
+                .find(|l| l.id == id)
+                .map(|l| l.description.clone())
+                .unwrap_or(id)
+        };
         Self {
             tab: if tab == Some("settings") {
                 Tab::Settings
@@ -111,6 +133,12 @@ impl App {
             confirm_delete: None,
             copied: None,
             dl: None,
+            #[cfg(target_os = "linux")]
+            layouts,
+            #[cfg(target_os = "linux")]
+            detected_layout,
+            #[cfg(target_os = "linux")]
+            layout_filter: String::new(),
             shot: crate::shot::Shot::from_env(),
         }
     }
@@ -931,10 +959,73 @@ impl App {
         });
     }
 
+    /// Picker for the layout the Wayland injector types against.
+    ///
+    /// Detection covers most people, but when it guesses wrong the failure is
+    /// confusing rather than obvious — you get the wrong punctuation, not
+    /// silence — so there has to be a way to say what the keyboard actually
+    /// is. Linux-only: XTEST and macOS type Unicode directly and never
+    /// consult a layout.
+    #[cfg(target_os = "linux")]
+    fn layout_row(&mut self, ui: &mut egui::Ui) {
+        // Layout names carry their own parens ("English (UK)"), so separate
+        // with a dash rather than nesting another pair.
+        let auto = format!("Auto-detect — {}", self.detected_layout);
+        let selected = match &self.cfg.layout {
+            None => auto.clone(),
+            Some(id) => self
+                .layouts
+                .iter()
+                .find(|l| l.id == *id)
+                .map(|l| l.description.clone())
+                // A layout this build's xkeyboard-config doesn't list: show the
+                // raw id rather than silently dropping their choice.
+                .unwrap_or_else(|| id.clone()),
+        };
+        let layouts = &self.layouts;
+        let filter = &mut self.layout_filter;
+        let chosen = &mut self.cfg.layout;
+        Self::setting_row(
+            ui,
+            "Keyboard layout",
+            "Wayland typing · applies after the daemon restarts",
+            |ui| {
+                egui::ComboBox::from_id_salt("layout")
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(filter)
+                                .hint_text("Filter…")
+                                .desired_width(200.0),
+                        );
+                        ui.selectable_value(chosen, None, auto);
+                        let needle = filter.trim().to_lowercase();
+                        egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                            for l in layouts {
+                                if !needle.is_empty()
+                                    && !l.description.to_lowercase().contains(&needle)
+                                    && !l.id.contains(&needle)
+                                {
+                                    continue;
+                                }
+                                ui.selectable_value(
+                                    chosen,
+                                    Some(l.id.clone()),
+                                    l.description.as_str(),
+                                );
+                            }
+                        });
+                    });
+            },
+        );
+    }
+
     fn output_card(&mut self, ui: &mut egui::Ui) {
         theme::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 12.0;
+            #[cfg(target_os = "linux")]
+            self.layout_row(ui);
             Self::setting_row(ui, "Live typing", "Words appear while you speak", |ui| {
                 theme::toggle(ui, &mut self.cfg.streaming);
             });

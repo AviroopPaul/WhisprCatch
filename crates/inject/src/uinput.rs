@@ -48,8 +48,10 @@ const PRESS: i32 = 1;
 const RELEASE: i32 = 0;
 
 impl UinputKeyboard {
-    pub fn new() -> Result<Self> {
-        let keymap = build_reverse_keymap().context("building reverse XKB keymap")?;
+    /// `layout` is the user's explicit XKB choice (`"gb"`, `"us+dvorak"`);
+    /// `None` falls back to detecting the session's layout.
+    pub fn new(layout: Option<&str>) -> Result<Self> {
+        let keymap = build_reverse_keymap(layout).context("building reverse XKB keymap")?;
 
         let mut keys = AttributeSet::<KeyCode>::new();
         // Register the whole keyboard range: the reverse keymap covers typing,
@@ -155,8 +157,8 @@ impl Iterator for OneOrStr {
 /// Levels follow the conventional XKB ordering (dotool does the same):
 /// 0 = plain, 1 = Shift, 2 = AltGr, 3 = Shift+AltGr. First win is kept, so
 /// unshifted positions beat shifted duplicates.
-fn build_reverse_keymap() -> Result<HashMap<char, KeyCombo>> {
-    let (layout, variant) = detect_layout();
+fn build_reverse_keymap(chosen: Option<&str>) -> Result<HashMap<char, KeyCombo>> {
+    let (layout, variant) = crate::layouts::resolve(chosen);
     log::info!("uinput injector: using XKB layout {layout:?} variant {variant:?}");
 
     let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
@@ -229,61 +231,6 @@ fn build_reverse_keymap() -> Result<HashMap<char, KeyCombo>> {
     Ok(map)
 }
 
-/// The compositor decides what our keycodes mean, so ask the same sources it
-/// does: explicit env override, GNOME's dconf, the distro console default.
-fn detect_layout() -> (String, String) {
-    if let Ok(l) = std::env::var("XKB_DEFAULT_LAYOUT") {
-        if !l.is_empty() {
-            let v = std::env::var("XKB_DEFAULT_VARIANT").unwrap_or_default();
-            return (l, v);
-        }
-    }
-    if std::env::var("XDG_CURRENT_DESKTOP")
-        .map(|d| d.to_ascii_lowercase().contains("gnome"))
-        .unwrap_or(false)
-    {
-        if let Some(lv) = gnome_input_source() {
-            return lv;
-        }
-    }
-    if let Some(lv) = etc_default_keyboard() {
-        return lv;
-    }
-    ("us".into(), String::new())
-}
-
-/// First entry of org.gnome.desktop.input-sources sources,
-/// e.g. `[('xkb', 'gb'), ('xkb', 'us')]`; variants come as `layout+variant`.
-fn gnome_input_source() -> Option<(String, String)> {
-    let out = std::process::Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.input-sources", "sources"])
-        .output()
-        .ok()?;
-    let text = String::from_utf8(out.stdout).ok()?;
-    let entry = text.split("'xkb', '").nth(1)?;
-    let source = entry.split('\'').next()?;
-    let (layout, variant) = source.split_once('+').unwrap_or((source, ""));
-    Some((layout.to_string(), variant.to_string()))
-}
-
-/// Debian/Ubuntu: XKBLAYOUT="gb" / XKBVARIANT="" in /etc/default/keyboard.
-fn etc_default_keyboard() -> Option<(String, String)> {
-    let content = std::fs::read_to_string("/etc/default/keyboard").ok()?;
-    let get = |key: &str| {
-        content
-            .lines()
-            .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
-            .map(|v| v.trim().trim_matches('"').to_string())
-    };
-    let layout = get("XKBLAYOUT").filter(|l| !l.is_empty())?;
-    // multi-layout configs like "gb,us" — take the first
-    let layout = layout.split(',').next().unwrap_or(&layout).to_string();
-    let variant = get("XKBVARIANT")
-        .map(|v| v.split(',').next().unwrap_or("").to_string())
-        .unwrap_or_default();
-    Some((layout, variant))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,8 +243,7 @@ mod tests {
     /// UK layout: the mappings a US-assuming injector gets wrong.
     #[test]
     fn gb_layout_reverse_map() {
-        std::env::set_var("XKB_DEFAULT_LAYOUT", "gb");
-        let map = build_reverse_keymap().unwrap();
+        let map = build_reverse_keymap(Some("gb")).unwrap();
 
         assert_eq!(combo(&map, 'a'), (KeyCode::KEY_A.code(), false, false));
         assert_eq!(combo(&map, 'A'), (KeyCode::KEY_A.code(), true, false));

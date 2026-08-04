@@ -54,10 +54,11 @@ Configuration lives at `~/.config/whisper-catch/config.toml`:
 | `streaming` | `true` | Type words live while speaking instead of all at once on release |
 | `overlay` | `true` | Show the floating recording pill while dictating |
 | `history` | `true` | Keep a local log of transcriptions (`history.jsonl`) |
+| `layout` | auto | XKB layout to type against on Wayland (`gb`, `us+dvorak`). Detected from the session when unset — set it if detection guesses wrong |
 
 ## How it works
 
-Speech models run as int8 ONNX on the CPU via ONNX Runtime ([transcribe-rs](https://crates.io/crates/transcribe-rs)) — no GPU, no network. The hotkey is a raw evdev listener (works on X11 and Wayland), the mic is kept warm with a 300 ms pre-roll so the first syllable isn't clipped, and text is injected into the focused window via XTEST.
+Speech models run as int8 ONNX on the CPU via ONNX Runtime ([transcribe-rs](https://crates.io/crates/transcribe-rs)) — no GPU, no network. The hotkey is a raw evdev listener (works on X11 and Wayland), the mic is kept warm with a 300 ms pre-roll so the first syllable isn't clipped, and text is injected into the focused window — XTEST on X11, and on Wayland an in-process uinput virtual keyboard typed against your XKB layout, since XTEST never reaches Wayland-native windows.
 
 Workspace: `crates/core` (capture, resample, engine), `crates/hotkey`, `crates/inject`, `crates/models`, `crates/tray`, `apps/cli`. See [`SCOPE.md`](SCOPE.md) for the full design doc.
 

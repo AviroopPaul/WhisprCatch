@@ -9,6 +9,8 @@ use anyhow::{Context, Result};
 use enigo::{Enigo, Keyboard, Settings};
 
 #[cfg(target_os = "linux")]
+pub mod layouts;
+#[cfg(target_os = "linux")]
 mod uinput;
 
 enum Backend {
@@ -24,8 +26,11 @@ pub struct Injector {
 }
 
 impl Injector {
-    pub fn new() -> Result<Self> {
-        let backend = Self::pick_backend()?;
+    /// `layout` is the user's explicit XKB layout choice (`"gb"`,
+    /// `"us+dvorak"`); `None` detects the session's layout. Only the Wayland
+    /// uinput backend consults it — XTEST and macOS type Unicode directly.
+    pub fn new(layout: Option<&str>) -> Result<Self> {
+        let backend = Self::pick_backend(layout)?;
         #[cfg(target_os = "linux")]
         let x11 = x11rb::connect(None).ok().map(|(c, _)| c);
         Ok(Self {
@@ -36,9 +41,9 @@ impl Injector {
     }
 
     #[cfg(target_os = "linux")]
-    fn pick_backend() -> Result<Backend> {
+    fn pick_backend(layout: Option<&str>) -> Result<Backend> {
         if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-            match uinput::UinputKeyboard::new() {
+            match uinput::UinputKeyboard::new(layout) {
                 Ok(kb) => {
                     log::info!("injector: uinput virtual keyboard (Wayland)");
                     return Ok(Backend::Uinput(kb));
@@ -53,7 +58,7 @@ impl Injector {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn pick_backend() -> Result<Backend> {
+    fn pick_backend(_layout: Option<&str>) -> Result<Backend> {
         Ok(Backend::Enigo(Self::new_enigo()?))
     }
 
