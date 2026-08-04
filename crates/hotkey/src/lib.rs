@@ -142,9 +142,14 @@ mod linux {
 
     /// Spawns one reader thread per keyboard-capable device; events funnel
     /// into a single channel. No hotplug rescan yet (MVP).
-    pub fn listen(key: PttKey) -> Result<Receiver<PttEvent>> {
+    pub fn listen(key: PttKey, exclude_devices: &[&str]) -> Result<Receiver<PttEvent>> {
         let code = key.code();
         let devices: Vec<(std::path::PathBuf, Device)> = evdev::enumerate()
+            // Devices the caller synthesises input on: their events must never
+            // feed the PTT state machine. The daemon passes the injector's
+            // virtual keyboard — this crate deliberately doesn't know what that
+            // is, so renaming the device can't silently break the guard.
+            .filter(|(_, d)| !exclude_devices.contains(&d.name().unwrap_or("")))
             .filter(|(_, d)| {
                 d.supported_keys()
                     .map(|keys| keys.contains(code))
@@ -242,7 +247,10 @@ mod macos {
     /// Installs a listen-only CGEventTap on a dedicated CFRunLoop thread and
     /// funnels press/release for `key` into a channel — mirroring the Linux
     /// evdev path so the daemon loop is identical across platforms.
-    pub fn listen(key: PttKey) -> Result<Receiver<PttEvent>> {
+    ///
+    /// `exclude_devices` exists for parity with the Linux signature and is
+    /// ignored: a CGEventTap observes the event stream, not input devices.
+    pub fn listen(key: PttKey, _exclude_devices: &[&str]) -> Result<Receiver<PttEvent>> {
         let (tx, rx) = mpsc::channel();
         let (keycode, mask) = key.mac();
 

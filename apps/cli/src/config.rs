@@ -18,6 +18,9 @@ pub struct Config {
     pub streaming: bool,
     /// Show the floating recording indicator while dictating
     pub overlay: bool,
+    /// XKB layout to type against on Wayland ("gb", "us+dvorak"). None detects
+    /// it from the session; set this when detection guesses wrong.
+    pub layout: Option<String>,
 }
 
 impl Default for Config {
@@ -33,6 +36,7 @@ impl Default for Config {
             history: true,
             streaming: true,
             overlay: true,
+            layout: None,
         }
     }
 }
