@@ -611,22 +611,3 @@ footer { background: var(--paper-3); padding: clamp(56px, 7vw, 84px) 0 40px; bor
   .cta-row .btn { width: 100%; }
   .calc-out { grid-template-columns: 1fr; gap: 24px; }
 }
-
-/* ============================================================
-   App screenshots
-   ============================================================ */
-.shots { display: flex; flex-direction: column; gap: 14px; }
-.shot { margin: 0; min-width: 0; }
-.shot img {
-  width: 100%; height: auto; display: block;
-  border-radius: var(--r-lg);
-  border: 1px solid rgba(22, 25, 27, .14);
-  box-shadow: var(--sh-3);
-  background: #0b0d0c;
-}
-.shot figcaption {
-  margin-top: 12px; text-align: center;
-  font-size: 13.5px; color: var(--ink-3);
-}
-.shot-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-@media (max-width: 720px) { .shot-pair { grid-template-columns: 1fr; } }
