@@ -74,3 +74,13 @@ Releases are signed with a **self-signed certificate** (`packaging/macos/make-si
 - **Never regenerate the cert.** Doing so forces every existing user to re-grant all three permissions. It lives in the `MACOS_CERT_P12` / `MACOS_CERT_PASSWORD` secrets; CI hard-fails without them.
 - Because the build is not notarized, Gatekeeper blocks the raw `.dmg` — and macOS 15 removed the right-click → Open bypass. The cask's `postflight` clears the quarantine flag after Homebrew verifies the SHA-256, so **`brew` is the supported macOS install path**.
 - macOS caches TCC grants **per process**, so a just-granted permission reads as denied until relaunch. Never gate first-run setup on those checks — that traps the user in the wizard (this shipped broken once; see `wizard::need_setup`).
+
+## Live transcription — read before touching `stream.rs`
+
+While the key is held the daemon re-transcribes recent audio every `STREAM_INTERVAL` and types whatever has settled. Three constraints shape `apps/cli/src/stream.rs`, and all three have been violated in shipped builds:
+
+- **The window is bounded.** Re-transcribing the whole utterance makes pass cost grow with what has been said: measured on an M1 Air, a pass over 50s of audio costs ~1.36s against a 500ms cadence, so the loop falls behind and the CPU pegs. A bounded window holds it at ~0.41s no matter how long the user talks. Never remove the cap "for accuracy".
+- **Moonshine rejects audio over 64s.** `Engine::transcribe` chunks long audio for this reason; the window keeps streaming passes nowhere near the ceiling.
+- **Splice on text, never on a word count.** The final pass revises what the streaming passes guessed, so indices shift — `resume_at` aligns on the words themselves, and `overlap_with_committed` is the backstop against a window seam re-typing what is already on screen. Both are unit-tested with the real failures that motivated them; keep those tests.
+
+`whisper-catch simulate-stream <wav>` replays a WAV through the real state machine and reports pass cost, window size and the resulting transcript, so streaming changes can be measured without a microphone. It advances by a fixed interval so transcripts are reproducible between builds; `--window 0` disables the cap to compare against the unbounded behaviour.
