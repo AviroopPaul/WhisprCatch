@@ -50,3 +50,11 @@ chrono = "0.4"
 notify-rust = "4"
 fs2 = "0.4"
 signal-hook = "0.3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The overlay needs the main display's *origin*, not just its size — egui only
+# exposes the latter, which is wrong on a multi-display Mac.
+core-graphics = "0.25"
+# Same version eframe pulls in. Needed for EventLoopBuilderExtMacOS, to stop the
+# overlay process activating itself and stealing keyboard focus.
+winit = "0.30"
