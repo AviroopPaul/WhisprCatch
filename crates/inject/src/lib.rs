@@ -380,3 +380,22 @@ impl KeyboardSink for Injector {
         self.type_raw(text)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// Constructing an `Injector` needs a display server, so this is as far as
+    /// the platform layer can be tested in CI — but it is worth having.
+    /// Calling the function is what forces the `IsSecureEventInputEnabled`
+    /// symbol to be linked, so a wrong framework name fails the macOS test run
+    /// instead of some user's build.
+    #[test]
+    fn secure_input_can_be_queried() {
+        let active = super::secure_input_active();
+        // The real value depends on what has focus, so it is not asserted —
+        // except off macOS, where there is no such thing.
+        #[cfg(not(target_os = "macos"))]
+        assert!(!active);
+        #[cfg(target_os = "macos")]
+        let _ = active;
+    }
+}
