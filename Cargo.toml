@@ -1,6 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/hotkey", "crates/inject", "crates/tray", "crates/models", "apps/cli"]
+members = [
+    "crates/core",
+    "crates/hotkey",
+    "crates/inject",
+    "crates/text",
+    "crates/tray",
+    "crates/models",
+    "apps/cli",
+]
 
 [workspace.package]
 version = "0.4.0"

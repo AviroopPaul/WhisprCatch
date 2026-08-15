@@ -3,6 +3,7 @@ mod config;
 mod overlay;
 mod settings_app;
 mod shot;
+mod stream;
 mod theme;
 mod wizard;
 
@@ -19,6 +20,8 @@ use wc_core::engine::Engine;
 use wc_core::state::AppState;
 use wc_hotkey::{PttEvent, PttKey};
 use wc_inject::Injector;
+
+use crate::stream::{join_delta, resume_at, split_words, Stream};
 
 #[derive(Parser)]
 #[command(name = "whisper-catch", version, about = "Local push-to-talk dictation")]
@@ -78,6 +81,14 @@ enum Cmd {
     DownloadModel,
     /// Print permission + model status (troubleshooting)
     Doctor,
+    /// Internal: replay a WAV through the streaming loop to measure it
+    #[command(hide = true)]
+    SimulateStream {
+        wav: PathBuf,
+        /// Window cap in seconds; 0 means unbounded (the pre-window behaviour)
+        #[arg(long, default_value_t = crate::stream::MAX_WINDOW_SECS)]
+        window: f32,
+    },
     /// Start whisper-catch automatically on login
     Autostart {
         #[arg(long, conflicts_with = "disable")]
@@ -196,6 +207,9 @@ fn main() -> Result<()> {
     log::info!("model loaded in {:.1}s", t0.elapsed().as_secs_f32());
 
     match cmd {
+        // Engine smoke tests: Transcribe and Record below print the model's own
+        // output, deliberately unpolished, so a cleanup bug (#36) can be told
+        // apart from a model one.
         Cmd::Transcribe { wav } => {
             let samples = transcribe_rs::audio::read_wav_samples(&wav)
                 .map_err(|e| anyhow::anyhow!("{e}"))
@@ -205,6 +219,7 @@ fn main() -> Result<()> {
             log::info!("inference took {:.2}s", t0.elapsed().as_secs_f32());
             println!("{text}");
         }
+        Cmd::SimulateStream { wav, window } => return simulate_stream(&mut engine, &wav, window),
         Cmd::Record { seconds } => {
             let cap = Capture::open()?;
             cap.begin();
@@ -277,6 +292,24 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// The transcription→injection seam (#40): run the polish chain over the raw
+/// transcript and decide what history should keep.
+///
+/// Returns `(text_to_type, raw_for_history)`. `raw` is `Some` only when polish
+/// actually changed something — there is no point storing two copies of an
+/// untouched transcript, and undo (#42) has nothing to undo. Kept as a free
+/// function so the seam is testable without a model or a microphone.
+fn finish(polish: &wc_text::Polish, raw: String) -> (String, Option<String>) {
+    let text = polish.apply(&raw);
+    if text == raw {
+        return (text, None);
+    }
+    // debug, not info: this is the user's speech — it should not reach logs
+    // by default.
+    log::debug!("polish: {raw:?} -> {text:?}");
+    (text, Some(raw))
+}
+
 /// No terminal attached — launched from the app menu / autostart.
 fn gui_session() -> bool {
     use std::io::IsTerminal;
@@ -314,9 +347,6 @@ const MIC_IDLE_CLOSE: Duration = Duration::from_secs(10);
 /// roughly two intervals (LocalAgreement needs consecutive passes to agree)
 /// plus inference, so keep this tight — inference is only ~0.1-0.5s.
 const STREAM_INTERVAL: Duration = Duration::from_millis(500);
-/// Words at the tail of a hypothesis we refuse to commit — the model often
-/// revises the most recent words on the next pass (LocalAgreement guard).
-const STREAM_GUARD_WORDS: usize = 2;
 
 struct OverlayProc(std::process::Child);
 
@@ -358,68 +388,6 @@ impl OverlayProc {
     }
 }
 
-fn split_words(text: &str) -> Vec<String> {
-    text.split_whitespace().map(str::to_string).collect()
-}
-
-/// Words of `hyp` agreed with `prev` (common prefix), minus the guard tail.
-fn stable_prefix_len(prev: &[String], hyp: &[String]) -> usize {
-    let lcp = prev
-        .iter()
-        .zip(hyp.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-    lcp.min(hyp.len().saturating_sub(STREAM_GUARD_WORDS))
-}
-
-/// Compare loosely — the final pass often punctuates or capitalises a word
-/// differently from the streaming guess, and that shouldn't break alignment.
-fn norm(w: &str) -> String {
-    w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()
-}
-
-/// Index in `final_words` to resume typing from, given what's already on screen.
-///
-/// Resuming at `committed.len()` assumes the final transcript opens with exactly
-/// the words already typed. It doesn't: the final pass sees the whole utterance
-/// (and may be chunked), so it revises what the streaming passes guessed — every
-/// revision before that point shifts the index and we duplicate or drop text.
-/// Align on the words themselves instead: find the longest tail of `committed`
-/// that occurs in `final_words` and continue after it.
-fn resume_at(committed: &[String], final_words: &[String]) -> usize {
-    if committed.is_empty() {
-        return 0;
-    }
-    const MAX_ANCHOR: usize = 12;
-    let c: Vec<String> = committed.iter().map(|w| norm(w)).collect();
-    let f: Vec<String> = final_words.iter().map(|w| norm(w)).collect();
-
-    let max_k = c.len().min(MAX_ANCHOR).min(f.len());
-    for k in (1..=max_k).rev() {
-        let tail = &c[c.len() - k..];
-        // Of all the places this anchor occurs, take the one nearest where we
-        // expected to be. Never "latest wins": with committed "for the" against
-        // "for the gut comedy for the grin" that would anchor on the second
-        // occurrence and silently swallow "gut comedy for the".
-        let best = (0..=f.len() - k)
-            .filter(|&j| &f[j..j + k] == tail)
-            .min_by_key(|&j| (j + k).abs_diff(c.len()));
-        if let Some(j) = best {
-            return j + k;
-        }
-    }
-    // nothing matched (the final pass reworded everything) — fall back
-    committed.len().min(final_words.len())
-}
-
-fn join_delta(committed: usize, words: &[String]) -> String {
-    let mut s = words[committed..].join(" ");
-    if committed > 0 {
-        s.insert(0, ' ');
-    }
-    s
-}
-
 #[allow(clippy::too_many_arguments)]
 fn run_ptt(
     state: Arc<AppState>,
@@ -450,6 +418,28 @@ fn run_ptt(
     // resolve before any upgrade can replace the binary under us
     let self_exe = std::env::current_exe().context("resolving own binary path")?;
 
+    // The deterministic cleanup chain (#40). Built once: it is pure, so the
+    // same chain serves every utterance. Empty unless the user enabled a
+    // transform, in which case `apply` is the identity function.
+    let polish = wc_text::Polish::from_config(&cfg.polish);
+    if polish.is_empty() {
+        log::debug!("text polish: nothing enabled");
+    } else {
+        log::info!("text polish: {}", polish.names().join(" -> "));
+        if cfg.streaming && polish.has_rewriting_transforms() {
+            // Streaming types words as they settle; polish only runs on the
+            // final transcript. None of the six transforms is prefix-stable —
+            // not even the substituting ones, whose trigger phrases straddle
+            // the streaming boundary — so anything enabled here can disagree
+            // with what is already on screen. Live output therefore stays raw
+            // until injector replace (#41) and reconciliation (#50) land.
+            log::warn!(
+                "streaming is on and the polish chain can rewrite words already typed — \
+                 live output stays unpolished until #50 lands"
+            );
+        }
+    }
+
     let events = wc_hotkey::listen(key)?;
     let mut injector = if print_only {
         None
@@ -472,11 +462,8 @@ fn run_ptt(
     let mut overlay_proc: Option<OverlayProc> = None;
 
     // rolling-transcription state for the current utterance
-    let mut committed: Vec<String> = Vec::new();
-    let mut prev_hyp: Vec<String> = Vec::new();
+    let mut stream = Stream::new();
     let mut modifier_lifted = false;
-    // set once per utterance when live typing is paused, to log it only once
-    let mut stream_capped = false;
     let mut last_pass = std::time::Instant::now();
 
     // test hooks: SIGUSR1 = simulated press, SIGUSR2 = simulated release
@@ -510,10 +497,8 @@ fn run_ptt(
                 let cap = capture.as_ref().unwrap();
                 cap.begin();
                 armed = true;
-                committed.clear();
-                prev_hyp.clear();
+                stream.reset();
                 modifier_lifted = false;
-                stream_capped = false;
                 last_pass = std::time::Instant::now();
                 log::info!("recording...");
                 state.recording.store(true, Ordering::Relaxed);
@@ -533,7 +518,7 @@ fn run_ptt(
                 last_use = std::time::Instant::now();
 
                 let dur = cap.armed_secs();
-                if dur < 0.3 && committed.is_empty() {
+                if dur < 0.3 && stream.committed().is_empty() {
                     cap.cancel();
                     if let Some(o) = overlay_proc.take() {
                         o.close();
@@ -554,18 +539,33 @@ fn run_ptt(
                         continue;
                     }
                 };
+                // An empty final transcript is the difference between "a bit
+                // was lost" and "everything after the last streamed word was
+                // lost", so record what actually went in.
+                let level = (samples.iter().map(|s| s * s).sum::<f32>()
+                    / samples.len().max(1) as f32)
+                    .sqrt();
+                log::debug!(
+                    "final input: {} samples ({:.1}s), rms {level:.4}",
+                    samples.len(),
+                    samples.len() as f32 / wc_core::SAMPLE_RATE as f32
+                );
                 let t0 = std::time::Instant::now();
                 let result = engine.transcribe(&samples);
                 if let Some(o) = overlay_proc.take() {
                     o.close();
                 }
                 match result {
-                    Ok(text) if text.is_empty() && committed.is_empty() => {
+                    Ok(text) if text.is_empty() && stream.committed().is_empty() => {
                         log::info!("(empty transcript)")
                     }
-                    Ok(text) => {
+                    Ok(raw) => {
                         let infer_s = t0.elapsed().as_secs_f32();
                         log::info!("{dur:.1}s audio → {infer_s:.2}s inference (final)");
+                        // The seam (#40): every deterministic cleanup pass runs
+                        // here, on the finished transcript, before history and
+                        // before a single character is typed.
+                        let (text, polished_from) = finish(&polish, raw);
                         state.record_utterance(text.split_whitespace().count(), dur);
                         if cfg.history {
                             let entry = wc_core::history::Entry {
@@ -576,6 +576,7 @@ fn run_ptt(
                                 dur_s: dur,
                                 infer_s,
                                 text: text.clone(),
+                                raw: polished_from,
                             };
                             if let Err(e) = wc_core::history::append(&entry) {
                                 log::warn!("history write failed: {e:#}");
@@ -587,11 +588,11 @@ fn run_ptt(
                         // words already typed by rolling passes stay put; type
                         // only what's left, aligned on the text rather than on a
                         // word count that the final pass may have shifted
-                        let start = resume_at(&committed, &final_words);
+                        let start = resume_at(stream.committed(), &final_words);
                         log::debug!(
                             "final: {} words, {} committed, resuming at {}",
                             final_words.len(),
-                            committed.len(),
+                            stream.committed().len(),
                             start
                         );
                         if let Some(inj) = injector.as_mut() {
@@ -599,7 +600,8 @@ fn run_ptt(
                             // injected keys don't combine with it
                             std::thread::sleep(Duration::from_millis(150));
                             if start < final_words.len() {
-                                let delta = join_delta(start, &final_words);
+                                let delta =
+                                    join_delta(&final_words[start..], stream.nothing_typed());
                                 if let Err(e) = inj.type_text(&delta) {
                                     log::error!("injection failed: {e:#}");
                                     println!("{text}");
@@ -611,8 +613,7 @@ fn run_ptt(
                     }
                     Err(e) => log::error!("transcription failed: {e:#}"),
                 }
-                committed.clear();
-                prev_hyp.clear();
+                stream.reset();
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 // rolling transcription while the key is held
@@ -623,57 +624,57 @@ fn run_ptt(
                 {
                     last_pass = std::time::Instant::now();
                     if let Some(cap) = capture.as_ref() {
-                        // Each pass re-transcribes the whole utterance so far, so
-                        // its cost grows with the utterance. Past a point a pass
-                        // takes longer than the interval, so they queue up, peg
-                        // the CPU and lag the live text — and beyond Moonshine's
-                        // 64s ceiling they fail outright. Stop streaming there and
-                        // let the (chunked) final pass finish the job.
-                        let armed = cap.armed_secs();
-                        if armed >= wc_core::engine::MAX_CHUNK_SECS {
-                            if !stream_capped {
-                                stream_capped = true;
-                                log::info!(
-                                    "{armed:.0}s utterance — live typing paused, \
-                                     the rest lands on release"
+                        // A pass only ever transcribes a bounded window (see
+                        // stream.rs), so its cost stops growing with the
+                        // utterance and live typing continues for as long as the
+                        // user talks.
+                        let armed_samples = cap.armed_samples();
+                        let rate = cap.device_rate();
+                        if armed_samples as f32 / rate as f32 >= 0.5 {
+                            if stream.maybe_slide(armed_samples, rate) {
+                                log::debug!(
+                                    "window slid to {:.1}s",
+                                    stream.window_start() as f32 / rate as f32
                                 );
                             }
-                        } else if armed >= 0.5 {
-                            if let Ok(snap) = cap.snapshot() {
-                                match engine.transcribe(&snap) {
-                                    Ok(text) => {
-                                        let hyp = split_words(&text);
-                                        let stable = stable_prefix_len(&prev_hyp, &hyp);
-                                        log::debug!(
-                                            "streaming pass: {} words, stable={}, committed={}",
-                                            hyp.len(),
-                                            stable,
-                                            committed.len()
-                                        );
-                                        if stable > committed.len() {
-                                            let inj = injector.as_mut().unwrap();
-                                            if !modifier_lifted {
-                                                // fake-release the held PTT key at the
-                                                // display-server level so our keystrokes
-                                                // don't become modifier+letter shortcuts
-                                                inj.lift_key(key.evdev_code());
-                                                modifier_lifted = true;
-                                            }
-                                            let delta = join_delta(committed.len(), &hyp[..stable]);
-                                            if let Err(e) = inj.type_text(&delta) {
-                                                log::error!("streaming injection failed: {e:#}");
-                                            } else {
-                                                // debug, not info: this is the
-                                                // user's speech — it should not
-                                                // reach logs by default.
-                                                log::debug!("streamed {delta:?}");
-                                                committed = hyp[..stable].to_vec();
-                                            }
+                            let t0 = std::time::Instant::now();
+                            match cap
+                                .snapshot_from(stream.window_start())
+                                .and_then(|snap| engine.transcribe(&snap))
+                            {
+                                Ok(text) => {
+                                    let hyp = split_words(&text);
+                                    let hyp_len = hyp.len();
+                                    let delta = stream.advance(hyp);
+                                    log::debug!(
+                                        "pass: {:.2}s, window {:.1}s, {} words, +{}",
+                                        t0.elapsed().as_secs_f32(),
+                                        (armed_samples - stream.window_start()) as f32 / rate as f32,
+                                        hyp_len,
+                                        delta.len()
+                                    );
+                                    if !delta.is_empty() {
+                                        let inj = injector.as_mut().unwrap();
+                                        if !modifier_lifted {
+                                            // fake-release the held PTT key at the
+                                            // display-server level so our keystrokes
+                                            // don't become modifier+letter shortcuts
+                                            inj.lift_key(key.evdev_code());
+                                            modifier_lifted = true;
                                         }
-                                        prev_hyp = hyp;
+                                        let text = join_delta(&delta, stream.nothing_typed());
+                                        if let Err(e) = inj.type_text(&text) {
+                                            log::error!("streaming injection failed: {e:#}");
+                                        } else {
+                                            // debug, not info: this is the user's
+                                            // speech — it should not reach logs
+                                            // by default.
+                                            log::debug!("streamed {text:?}");
+                                            stream.mark_first_typed();
+                                        }
                                     }
-                                    Err(e) => log::warn!("streaming pass failed: {e:#}"),
                                 }
+                                Err(e) => log::warn!("streaming pass failed: {e:#}"),
                             }
                         }
                     }
@@ -690,73 +691,205 @@ fn run_ptt(
     Ok(())
 }
 
+/// Replays a WAV through the real streaming state machine and reports what the
+/// user would have seen. Exists so the windowing can be exercised end to end,
+/// against real audio and the real model, without a microphone or a human.
+///
+/// Timing is modelled the way the daemon actually behaves: a pass is issued
+/// every STREAM_INTERVAL, but a pass that overruns that interval means more
+/// audio has accumulated by the time the next one starts.
+fn simulate_stream(engine: &mut Engine, wav: &std::path::Path, window: f32) -> Result<()> {
+    const RATE: u32 = wc_core::SAMPLE_RATE;
+    let samples = transcribe_rs::audio::read_wav_samples(wav)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .with_context(|| format!("reading {}", wav.display()))?;
+    let total_secs = samples.len() as f32 / RATE as f32;
+
+    // window <= 0 disables the cap, reproducing the unbounded behaviour
+    let mut stream = if window > 0.0 {
+        Stream::with_window(window, crate::stream::KEEP_TAIL_SECS)
+    } else {
+        Stream::with_window(f32::MAX, crate::stream::KEEP_TAIL_SECS)
+    };
+    let mut typed = String::new();
+    let mut audio_pos = 0usize; // samples "captured" so far
+    let mut passes = 0u32;
+    let mut pass_secs: Vec<f32> = Vec::new();
+    let mut max_window = 0f32;
+
+    // Advance by a fixed interval rather than by measured pass duration: window
+    // boundaries then fall in the same place every run, so the transcript is
+    // reproducible and two builds can actually be compared. Pass cost is
+    // reported separately, and the point of the window is that a pass now fits
+    // inside the interval anyway.
+    let interval = STREAM_INTERVAL.as_secs_f32();
+    let mut elapsed = 0f32;
+    while audio_pos < samples.len() {
+        elapsed += interval;
+        audio_pos = ((elapsed * RATE as f32) as usize).min(samples.len());
+        if (audio_pos as f32 / RATE as f32) < 0.5 {
+            continue;
+        }
+        stream.maybe_slide(audio_pos, RATE);
+        let window = &samples[stream.window_start()..audio_pos];
+        max_window = max_window.max(window.len() as f32 / RATE as f32);
+
+        let t0 = std::time::Instant::now();
+        let text = engine.transcribe(window)?;
+        pass_secs.push(t0.elapsed().as_secs_f32());
+        passes += 1;
+
+        let delta = stream.advance(split_words(&text));
+        if !delta.is_empty() {
+            typed.push_str(&join_delta(&delta, stream.nothing_typed()));
+            stream.mark_first_typed();
+        }
+    }
+
+    // the release path: full (chunked) transcription, spliced onto what streamed
+    let reference = engine.transcribe(&samples)?;
+    let final_words = split_words(&reference);
+    let start = resume_at(stream.committed(), &final_words);
+    if start < final_words.len() {
+        typed.push_str(&join_delta(&final_words[start..], stream.nothing_typed()));
+    }
+
+    let mean = pass_secs.iter().sum::<f32>() / pass_secs.len().max(1) as f32;
+    let worst = pass_secs.iter().cloned().fold(0.0f32, f32::max);
+    println!("audio_secs\t{total_secs:.1}");
+    println!("passes\t{passes}");
+    println!("pass_mean_s\t{mean:.3}");
+    println!("pass_max_s\t{worst:.3}");
+    println!("window_max_s\t{max_window:.1}");
+    println!("streamed_words\t{}", stream.committed().len());
+    println!("reference_words\t{}", final_words.len());
+    println!("typed_words\t{}", typed.split_whitespace().count());
+    println!("--- TYPED ---");
+    println!("{typed}");
+    println!("--- REFERENCE ---");
+    println!("{reference}");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wc_text::{BoxedTransform, Polish, PolishConfig, Transform};
 
-    fn w(s: &str) -> Vec<String> {
-        s.split_whitespace().map(str::to_string).collect()
+    /// A transform that actually changes text, standing in for the real ones
+    /// until #43-#48 land. Nothing in `wc-text` changes a byte yet, so this is
+    /// the only way to exercise the "polish changed it" branch of the seam.
+    struct Shout;
+    impl Transform for Shout {
+        fn name(&self) -> &'static str {
+            "shout"
+        }
+        fn apply(&self, text: &str) -> String {
+            text.to_uppercase()
+        }
+        fn prefix_stable(&self) -> bool {
+            true
+        }
+    }
+
+    fn shouty() -> Polish {
+        Polish::from_transforms(vec![Box::new(Shout) as BoxedTransform])
+    }
+
+    /// The promise this whole issue makes: with nothing enabled a dictation
+    /// round-trip is byte-identical to v0.4.0, and history gains nothing.
+    #[test]
+    fn a_default_chain_changes_nothing_and_stores_no_raw() {
+        let polish = Polish::from_config(&PolishConfig::default());
+        for raw in [
+            "",
+            "hello world",
+            "Um, I mean, twenty five percent.",
+            "naïve café 👩‍💻 🚀",
+            "  spaced  out  \n",
+        ] {
+            let (text, stored) = finish(&polish, raw.to_string());
+            assert_eq!(text, raw, "polish changed {raw:?}");
+            assert_eq!(stored, None, "stored a raw copy for unchanged {raw:?}");
+        }
     }
 
     #[test]
-    fn resumes_after_the_committed_tail() {
-        let committed = w("the whole emotional spectrum");
-        let final_words = w("he covers the whole emotional spectrum drama for the gut");
-        // must continue at "drama", not re-type the anchor
-        assert_eq!(resume_at(&committed, &final_words), 6);
+    fn a_changing_chain_types_the_polished_text_and_keeps_the_raw() {
+        let (text, stored) = finish(&shouty(), "hello world".to_string());
+        assert_eq!(text, "HELLO WORLD");
+        assert_eq!(stored.as_deref(), Some("hello world"));
     }
 
+    /// A transform that happens to be a no-op on this input must not fill
+    /// history with a duplicate of the text sitting next to it.
     #[test]
-    fn survives_the_final_pass_rewording_earlier_text() {
-        // streaming heard "in a fellow", the final pass corrected it to
-        // "in othello" — the word count still matches but the words differ,
-        // which is precisely what broke the index splice
-        let committed = w("jealousy in a fellow is invisible");
-        let final_words = w("jealousy in othello is invisible but utterly destructive");
-        assert_eq!(resume_at(&committed, &final_words), 5);
+    fn no_raw_is_stored_when_the_chain_makes_no_difference() {
+        let (text, stored) = finish(&shouty(), "ALREADY SHOUTING".to_string());
+        assert_eq!(text, "ALREADY SHOUTING");
+        assert_eq!(stored, None);
     }
 
+    /// What actually lands on disk, end to end: an unpolished utterance writes
+    /// the exact line shape v0.4.0 wrote, and a polished one adds `raw`.
     #[test]
-    fn ignores_case_and_punctuation_when_aligning() {
-        let committed = w("covers the whole emotional spectrum");
-        let final_words = w("Covers the whole emotional spectrum. Drama for the gut");
-        assert_eq!(resume_at(&committed, &final_words), 5);
+    fn history_lines_match_the_old_format_until_polish_changes_something() {
+        let line = |polish: &Polish, raw: &str| {
+            let (text, stored) = finish(polish, raw.to_string());
+            serde_json::to_string(&wc_core::history::Entry {
+                ts: 1_754_000_000,
+                dur_s: 2.5,
+                infer_s: 0.31,
+                text,
+                raw: stored,
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            line(
+                &Polish::from_config(&PolishConfig::default()),
+                "hello world"
+            ),
+            r#"{"ts":1754000000,"dur_s":2.5,"infer_s":0.31,"text":"hello world"}"#
+        );
+        assert_eq!(
+            line(&shouty(), "hello world"),
+            r#"{"ts":1754000000,"dur_s":2.5,"infer_s":0.31,"text":"HELLO WORLD","raw":"hello world"}"#
+        );
     }
 
+    /// The stats the tray shows count what the user actually got, not what the
+    /// model said — filler removal should lower the word count, not keep it.
     #[test]
-    fn anchors_a_repeated_phrase_nearest_the_expected_position() {
-        // "for the" occurs twice. Only two words have been typed, so the first
-        // occurrence is the real one — anchoring on the later one would skip
-        // "gut comedy for the" entirely.
-        let committed = w("for the");
-        let final_words = w("for the gut comedy for the grin");
-        assert_eq!(resume_at(&committed, &final_words), 2);
+    fn word_count_is_taken_from_the_polished_text() {
+        struct DropLast;
+        impl Transform for DropLast {
+            fn name(&self) -> &'static str {
+                "drop_last"
+            }
+            fn apply(&self, text: &str) -> String {
+                let mut w: Vec<&str> = text.split_whitespace().collect();
+                w.pop();
+                w.join(" ")
+            }
+            fn prefix_stable(&self) -> bool {
+                false
+            }
+        }
+        let polish = Polish::from_transforms(vec![Box::new(DropLast) as BoxedTransform]);
+        let (text, _) = finish(&polish, "one two three um".to_string());
+        assert_eq!(text.split_whitespace().count(), 3);
     }
 
+    /// The words already typed by streaming passes are spliced against the
+    /// final transcript. Polish runs before that splice, so an append-safe
+    /// chain must still leave `resume_at` able to find its place.
     #[test]
-    fn anchors_late_when_that_is_where_we_actually_are() {
-        // same repeated phrase, but six words are already typed — now the
-        // second occurrence is the right one
-        let committed = w("for the gut comedy for the");
-        let final_words = w("for the gut comedy for the grin");
-        assert_eq!(resume_at(&committed, &final_words), 6);
-    }
-
-    #[test]
-    fn nothing_committed_types_everything() {
-        assert_eq!(resume_at(&[], &w("a b c")), 0);
-    }
-
-    #[test]
-    fn no_overlap_falls_back_to_the_word_count() {
-        let committed = w("completely different words here");
-        let final_words = w("nothing in common at all whatsoever");
+    fn polished_text_still_splices_onto_what_streaming_typed() {
+        let polish = Polish::from_config(&PolishConfig::default());
+        let (text, _) = finish(&polish, "the whole emotional spectrum drama".to_string());
+        let final_words = split_words(&text);
+        let committed = split_words("the whole emotional spectrum");
         assert_eq!(resume_at(&committed, &final_words), 4);
-    }
-
-    #[test]
-    fn final_shorter_than_committed_does_not_panic() {
-        let committed = w("one two three four five");
-        assert_eq!(resume_at(&committed, &w("five")), 1);
     }
 }

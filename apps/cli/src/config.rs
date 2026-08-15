@@ -18,6 +18,14 @@ pub struct Config {
     pub streaming: bool,
     /// Show the floating recording indicator while dictating
     pub overlay: bool,
+    /// Deterministic text cleanup (#36). Every transform ships off, so a
+    /// config that predates this section behaves exactly as it did.
+    ///
+    /// Last by convention, not by requirement: `toml` 0.9 hoists scalars above
+    /// tables when it serializes, so a plain field declared after this one
+    /// still round-trips. (That was not true of `toml` 0.8, which errored.)
+    /// Keeping it last just makes the written file read in declaration order.
+    pub polish: wc_text::PolishConfig,
 }
 
 impl Default for Config {
@@ -33,6 +41,7 @@ impl Default for Config {
             history: true,
             streaming: true,
             overlay: true,
+            polish: wc_text::PolishConfig::default(),
         }
     }
 }
@@ -108,4 +117,99 @@ pub fn save(cfg: &Config) -> Result<()> {
     std::fs::create_dir_all(path.parent().unwrap())?;
     std::fs::write(&path, toml::to_string_pretty(cfg)?)
         .with_context(|| format!("writing {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verbatim `config.toml` as v0.4.0 wrote it — no `[polish]` section.
+    const V0_4_CONFIG: &str = "\
+key = \"ralt\"
+model = \"parakeet\"
+history = true
+streaming = true
+overlay = true
+";
+
+    /// The upgrade path for every existing user. Failing to parse here means
+    /// the daemon refuses to start after an update.
+    #[test]
+    fn a_config_written_before_polish_still_loads() {
+        let cfg: Config = toml::from_str(V0_4_CONFIG).unwrap();
+        assert_eq!(cfg.key, "ralt");
+        assert_eq!(cfg.model, "parakeet");
+        assert!(cfg.history);
+        assert!(
+            wc_text::Polish::from_config(&cfg.polish).is_empty(),
+            "an absent [polish] section must mean every transform off"
+        );
+    }
+
+    /// An even older file, from before `streaming`/`overlay` existed. The
+    /// struct-level `#[serde(default)]` is what makes this work; this test is
+    /// here so nobody removes it.
+    #[test]
+    fn a_minimal_config_fills_every_missing_field() {
+        let cfg: Config = toml::from_str("key = \"rctrl\"\n").unwrap();
+        assert_eq!(cfg.key, "rctrl");
+        assert_eq!(cfg.model, Config::default().model);
+        assert!(wc_text::Polish::from_config(&cfg.polish).is_empty());
+    }
+
+    #[test]
+    fn empty_config_equals_defaults() {
+        let cfg: Config = toml::from_str("").unwrap();
+        let def = Config::default();
+        assert_eq!(cfg.key, def.key);
+        assert_eq!(cfg.model, def.model);
+        assert_eq!(cfg.history, def.history);
+        assert_eq!(cfg.streaming, def.streaming);
+        assert_eq!(cfg.overlay, def.overlay);
+    }
+
+    /// Settings → Save serializes the whole `Config`, so a change that makes
+    /// `to_string_pretty` fail is a runtime panic with nothing at compile time
+    /// to catch it. Adding a table field is the usual way to cause that, which
+    /// is why this exists — `toml` 0.9 handles it, `toml` 0.8 did not.
+    #[test]
+    fn default_config_round_trips_through_toml() {
+        let text = toml::to_string_pretty(&Config::default())
+            .expect("Config must stay serializable — Settings → Save depends on it");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.key, Config::default().key);
+        assert!(wc_text::Polish::from_config(&back.polish).is_empty());
+    }
+
+    #[test]
+    fn an_enabled_transform_survives_a_save_load_cycle() {
+        let mut cfg = Config::default();
+        cfg.polish.fillers.enabled = true;
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(
+            wc_text::Polish::from_config(&back.polish).names(),
+            ["fillers"]
+        );
+    }
+
+    /// A newer build writes settings this one has never heard of. Ignoring
+    /// them beats refusing to start — but "ignored" is the whole story, not
+    /// half of it: `save` writes the typed struct back, so the next time the
+    /// user touches Settings those keys are gone from `config.toml`. Running
+    /// an older build and saving therefore discards a newer build's polish
+    /// settings. That is tolerable only because #43 and #47 store the data
+    /// users actually author in their own files; if anything ever needs to
+    /// survive a downgrade, it cannot live in this struct.
+    #[test]
+    fn unknown_keys_load_but_are_dropped_on_the_next_save() {
+        let from_newer_build =
+            format!("{V0_4_CONFIG}tone = \"casual\"\n\n[polish.tone]\nenabled = true\n");
+        let cfg: Config = toml::from_str(&from_newer_build).unwrap();
+        assert_eq!(cfg.key, "ralt");
+        assert!(wc_text::Polish::from_config(&cfg.polish).is_empty());
+
+        let written = toml::to_string_pretty(&cfg).unwrap();
+        assert!(!written.contains("tone"), "{written}");
+    }
 }

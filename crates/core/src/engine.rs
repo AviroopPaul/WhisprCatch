@@ -49,20 +49,32 @@ impl Engine {
         }
 
         let mut out: Vec<String> = Vec::new();
+        let mut chunks = 0usize;
         let mut start = 0usize;
         while start < samples.len() {
             let end = split_point(samples, start, max);
             let text = self.transcribe_one(&samples[start..end])?;
+            chunks += 1;
             if !text.is_empty() {
                 out.push(text);
             }
             start = end;
         }
-        log::info!(
-            "chunked {:.1}s of audio into {} passes",
-            samples.len() as f32 / SAMPLE_RATE as f32,
-            out.len().max(1)
-        );
+        // Report the real chunk count, and say so loudly when a chunk produced
+        // nothing — an empty chunk means the utterance silently lost that whole
+        // stretch of speech, which is not something to log as success.
+        let empty = chunks - out.len();
+        if empty > 0 {
+            log::warn!(
+                "{empty} of {chunks} chunks transcribed to nothing over {:.1}s of audio",
+                samples.len() as f32 / SAMPLE_RATE as f32
+            );
+        } else {
+            log::info!(
+                "chunked {:.1}s of audio into {chunks} passes",
+                samples.len() as f32 / SAMPLE_RATE as f32
+            );
+        }
         Ok(out.join(" "))
     }
 

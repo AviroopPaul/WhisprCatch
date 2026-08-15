@@ -50,7 +50,7 @@ code.
 ## Layout
 
 - `apps/cli` — the `whisper-catch` binary (Rust workspace root ties it together)
-- `crates/` — `core` (audio + inference pipeline), `hotkey` (global key listener), `inject` (types text at the cursor), `models` (model download/selection), `tray` (tray app, settings, history)
+- `crates/` — `core` (audio + inference pipeline), `hotkey` (global key listener), `inject` (types text at the cursor), `text` (deterministic cleanup between transcription and injection), `models` (model download/selection), `tray` (tray app, settings, history)
 - `site/` — the marketing site (static, no build step): `index.html`, `wispr-flow-alternative/index.html`, shared tokens in `assets/site.css`, SEO surface in `robots.txt` / `sitemap.xml` / `llms.txt` / `llms-full.txt`, plus `api/waitlist.js` (Vercel function storing macOS waitlist emails in Vercel Blob). Design tokens live in `docs/DESIGN.md` Part A; never hand-pick a colour, and keep copy free of em dashes.
 - `packaging/deb`, `packaging/macos`, `packaging/homebrew` — .deb, .dmg, and Homebrew cask
 - `docs/` — design notes, plus `docs/screenshots/` (app captures used by the README and the site)
@@ -82,3 +82,22 @@ Releases are signed with a **self-signed certificate** (`packaging/macos/make-si
 - **Never regenerate the cert.** Doing so forces every existing user to re-grant all three permissions. It lives in the `MACOS_CERT_P12` / `MACOS_CERT_PASSWORD` secrets; CI hard-fails without them.
 - Because the build is not notarized, Gatekeeper blocks the raw `.dmg` — and macOS 15 removed the right-click → Open bypass. The cask's `postflight` clears the quarantine flag after Homebrew verifies the SHA-256, so **`brew` is the supported macOS install path**.
 - macOS caches TCC grants **per process**, so a just-granted permission reads as denied until relaunch. Never gate first-run setup on those checks — that traps the user in the wizard (this shipped broken once; see `wizard::need_setup`).
+
+## Live transcription — read before touching `stream.rs`
+
+While the key is held the daemon re-transcribes recent audio every `STREAM_INTERVAL` and types whatever has settled. Three constraints shape `apps/cli/src/stream.rs`, and all three have been violated in shipped builds:
+
+- **The window is bounded.** Re-transcribing the whole utterance makes pass cost grow with what has been said: measured on an M1 Air, a pass over 50s of audio costs ~1.36s against a 500ms cadence, so the loop falls behind and the CPU pegs. A bounded window holds it at ~0.41s no matter how long the user talks. Never remove the cap "for accuracy".
+- **Moonshine rejects audio over 64s.** `Engine::transcribe` chunks long audio for this reason; the window keeps streaming passes nowhere near the ceiling.
+- **Splice on text, never on a word count.** The final pass revises what the streaming passes guessed, so indices shift — `resume_at` aligns on the words themselves, and `overlap_with_committed` is the backstop against a window seam re-typing what is already on screen. Both are unit-tested with the real failures that motivated them; keep those tests.
+
+`whisper-catch simulate-stream <wav>` replays a WAV through the real state machine and reports pass cost, window size and the resulting transcript, so streaming changes can be measured without a microphone. It advances by a fixed interval so transcripts are reproducible between builds; `--window 0` disables the cap to compare against the unbounded behaviour.
+
+## Text cleanup — read before touching `crates/text`
+
+`wc-text` is the one seam between transcription and injection (`finish()` in `apps/cli/src/main.rs`). It is pure: no I/O, no platform code, no network, no async, no model. A transform that needs any of those belongs somewhere else.
+
+- **One transform per module file**, each owning its own `Config` and its `Transform` impl. `lib.rs` holds the chain and nothing transform-specific, so the six cleanup issues can land in parallel without touching the same file.
+- **The chain order is fixed and load-bearing**: dictionary → snippets → spoken → self_correct → fillers → numbers. `self_correct` must run before `fillers` — "I mean" is both a correction marker and a hedge filler removal strips, so reversing them breaks self-correction silently. `self_correct_runs_before_fillers` is the test that catches it.
+- **`prefix_stable()` is a promise to the streaming loop**, not a label. It means `apply(prefix)` is a prefix of `apply(whole)` — much stronger than "never shortens the text", because a streaming pass has already typed `apply(prefix)` and cannot take it back until injector replace (#41) lands. **All six return `false`**, each with a counterexample in its own module: a substitution done "in place" still breaks the property whenever its trigger straddles the streaming boundary ("twenty" → `20`, then "twenty five" → `25`). Returning `true` needs a proof against `prefix_violation` in `testing.rs`, not an intuition.
+- **Everything ships disabled.** Output must stay byte-identical with a default config; `history::Entry::raw` stores the pre-polish text only when a transform actually changed it, and is `Option` + `#[serde(default)]` so pre-v0.5 `history.jsonl` files keep loading.
