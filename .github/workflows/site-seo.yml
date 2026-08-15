@@ -1,0 +1,23 @@
+name: Site SEO
+
+# Mechanical SEO regressions are invisible in review — a title that drifts past
+# the truncation limit still looks fine in the diff, and a page added without a
+# sitemap entry looks fine too. This gates them on the PR that causes them.
+on:
+  pull_request:
+    paths: ["site/**"]
+  push:
+    branches: [main]
+    paths: ["site/**"]
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Audit the site source
+        run: node site/seo-audit.mjs
