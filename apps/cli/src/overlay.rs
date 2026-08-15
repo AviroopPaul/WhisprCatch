@@ -5,21 +5,76 @@
 //! dismiss it.
 //!
 //! Look per docs/DESIGN.md: dark translucent rounded-full pill with a subtle
-//! ring. Listening = red pulsing LED + 4-bar waveform + label + elapsed mono
-//! timer behind a hairline. Transcribing = amber spinner + label + 3-dot
-//! progress.
+//! ring. Listening = 4-bar waveform + label. Transcribing = amber spinner +
+//! label.
 
 use std::io::BufRead;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
 use eframe::egui;
 
 use crate::theme;
 
-const W: f32 = 232.0;
+// Sized to the wider of the two states ("Transcribing…"), now that the LED and
+// the elapsed timer are gone.
+const W: f32 = 152.0;
 const H: f32 = 40.0;
+/// Gap between the pill and the bottom edge of the screen.
+const BOTTOM_GAP: f32 = 64.0;
+
+/// Bottom-centre of the display to show the pill on, in the *global* desktop
+/// coordinate space that `OuterPosition` uses.
+///
+/// egui reports the monitor's size but not its origin, which is only safe when
+/// that origin is (0,0). On macOS a second display routinely sits at a negative
+/// origin — e.g. main display 1440x900 at (0,0) with an external 1920x1080 at
+/// (-260,-1080) — so centring against the *external* monitor's size and posting
+/// it as a global position drops the pill into the dead space between screens,
+/// where it is never visible.
+///
+/// The pill should follow the user, so pick the display the pointer is on
+/// rather than always the main one, and fall back to main if that fails.
+#[cfg(target_os = "macos")]
+fn pill_position(_ctx: &egui::Context) -> Option<(f32, f32)> {
+    use core_graphics::display::CGDisplay;
+
+    let bounds = active_display_bounds().unwrap_or_else(|| CGDisplay::main().bounds());
+    Some((
+        bounds.origin.x as f32 + (bounds.size.width as f32 - W) / 2.0,
+        bounds.origin.y as f32 + bounds.size.height as f32 - H - BOTTOM_GAP,
+    ))
+}
+
+/// Bounds of the display containing the mouse pointer.
+#[cfg(target_os = "macos")]
+fn active_display_bounds() -> Option<core_graphics::geometry::CGRect> {
+    use core_graphics::display::CGDisplay;
+    use core_graphics::event::CGEvent;
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
+    let point = CGEvent::new(source).ok()?.location();
+
+    for id in CGDisplay::active_displays().ok()? {
+        let b = CGDisplay::new(id).bounds();
+        let inside = point.x >= b.origin.x
+            && point.x < b.origin.x + b.size.width
+            && point.y >= b.origin.y
+            && point.y < b.origin.y + b.size.height;
+        if inside {
+            log::info!("overlay: pointer on display {id} at {:?}", b.origin);
+            return Some(b);
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn pill_position(ctx: &egui::Context) -> Option<(f32, f32)> {
+    ctx.input(|i| i.viewport().monitor_size)
+        .map(|size| ((size.x - W) / 2.0, size.y - H - BOTTOM_GAP))
+}
 
 const STATE_LISTENING: u8 = 0;
 const STATE_TRANSCRIBING: u8 = 1;
@@ -28,7 +83,8 @@ const STATE_DONE: u8 = 2;
 pub fn run() -> anyhow::Result<()> {
     let state = Arc::new(AtomicU8::new(STATE_LISTENING));
 
-    let options = eframe::NativeOptions {
+    #[allow(unused_mut)]
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([W, H])
             .with_decorations(false)
@@ -43,6 +99,27 @@ pub fn run() -> anyhow::Result<()> {
             .with_window_type(egui::X11WindowType::Notification),
         ..Default::default()
     };
+
+    // The pill must never take keyboard focus: the daemon streams text into
+    // whatever the user is dictating into, and a focus steal sends every
+    // streamed keystroke to the overlay instead, where it is silently dropped.
+    //
+    // `with_active(false)` above is not sufficient on macOS. The daemon spawns
+    // this process with a bare fork/exec rather than through LaunchServices, so
+    // the bundle's `LSUIElement` is never applied and the process starts as a
+    // *regular* application — which activates itself on launch and becomes
+    // frontmost. Setting the policy explicitly is what LaunchServices would
+    // otherwise have done for us.
+    #[cfg(target_os = "macos")]
+    {
+        options.event_loop_builder = Some(Box::new(|builder| {
+            use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+            builder
+                .with_activation_policy(ActivationPolicy::Accessory)
+                .with_activate_ignoring_other_apps(false);
+        }));
+    }
+
     let st = state.clone();
     eframe::run_native(
         "WhisprCatch",
@@ -66,7 +143,6 @@ pub fn run() -> anyhow::Result<()> {
             });
             Ok(Box::new(Overlay {
                 state: st,
-                started: Instant::now(),
                 position_frames: 0,
                 shot: crate::shot::Shot::from_env(),
             }) as Box<dyn eframe::App>)
@@ -77,8 +153,6 @@ pub fn run() -> anyhow::Result<()> {
 
 struct Overlay {
     state: Arc<AtomicU8>,
-    /// Recording start ≈ overlay spawn (daemon spawns us on key-down).
-    started: Instant,
     /// Re-assert the position for the first frames — some WMs override the
     /// first move request, leaving the pill wherever it was initially placed.
     position_frames: u32,
@@ -98,16 +172,17 @@ impl eframe::App for Overlay {
         }
 
         if self.position_frames < 10 {
-            if let Some(size) = ctx.input(|i| i.viewport().monitor_size) {
-                let x = (size.x - W) / 2.0;
-                let y = size.y - H - 64.0;
+            if let Some((x, y)) = pill_position(ctx) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition([x, y].into()));
                 if self.position_frames == 0 {
-                    log::info!("overlay at ({x:.0},{y:.0}) on monitor {size:?}");
+                    log::info!(
+                        "overlay at global ({x:.0},{y:.0}); egui monitor_size {:?}",
+                        ctx.input(|i| i.viewport().monitor_size)
+                    );
                 }
                 self.position_frames += 1;
             } else if self.position_frames == 0 {
-                log::warn!("overlay: monitor size unknown, using WM placement");
+                log::warn!("overlay: display bounds unknown, using WM placement");
                 self.position_frames = 10;
             }
         }
@@ -134,16 +209,9 @@ impl eframe::App for Overlay {
                 );
 
                 let cy = rect.center().y;
-                // right block starts after a hairline separator
-                let sep_x = rect.right() - 62.0;
-                painter.vline(
-                    sep_x,
-                    egui::Rangef::new(cy - 9.0, cy + 9.0),
-                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26)),
-                );
 
                 if transcribing {
-                    // amber spinner (1s linear) + label + 3-dot progress
+                    // amber spinner (1s linear) + label
                     let spin = egui::pos2(rect.left() + 22.0, cy);
                     let a0 = (t % 1.0) as f32 * std::f32::consts::TAU;
                     let pts: Vec<egui::Pos2> = (0..=20)
@@ -163,28 +231,12 @@ impl eframe::App for Overlay {
                         theme::medium(13.0),
                         theme::FG,
                     );
-                    // 3 dots, sequential pulse
-                    for k in 0..3 {
-                        let phase = (t * 2.0 - k as f64 * 0.25).fract();
-                        let on = (1.0 - phase as f32).clamp(0.25, 1.0);
-                        painter.circle_filled(
-                            egui::pos2(sep_x + 19.0 + k as f32 * 12.0, cy),
-                            2.5,
-                            theme::AMBER.linear_multiply(on),
-                        );
-                    }
                 } else {
-                    // red LED, 2s ease pulse + soft halo
-                    let pulse = 0.4 + 0.6 * (0.5 + 0.5 * (t * std::f64::consts::TAU / 2.0).cos() as f32);
-                    let led = egui::pos2(rect.left() + 22.0, cy);
-                    painter.circle_filled(led, 8.0, theme::RED.linear_multiply(0.18 * pulse));
-                    painter.circle_filled(led, 4.0, theme::RED.linear_multiply(0.55 + 0.45 * pulse));
-
                     // 4-bar waveform
                     for k in 0..4 {
                         let phase = t * 6.3 + k as f64 * 1.7;
                         let h = 4.0 + 10.0 * phase.sin().abs() as f32;
-                        let x = rect.left() + 40.0 + k as f32 * 7.0;
+                        let x = rect.left() + 22.0 + k as f32 * 7.0;
                         painter.rect_filled(
                             egui::Rect::from_center_size(egui::pos2(x, cy), egui::vec2(3.0, h)),
                             1.5,
@@ -192,20 +244,11 @@ impl eframe::App for Overlay {
                         );
                     }
                     painter.text(
-                        egui::pos2(rect.left() + 72.0, cy),
+                        egui::pos2(rect.left() + 54.0, cy),
                         egui::Align2::LEFT_CENTER,
-                        "Listening…",
+                        "Listening",
                         theme::medium(13.0),
                         theme::FG,
-                    );
-                    // elapsed timer, mono, right-aligned
-                    let secs = self.started.elapsed().as_secs();
-                    painter.text(
-                        egui::pos2(rect.right() - 16.0, cy),
-                        egui::Align2::RIGHT_CENTER,
-                        format!("{}:{:02}", secs / 60, secs % 60),
-                        egui::FontId::monospace(12.0),
-                        egui::Color32::from_rgb(161, 161, 170),
                     );
                 }
             });

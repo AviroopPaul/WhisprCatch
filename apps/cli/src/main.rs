@@ -570,6 +570,12 @@ fn run_ptt(
                                     Ok(text) => {
                                         let hyp = split_words(&text);
                                         let stable = stable_prefix_len(&prev_hyp, &hyp);
+                                        log::debug!(
+                                            "streaming pass: {} words, stable={}, committed={}",
+                                            hyp.len(),
+                                            stable,
+                                            committed.len()
+                                        );
                                         if stable > committed.len() {
                                             let inj = injector.as_mut().unwrap();
                                             if !modifier_lifted {
@@ -583,6 +589,10 @@ fn run_ptt(
                                             if let Err(e) = inj.type_text(&delta) {
                                                 log::error!("streaming injection failed: {e:#}");
                                             } else {
+                                                // debug, not info: this is the
+                                                // user's speech — it should not
+                                                // reach logs by default.
+                                                log::debug!("streamed {delta:?}");
                                                 committed = hyp[..stable].to_vec();
                                             }
                                         }
