@@ -363,6 +363,46 @@ fn stable_prefix_len(prev: &[String], hyp: &[String]) -> usize {
     lcp.min(hyp.len().saturating_sub(STREAM_GUARD_WORDS))
 }
 
+/// Compare loosely — the final pass often punctuates or capitalises a word
+/// differently from the streaming guess, and that shouldn't break alignment.
+fn norm(w: &str) -> String {
+    w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()
+}
+
+/// Index in `final_words` to resume typing from, given what's already on screen.
+///
+/// Resuming at `committed.len()` assumes the final transcript opens with exactly
+/// the words already typed. It doesn't: the final pass sees the whole utterance
+/// (and may be chunked), so it revises what the streaming passes guessed — every
+/// revision before that point shifts the index and we duplicate or drop text.
+/// Align on the words themselves instead: find the longest tail of `committed`
+/// that occurs in `final_words` and continue after it.
+fn resume_at(committed: &[String], final_words: &[String]) -> usize {
+    if committed.is_empty() {
+        return 0;
+    }
+    const MAX_ANCHOR: usize = 12;
+    let c: Vec<String> = committed.iter().map(|w| norm(w)).collect();
+    let f: Vec<String> = final_words.iter().map(|w| norm(w)).collect();
+
+    let max_k = c.len().min(MAX_ANCHOR).min(f.len());
+    for k in (1..=max_k).rev() {
+        let tail = &c[c.len() - k..];
+        // Of all the places this anchor occurs, take the one nearest where we
+        // expected to be. Never "latest wins": with committed "for the" against
+        // "for the gut comedy for the grin" that would anchor on the second
+        // occurrence and silently swallow "gut comedy for the".
+        let best = (0..=f.len() - k)
+            .filter(|&j| &f[j..j + k] == tail)
+            .min_by_key(|&j| (j + k).abs_diff(c.len()));
+        if let Some(j) = best {
+            return j + k;
+        }
+    }
+    // nothing matched (the final pass reworded everything) — fall back
+    committed.len().min(final_words.len())
+}
+
 fn join_delta(committed: usize, words: &[String]) -> String {
     let mut s = words[committed..].join(" ");
     if committed > 0 {
@@ -426,6 +466,8 @@ fn run_ptt(
     let mut committed: Vec<String> = Vec::new();
     let mut prev_hyp: Vec<String> = Vec::new();
     let mut modifier_lifted = false;
+    // set once per utterance when live typing is paused, to log it only once
+    let mut stream_capped = false;
     let mut last_pass = std::time::Instant::now();
 
     // test hooks: SIGUSR1 = simulated press, SIGUSR2 = simulated release
@@ -462,6 +504,7 @@ fn run_ptt(
                 committed.clear();
                 prev_hyp.clear();
                 modifier_lifted = false;
+                stream_capped = false;
                 last_pass = std::time::Instant::now();
                 log::info!("recording...");
                 state.recording.store(true, Ordering::Relaxed);
@@ -533,8 +576,15 @@ fn run_ptt(
 
                         let final_words = split_words(&text);
                         // words already typed by rolling passes stay put; type
-                        // only what's left
-                        let start = committed.len().min(final_words.len());
+                        // only what's left, aligned on the text rather than on a
+                        // word count that the final pass may have shifted
+                        let start = resume_at(&committed, &final_words);
+                        log::debug!(
+                            "final: {} words, {} committed, resuming at {}",
+                            final_words.len(),
+                            committed.len(),
+                            start
+                        );
                         if let Some(inj) = injector.as_mut() {
                             // let the user finish releasing the modifier so
                             // injected keys don't combine with it
@@ -564,7 +614,22 @@ fn run_ptt(
                 {
                     last_pass = std::time::Instant::now();
                     if let Some(cap) = capture.as_ref() {
-                        if cap.armed_secs() >= 0.5 {
+                        // Each pass re-transcribes the whole utterance so far, so
+                        // its cost grows with the utterance. Past a point a pass
+                        // takes longer than the interval, so they queue up, peg
+                        // the CPU and lag the live text — and beyond Moonshine's
+                        // 64s ceiling they fail outright. Stop streaming there and
+                        // let the (chunked) final pass finish the job.
+                        let armed = cap.armed_secs();
+                        if armed >= wc_core::engine::MAX_CHUNK_SECS {
+                            if !stream_capped {
+                                stream_capped = true;
+                                log::info!(
+                                    "{armed:.0}s utterance — live typing paused, \
+                                     the rest lands on release"
+                                );
+                            }
+                        } else if armed >= 0.5 {
                             if let Ok(snap) = cap.snapshot() {
                                 match engine.transcribe(&snap) {
                                     Ok(text) => {
@@ -614,4 +679,75 @@ fn run_ptt(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn w(s: &str) -> Vec<String> {
+        s.split_whitespace().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn resumes_after_the_committed_tail() {
+        let committed = w("the whole emotional spectrum");
+        let final_words = w("he covers the whole emotional spectrum drama for the gut");
+        // must continue at "drama", not re-type the anchor
+        assert_eq!(resume_at(&committed, &final_words), 6);
+    }
+
+    #[test]
+    fn survives_the_final_pass_rewording_earlier_text() {
+        // streaming heard "in a fellow", the final pass corrected it to
+        // "in othello" — the word count still matches but the words differ,
+        // which is precisely what broke the index splice
+        let committed = w("jealousy in a fellow is invisible");
+        let final_words = w("jealousy in othello is invisible but utterly destructive");
+        assert_eq!(resume_at(&committed, &final_words), 5);
+    }
+
+    #[test]
+    fn ignores_case_and_punctuation_when_aligning() {
+        let committed = w("covers the whole emotional spectrum");
+        let final_words = w("Covers the whole emotional spectrum. Drama for the gut");
+        assert_eq!(resume_at(&committed, &final_words), 5);
+    }
+
+    #[test]
+    fn anchors_a_repeated_phrase_nearest_the_expected_position() {
+        // "for the" occurs twice. Only two words have been typed, so the first
+        // occurrence is the real one — anchoring on the later one would skip
+        // "gut comedy for the" entirely.
+        let committed = w("for the");
+        let final_words = w("for the gut comedy for the grin");
+        assert_eq!(resume_at(&committed, &final_words), 2);
+    }
+
+    #[test]
+    fn anchors_late_when_that_is_where_we_actually_are() {
+        // same repeated phrase, but six words are already typed — now the
+        // second occurrence is the right one
+        let committed = w("for the gut comedy for the");
+        let final_words = w("for the gut comedy for the grin");
+        assert_eq!(resume_at(&committed, &final_words), 6);
+    }
+
+    #[test]
+    fn nothing_committed_types_everything() {
+        assert_eq!(resume_at(&[], &w("a b c")), 0);
+    }
+
+    #[test]
+    fn no_overlap_falls_back_to_the_word_count() {
+        let committed = w("completely different words here");
+        let final_words = w("nothing in common at all whatsoever");
+        assert_eq!(resume_at(&committed, &final_words), 4);
+    }
+
+    #[test]
+    fn final_shorter_than_committed_does_not_panic() {
+        let committed = w("one two three four five");
+        assert_eq!(resume_at(&committed, &w("five")), 1);
+    }
 }
