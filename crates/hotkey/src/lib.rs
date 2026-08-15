@@ -85,6 +85,25 @@ pub fn keyboard_accessible() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 
+/// macOS only: whether Input Monitoring is granted (what the CGEventTap needs).
+/// This is a separate TCC permission from Accessibility — a user can grant one
+/// and not the other, which looks like "the hotkey does nothing". No-op elsewhere.
+#[cfg(target_os = "macos")]
+pub fn input_monitoring_granted() -> bool {
+    #[link(name = "IOKit", kind = "framework")]
+    extern "C" {
+        fn IOHIDCheckAccess(request_type: u32) -> u32;
+    }
+    const K_IOHID_REQUEST_TYPE_LISTEN_EVENT: u32 = 1;
+    const K_IOHID_ACCESS_TYPE_GRANTED: u32 = 0;
+    unsafe { IOHIDCheckAccess(K_IOHID_REQUEST_TYPE_LISTEN_EVENT) == K_IOHID_ACCESS_TYPE_GRANTED }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn input_monitoring_granted() -> bool {
+    keyboard_accessible()
+}
+
 /// macOS only: show the system Accessibility prompt, which also registers
 /// WhisprCatch in System Settings › Privacy › Accessibility so the user can
 /// toggle it on. Returns the current trust state. No-op elsewhere.

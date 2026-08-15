@@ -744,6 +744,14 @@ impl App {
             self.output_card(ui);
             ui.add_space(18.0);
 
+            #[cfg(target_os = "macos")]
+            {
+                theme::section_label(ui, "Permissions");
+                ui.add_space(6.0);
+                self.permissions_card(ui);
+                ui.add_space(18.0);
+            }
+
             theme::section_label(ui, "About");
             ui.add_space(6.0);
             self.about_card(ui);
@@ -952,6 +960,86 @@ impl App {
             Self::setting_row(ui, "Start on login", "Launch the daemon with your session", |ui| {
                 theme::toggle(ui, &mut self.autostart_on);
             });
+        });
+    }
+
+    /// macOS permission manager — live status plus a jump to each Privacy pane.
+    /// The wizard only guides the first grant; this is where a user fixes a
+    /// permission they skipped or that got revoked.
+    #[cfg(target_os = "macos")]
+    fn permissions_card(&mut self, ui: &mut egui::Ui) {
+        fn open_pane(anchor: &str) {
+            let _ = std::process::Command::new("open")
+                .arg(format!(
+                    "x-apple.systempreferences:com.apple.preference.security?{anchor}"
+                ))
+                .status();
+        }
+
+        // `granted: None` for Microphone — there is no cheap way to read its TCC
+        // state without triggering the prompt, and it is requested on first
+        // capture anyway, so we show the pane link without a verdict.
+        fn row(ui: &mut egui::Ui, label: &str, desc: &str, granted: Option<bool>, anchor: &str) {
+            App::setting_row(ui, label, desc, |ui| {
+                if ghost_button(ui, "Open").clicked() {
+                    open_pane(anchor);
+                }
+                ui.add_space(8.0);
+                match granted {
+                    Some(true) => {
+                        ui.label(
+                            egui::RichText::new(format!("{} granted", icons::CHECK))
+                                .small()
+                                .color(theme::GREEN),
+                        );
+                    }
+                    Some(false) => {
+                        ui.label(
+                            egui::RichText::new("not granted")
+                                .small()
+                                .color(theme::AMBER),
+                        );
+                    }
+                    None => {}
+                }
+            });
+            ui.add_space(10.0);
+        }
+
+        let acc = wc_hotkey::keyboard_accessible();
+        let inp = wc_hotkey::input_monitoring_granted();
+
+        theme::card(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            row(
+                ui,
+                "Accessibility",
+                "Types transcribed text into the focused app",
+                Some(acc),
+                "Privacy_Accessibility",
+            );
+            row(
+                ui,
+                "Input Monitoring",
+                "Notices the push-to-talk key globally",
+                Some(inp),
+                "Privacy_ListenEvent",
+            );
+            row(
+                ui,
+                "Microphone",
+                "Captures speech while the key is held",
+                None,
+                "Privacy_Microphone",
+            );
+            ui.label(
+                egui::RichText::new(
+                    "macOS only re-reads these when an app starts. After enabling one, \
+                     quit WhisprCatch (menu bar → Quit) and open it again.",
+                )
+                .small()
+                .color(theme::MUTED),
+            );
         });
     }
 

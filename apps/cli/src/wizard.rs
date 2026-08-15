@@ -43,6 +43,15 @@ enum DlMsg {
     Failed(String),
 }
 
+#[cfg(target_os = "macos")]
+pub fn need_setup(model: ModelId) -> bool {
+    // macOS permission grants only register after an app relaunch, so we never
+    // hard-gate first-run on them (that traps the user in the wizard). The
+    // wizard guides granting; Settings › Permissions manages it afterwards.
+    !model.spec().is_complete(&wc_core::models_dir())
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn need_setup(model: ModelId) -> bool {
     !wc_hotkey::keyboard_accessible() || !model.spec().is_complete(&wc_core::models_dir())
 }
@@ -502,26 +511,44 @@ impl eframe::App for Wizard {
                             ui.add(egui::Spinner::new().size(20.0).color(theme::AMBER));
                             ui.add_space(4.0);
                             ui.label(
-                                egui::RichText::new("Waiting for authorization…")
-                                    .small()
-                                    .color(theme::MUTED),
+                                egui::RichText::new(if cfg!(target_os = "macos") {
+                                    "Opening System Settings…"
+                                } else {
+                                    "Waiting for authorization…"
+                                })
+                                .small()
+                                .color(theme::MUTED),
                             );
-                        } else if primary_button(
-                            ui,
-                            "Grant keyboard access…",
-                            egui::vec2(240.0, 40.0),
-                        )
-                        .clicked()
-                        {
-                            let (tx, r) = mpsc::channel();
-                            *rx = Some(r);
-                            *granting = true;
-                            *error = None;
-                            let ctx2 = ui.ctx().clone();
-                            std::thread::spawn(move || {
-                                let _ = tx.send(grant_keyboard_access());
-                                ctx2.request_repaint();
-                            });
+                        } else {
+                            let label = if cfg!(target_os = "macos") {
+                                "Open Privacy Settings…"
+                            } else {
+                                "Grant keyboard access…"
+                            };
+                            if primary_button(ui, label, egui::vec2(240.0, 40.0)).clicked() {
+                                let (tx, r) = mpsc::channel();
+                                *rx = Some(r);
+                                *granting = true;
+                                *error = None;
+                                let ctx2 = ui.ctx().clone();
+                                std::thread::spawn(move || {
+                                    let _ = tx.send(grant_keyboard_access());
+                                    ctx2.request_repaint();
+                                });
+                            }
+                            // macOS caches TCC grants per process, so a permission
+                            // just granted still reads as denied until relaunch.
+                            // Never trap the user here — let them finish later.
+                            #[cfg(target_os = "macos")]
+                            {
+                                ui.add_space(10.0);
+                                if ui
+                                    .small_button("Continue — I'll grant these later")
+                                    .clicked()
+                                {
+                                    next = Some(Step::first_download(model));
+                                }
+                            }
                         }
                     }
                     Step::Download { .. } => {
