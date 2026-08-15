@@ -487,6 +487,17 @@ fn run_ptt(
                         continue;
                     }
                 };
+                // An empty final transcript is the difference between "a bit
+                // was lost" and "everything after the last streamed word was
+                // lost", so record what actually went in.
+                let level = (samples.iter().map(|s| s * s).sum::<f32>()
+                    / samples.len().max(1) as f32)
+                    .sqrt();
+                log::debug!(
+                    "final input: {} samples ({:.1}s), rms {level:.4}",
+                    samples.len(),
+                    samples.len() as f32 / wc_core::SAMPLE_RATE as f32
+                );
                 let t0 = std::time::Instant::now();
                 let result = engine.transcribe(&samples);
                 if let Some(o) = overlay_proc.take() {

@@ -29,6 +29,10 @@ const MAX_ANCHOR: usize = 12;
 /// Shortest anchor we will trust. A one- or two-word anchor ("the", "and so")
 /// matches almost anywhere and would resume in the wrong place.
 const MIN_ANCHOR: usize = 3;
+/// How far back the duplicate-trim will look. This has to cover a whole
+/// window's worth of words, not just an anchor: when the anchor fails we replay
+/// the window from its start, and the trim is what stops that being visible.
+const MAX_TRIM: usize = 64;
 
 pub fn split_words(text: &str) -> Vec<String> {
     text.split_whitespace().map(str::to_string).collect()
@@ -125,7 +129,7 @@ pub fn resume_at(committed: &[String], final_words: &[String]) -> usize {
 fn overlap_with_committed(committed: &[String], delta: &[String]) -> usize {
     let c = normalized(committed);
     let d = normalized(delta);
-    let max = c.len().min(d.len()).min(MAX_ANCHOR);
+    let max = c.len().min(d.len()).min(MAX_TRIM);
     (1..=max)
         .rev()
         .find(|&k| c[c.len() - k..] == d[..k])
@@ -209,10 +213,26 @@ impl Stream {
     /// Feed the hypothesis for the current window; returns the words to type.
     pub fn advance(&mut self, hyp: Vec<String>) -> Vec<String> {
         if self.needs_anchor {
-            // Re-locate ourselves in the new window. If we can't, treat the
-            // whole window as already typed rather than risk repeating it —
-            // the final pass re-transcribes everything and fills any gap.
-            self.committed_in_window = anchor_in_window(&self.committed, &hyp).unwrap_or(hyp.len());
+            // Re-locate ourselves in the new window.
+            //
+            // When that fails, start from the beginning of the window and let
+            // `overlap_with_committed` strip whatever turns out to be a repeat.
+            // The opposite fallback — assuming the window is already typed —
+            // loses everything in it, and nothing downstream can recover it:
+            // the final pass only ever *appends* its tail, so a hole in the
+            // middle is permanent. Duplicated words are recoverable by the
+            // reader; deleted words are not.
+            self.committed_in_window = match anchor_in_window(&self.committed, &hyp) {
+                Some(i) => i,
+                None => {
+                    log::debug!(
+                        "no anchor in a {}-word window after sliding; \
+                         replaying it and trimming any repeat",
+                        hyp.len()
+                    );
+                    0
+                }
+            };
             self.needs_anchor = false;
             self.prev_hyp = hyp;
             // no previous hypothesis in this window yet, so nothing has settled
@@ -402,18 +422,54 @@ mod tests {
     }
 
     #[test]
-    fn unanchorable_slide_emits_nothing_rather_than_repeating() {
+    fn unanchorable_slide_still_emits_the_window_rather_than_losing_it() {
+        // Regression: the anchor failing used to mark the whole window as
+        // already typed, which silently deleted every word in it. Nothing
+        // downstream can recover that — the final pass only appends its tail,
+        // so a hole in the middle is permanent. Observed live as ~15 words lost
+        // at each of seven slides in a 75s dictation.
         let mut s = Stream::new();
         s.advance(w("alpha beta gamma delta"));
         s.advance(w("alpha beta gamma delta epsilon"));
-        let before = s.committed().to_vec();
+        assert!(!s.committed().is_empty());
 
         s.maybe_slide(secs(MAX_WINDOW_SECS + 1.0), RATE);
-        // window shares no text with what we typed — must not replay it
+        // window shares no text with what we typed: we must still say it
         assert!(s.advance(w("totally unrelated words here")).is_empty());
-        let out = s.advance(w("totally unrelated words here again"));
-        for word in &out {
-            assert!(!before.contains(word), "replayed {word:?}");
+        let out = s.advance(w("totally unrelated words here now"));
+        assert!(
+            !out.is_empty(),
+            "an unanchorable window must be replayed, not dropped"
+        );
+        assert!(out.contains(&"totally".to_string()), "lost the window: {out:?}");
+    }
+
+    #[test]
+    fn unanchorable_slide_does_not_duplicate_what_is_already_typed() {
+        // the other half of the trade: replaying the window must not put text
+        // back on screen that is already there
+        let mut s = Stream::new();
+        s.advance(w("one two three four five six"));
+        s.advance(w("one two three four five six seven"));
+        let before = s.committed().to_vec();
+        assert!(before.len() >= 4);
+
+        s.maybe_slide(secs(MAX_WINDOW_SECS + 1.0), RATE);
+        // the new window re-transcribes what we already typed, then continues,
+        // but reworded early enough that the anchor cannot match
+        let mut hyp = w("XX YY");
+        hyp.extend(before.iter().cloned());
+        s.advance(hyp.clone());
+        hyp.extend(w("eight nine"));
+        let out = s.advance(hyp);
+
+        let joined: Vec<String> = before.iter().chain(out.iter()).cloned().collect();
+        for i in 0..joined.len().saturating_sub(5) {
+            assert_ne!(
+                joined[i..i + 3],
+                joined[i + 3..i + 6],
+                "duplicated run in {joined:?}"
+            );
         }
     }
 

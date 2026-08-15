@@ -187,3 +187,60 @@ fn resample(input: &[f32], from: u32, to: u32) -> Result<Vec<f32>> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The live path captures at the device rate (48 kHz on a MacBook) and
+    /// resamples every snapshot and the final utterance down to 16 kHz. File
+    /// based testing feeds 16 kHz straight in and never exercises this, so it
+    /// gets its own coverage — a resampler that silently drops or zeroes long
+    /// inputs would empty out exactly the final pass and nothing else.
+    fn rms(x: &[f32]) -> f32 {
+        (x.iter().map(|s| s * s).sum::<f32>() / x.len().max(1) as f32).sqrt()
+    }
+
+    fn tone(secs: f32, rate: u32) -> Vec<f32> {
+        let n = (secs * rate as f32) as usize;
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / rate as f32;
+                0.3 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn resamples_48k_to_16k_preserving_length_and_level() {
+        for secs in [1.0f32, 30.0, 75.0, 120.0] {
+            let input = tone(secs, 48_000);
+            let out = resample(&input, 48_000, SAMPLE_RATE).expect("resample");
+            let expected = (secs * SAMPLE_RATE as f32) as usize;
+            let drift = (out.len() as f32 - expected as f32).abs() / expected as f32;
+            assert!(
+                drift < 0.02,
+                "{secs}s: got {} samples, expected ~{expected} ({:.1}% off)",
+                out.len(),
+                drift * 100.0
+            );
+            let level = rms(&out);
+            assert!(
+                level > 0.1,
+                "{secs}s: output is near-silent (rms {level:.4}) — input rms {:.4}",
+                rms(&input)
+            );
+        }
+    }
+
+    #[test]
+    fn resampled_output_is_not_mostly_silence_at_the_tail() {
+        // a long input whose *end* goes quiet must still carry signal earlier on
+        let input = tone(75.0, 48_000);
+        let out = resample(&input, 48_000, SAMPLE_RATE).expect("resample");
+        let quarter = out.len() / 4;
+        for (i, part) in out.chunks(quarter.max(1)).take(4).enumerate() {
+            assert!(rms(part) > 0.1, "quarter {i} is silent (rms {:.4})", rms(part));
+        }
+    }
+}
