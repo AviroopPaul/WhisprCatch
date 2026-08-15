@@ -5134,6 +5134,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wc-text"
+version = "0.4.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
 name = "wc-tray"
 version = "0.4.0"
 dependencies = [
@@ -5327,6 +5336,7 @@ dependencies = [
  "log",
  "notify-rust",
  "serde",
+ "serde_json",
  "signal-hook",
  "toml 0.9.12+spec-1.1.0",
  "transcribe-rs",
@@ -5334,6 +5344,7 @@ dependencies = [
  "wc-hotkey",
  "wc-inject",
  "wc-models",
+ "wc-text",
  "wc-tray",
  "winit",
 ]

@@ -199,6 +199,9 @@ fn main() -> Result<()> {
     log::info!("model loaded in {:.1}s", t0.elapsed().as_secs_f32());
 
     match cmd {
+        // Engine smoke tests: Transcribe and Record below print the model's own
+        // output, deliberately unpolished, so a cleanup bug (#36) can be told
+        // apart from a model one.
         Cmd::Transcribe { wav } => {
             let samples = transcribe_rs::audio::read_wav_samples(&wav)
                 .map_err(|e| anyhow::anyhow!("{e}"))
@@ -278,6 +281,24 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The transcription→injection seam (#40): run the polish chain over the raw
+/// transcript and decide what history should keep.
+///
+/// Returns `(text_to_type, raw_for_history)`. `raw` is `Some` only when polish
+/// actually changed something — there is no point storing two copies of an
+/// untouched transcript, and undo (#42) has nothing to undo. Kept as a free
+/// function so the seam is testable without a model or a microphone.
+fn finish(polish: &wc_text::Polish, raw: String) -> (String, Option<String>) {
+    let text = polish.apply(&raw);
+    if text == raw {
+        return (text, None);
+    }
+    // debug, not info: this is the user's speech — it should not reach logs
+    // by default.
+    log::debug!("polish: {raw:?} -> {text:?}");
+    (text, Some(raw))
 }
 
 /// No terminal attached — launched from the app menu / autostart.
@@ -387,6 +408,26 @@ fn run_ptt(
 
     // resolve before any upgrade can replace the binary under us
     let self_exe = std::env::current_exe().context("resolving own binary path")?;
+
+    // The deterministic cleanup chain (#40). Built once: it is pure, so the
+    // same chain serves every utterance. Empty unless the user enabled a
+    // transform, in which case `apply` is the identity function.
+    let polish = wc_text::Polish::from_config(&cfg.polish);
+    if polish.is_empty() {
+        log::debug!("text polish: nothing enabled");
+    } else {
+        log::info!("text polish: {}", polish.names().join(" -> "));
+        if cfg.streaming && polish.has_rewriting_transforms() {
+            // Streaming types words as they settle; polish only runs on the
+            // final transcript. A transform that deletes text cannot take back
+            // what is already on screen, so live output stays unpolished until
+            // injector replace (#41) and streaming reconciliation (#50) land.
+            log::warn!(
+                "streaming is on and the polish chain rewrites text — words typed \
+                 live are not polished until #50 lands"
+            );
+        }
+    }
 
     let events = wc_hotkey::listen(key)?;
     let mut injector = if print_only {
@@ -507,9 +548,13 @@ fn run_ptt(
                     Ok(text) if text.is_empty() && stream.committed().is_empty() => {
                         log::info!("(empty transcript)")
                     }
-                    Ok(text) => {
+                    Ok(raw) => {
                         let infer_s = t0.elapsed().as_secs_f32();
                         log::info!("{dur:.1}s audio → {infer_s:.2}s inference (final)");
+                        // The seam (#40): every deterministic cleanup pass runs
+                        // here, on the finished transcript, before history and
+                        // before a single character is typed.
+                        let (text, polished_from) = finish(&polish, raw);
                         state.record_utterance(text.split_whitespace().count(), dur);
                         if cfg.history {
                             let entry = wc_core::history::Entry {
@@ -520,6 +565,7 @@ fn run_ptt(
                                 dur_s: dur,
                                 infer_s,
                                 text: text.clone(),
+                                raw: polished_from,
                             };
                             if let Err(e) = wc_core::history::append(&entry) {
                                 log::warn!("history write failed: {e:#}");
@@ -712,4 +758,127 @@ fn simulate_stream(engine: &mut Engine, wav: &std::path::Path, window: f32) -> R
     println!("--- REFERENCE ---");
     println!("{reference}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wc_text::{BoxedTransform, Polish, PolishConfig, Transform};
+
+    /// A transform that actually changes text, standing in for the real ones
+    /// until #43-#48 land. Nothing in `wc-text` changes a byte yet, so this is
+    /// the only way to exercise the "polish changed it" branch of the seam.
+    struct Shout;
+    impl Transform for Shout {
+        fn name(&self) -> &'static str {
+            "shout"
+        }
+        fn apply(&self, text: &str) -> String {
+            text.to_uppercase()
+        }
+        fn append_safe(&self) -> bool {
+            true
+        }
+    }
+
+    fn shouty() -> Polish {
+        Polish::from_transforms(vec![Box::new(Shout) as BoxedTransform])
+    }
+
+    /// The promise this whole issue makes: with nothing enabled a dictation
+    /// round-trip is byte-identical to v0.4.0, and history gains nothing.
+    #[test]
+    fn a_default_chain_changes_nothing_and_stores_no_raw() {
+        let polish = Polish::from_config(&PolishConfig::default());
+        for raw in [
+            "",
+            "hello world",
+            "Um, I mean, twenty five percent.",
+            "naïve café 👩‍💻 🚀",
+            "  spaced  out  \n",
+        ] {
+            let (text, stored) = finish(&polish, raw.to_string());
+            assert_eq!(text, raw, "polish changed {raw:?}");
+            assert_eq!(stored, None, "stored a raw copy for unchanged {raw:?}");
+        }
+    }
+
+    #[test]
+    fn a_changing_chain_types_the_polished_text_and_keeps_the_raw() {
+        let (text, stored) = finish(&shouty(), "hello world".to_string());
+        assert_eq!(text, "HELLO WORLD");
+        assert_eq!(stored.as_deref(), Some("hello world"));
+    }
+
+    /// A transform that happens to be a no-op on this input must not fill
+    /// history with a duplicate of the text sitting next to it.
+    #[test]
+    fn no_raw_is_stored_when_the_chain_makes_no_difference() {
+        let (text, stored) = finish(&shouty(), "ALREADY SHOUTING".to_string());
+        assert_eq!(text, "ALREADY SHOUTING");
+        assert_eq!(stored, None);
+    }
+
+    /// What actually lands on disk, end to end: an unpolished utterance writes
+    /// the exact line shape v0.4.0 wrote, and a polished one adds `raw`.
+    #[test]
+    fn history_lines_match_the_old_format_until_polish_changes_something() {
+        let line = |polish: &Polish, raw: &str| {
+            let (text, stored) = finish(polish, raw.to_string());
+            serde_json::to_string(&wc_core::history::Entry {
+                ts: 1_754_000_000,
+                dur_s: 2.5,
+                infer_s: 0.31,
+                text,
+                raw: stored,
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            line(
+                &Polish::from_config(&PolishConfig::default()),
+                "hello world"
+            ),
+            r#"{"ts":1754000000,"dur_s":2.5,"infer_s":0.31,"text":"hello world"}"#
+        );
+        assert_eq!(
+            line(&shouty(), "hello world"),
+            r#"{"ts":1754000000,"dur_s":2.5,"infer_s":0.31,"text":"HELLO WORLD","raw":"hello world"}"#
+        );
+    }
+
+    /// The stats the tray shows count what the user actually got, not what the
+    /// model said — filler removal should lower the word count, not keep it.
+    #[test]
+    fn word_count_is_taken_from_the_polished_text() {
+        struct DropLast;
+        impl Transform for DropLast {
+            fn name(&self) -> &'static str {
+                "drop_last"
+            }
+            fn apply(&self, text: &str) -> String {
+                let mut w: Vec<&str> = text.split_whitespace().collect();
+                w.pop();
+                w.join(" ")
+            }
+            fn append_safe(&self) -> bool {
+                false
+            }
+        }
+        let polish = Polish::from_transforms(vec![Box::new(DropLast) as BoxedTransform]);
+        let (text, _) = finish(&polish, "one two three um".to_string());
+        assert_eq!(text.split_whitespace().count(), 3);
+    }
+
+    /// The words already typed by streaming passes are spliced against the
+    /// final transcript. Polish runs before that splice, so an append-safe
+    /// chain must still leave `resume_at` able to find its place.
+    #[test]
+    fn polished_text_still_splices_onto_what_streaming_typed() {
+        let polish = Polish::from_config(&PolishConfig::default());
+        let (text, _) = finish(&polish, "the whole emotional spectrum drama".to_string());
+        let final_words = split_words(&text);
+        let committed = split_words("the whole emotional spectrum");
+        assert_eq!(resume_at(&committed, &final_words), 4);
+    }
 }

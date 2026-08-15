@@ -18,6 +18,12 @@ pub struct Config {
     pub streaming: bool,
     /// Show the floating recording indicator while dictating
     pub overlay: bool,
+    /// Deterministic text cleanup (#36). Every transform ships off, so a
+    /// config that predates this section behaves exactly as it did.
+    ///
+    /// Must stay last: TOML puts tables after scalars, and
+    /// `toml::to_string_pretty` errors out if a plain value follows a table.
+    pub polish: wc_text::PolishConfig,
 }
 
 impl Default for Config {
@@ -33,6 +39,7 @@ impl Default for Config {
             history: true,
             streaming: true,
             overlay: true,
+            polish: wc_text::PolishConfig::default(),
         }
     }
 }
@@ -108,4 +115,90 @@ pub fn save(cfg: &Config) -> Result<()> {
     std::fs::create_dir_all(path.parent().unwrap())?;
     std::fs::write(&path, toml::to_string_pretty(cfg)?)
         .with_context(|| format!("writing {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verbatim `config.toml` as v0.4.0 wrote it — no `[polish]` section.
+    const V0_4_CONFIG: &str = "\
+key = \"ralt\"
+model = \"parakeet\"
+history = true
+streaming = true
+overlay = true
+";
+
+    /// The upgrade path for every existing user. Failing to parse here means
+    /// the daemon refuses to start after an update.
+    #[test]
+    fn a_config_written_before_polish_still_loads() {
+        let cfg: Config = toml::from_str(V0_4_CONFIG).unwrap();
+        assert_eq!(cfg.key, "ralt");
+        assert_eq!(cfg.model, "parakeet");
+        assert!(cfg.history);
+        assert!(
+            wc_text::Polish::from_config(&cfg.polish).is_empty(),
+            "an absent [polish] section must mean every transform off"
+        );
+    }
+
+    /// An even older file, from before `streaming`/`overlay` existed. The
+    /// struct-level `#[serde(default)]` is what makes this work; this test is
+    /// here so nobody removes it.
+    #[test]
+    fn a_minimal_config_fills_every_missing_field() {
+        let cfg: Config = toml::from_str("key = \"rctrl\"\n").unwrap();
+        assert_eq!(cfg.key, "rctrl");
+        assert_eq!(cfg.model, Config::default().model);
+        assert!(wc_text::Polish::from_config(&cfg.polish).is_empty());
+    }
+
+    #[test]
+    fn empty_config_equals_defaults() {
+        let cfg: Config = toml::from_str("").unwrap();
+        let def = Config::default();
+        assert_eq!(cfg.key, def.key);
+        assert_eq!(cfg.model, def.model);
+        assert_eq!(cfg.history, def.history);
+        assert_eq!(cfg.streaming, def.streaming);
+        assert_eq!(cfg.overlay, def.overlay);
+    }
+
+    /// `toml` refuses to serialize a plain value after a table, so adding a
+    /// scalar field below `polish` would make Settings → Save panic at
+    /// runtime with nothing at compile time to catch it.
+    #[test]
+    fn default_config_round_trips_through_toml() {
+        let text = toml::to_string_pretty(&Config::default())
+            .expect("scalar fields must be declared before `polish`");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.key, Config::default().key);
+        assert!(wc_text::Polish::from_config(&back.polish).is_empty());
+    }
+
+    #[test]
+    fn an_enabled_transform_survives_a_save_load_cycle() {
+        let mut cfg = Config::default();
+        cfg.polish.fillers.enabled = true;
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(
+            wc_text::Polish::from_config(&back.polish).names(),
+            ["fillers"]
+        );
+    }
+
+    /// A newer build writes settings this one has never heard of; ignoring
+    /// them beats refusing to start.
+    #[test]
+    fn unknown_keys_do_not_break_loading() {
+        let cfg: Config = toml::from_str(&format!(
+            "{V0_4_CONFIG}tone = \"casual\"\n\n[polish.tone]\nenabled = true\n"
+        ))
+        .unwrap();
+        assert_eq!(cfg.key, "ralt");
+        assert!(wc_text::Polish::from_config(&cfg.polish).is_empty());
+    }
 }
