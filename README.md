@@ -26,6 +26,19 @@ Local push-to-talk dictation for **macOS and Linux** — no cloud, no account, n
 - **Real punctuation and capitalization.** The model emits properly punctuated text — no "period" or "comma" voice commands.
 - **Fast.** ~25× realtime on CPU; live typing streams words while you're still speaking, the rest lands the moment you release the key.
 
+## The app
+
+Most of the time it's a menu-bar icon and a small pill while you talk. Open it and
+there's a searchable log of what you've dictated, plus settings — all local.
+
+![The WhisprCatch window: a searchable list of past transcripts on the left, the selected transcript on the right with duration, word count and inference time](docs/screenshots/app-history.png)
+
+| First run | Settings |
+| --- | --- |
+| ![First-run setup: the three macOS permissions as a checklist, each with live status and its own button](docs/screenshots/setup-permissions.png) | ![Settings: speech model, push-to-talk key, output behaviour toggles and permissions](docs/screenshots/app-settings.png) |
+
+<sub>Transcripts shown are sample text, not a real history.</sub>
+
 ## Install
 
 ### macOS (Apple Silicon)

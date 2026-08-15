@@ -70,8 +70,8 @@ impl ModelId {
     /// Short human label for the settings dropdown.
     pub const fn label(self) -> &'static str {
         match self {
-            ModelId::Parakeet => "Parakeet 0.6B — accurate",
-            ModelId::Moonshine => "Moonshine base — light",
+            ModelId::Parakeet => "Parakeet 0.6B, accurate",
+            ModelId::Moonshine => "Moonshine base, light",
         }
     }
 
@@ -79,10 +79,10 @@ impl ModelId {
     pub const fn blurb(self) -> &'static str {
         match self {
             ModelId::Parakeet => {
-                "Best English accuracy. Heavier — best on 16 GB+ machines."
+                "Best English accuracy. Heavier, best on 16 GB+ machines."
             }
             ModelId::Moonshine => {
-                "Tiny and fast. Low memory — ideal for an 8 GB MacBook Air."
+                "Tiny and fast. Low memory, ideal for an 8 GB MacBook Air."
             }
         }
     }
@@ -244,7 +244,7 @@ fn download(
         spec.name,
         spec.size as f64 / 1e6,
         if offset > 0 {
-            format!(" — resuming at {:.0} MB", offset as f64 / 1e6)
+            format!(", resuming at {:.0} MB", offset as f64 / 1e6)
         } else {
             String::new()
         }
@@ -295,7 +295,7 @@ fn download(
 
     if done != spec.size {
         bail!(
-            "{}: incomplete download ({done} of {} bytes) — rerun to resume",
+            "{}: incomplete download ({done} of {} bytes). Rerun to resume",
             spec.name,
             spec.size
         );
@@ -303,7 +303,7 @@ fn download(
     let digest = hex::encode(hasher.finalize());
     if digest != spec.sha256 {
         std::fs::remove_file(&part).ok();
-        bail!("{}: checksum mismatch (got {digest}) — corrupted download removed, rerun", spec.name);
+        bail!("{}: checksum mismatch (got {digest}). Corrupted download removed, rerun", spec.name);
     }
     std::fs::rename(&part, dest)?;
     log::info!("  {} — verified", spec.name);
