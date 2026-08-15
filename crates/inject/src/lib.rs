@@ -278,6 +278,11 @@ impl Injector {
     /// later replace cannot be counted against a screen we are unsure of.
     pub fn replace_last(&mut self, n_chars: usize, new_text: &str) -> Result<()> {
         if secure_input_active() {
+            // Dropping the record here is not just caution about this call.
+            // Secure Input drops synthetic keystrokes silently, so any earlier
+            // `type_text` may have reported success while nothing reached the
+            // screen — the record could already be describing text that does
+            // not exist, and backspacing against it would eat the user's.
             self.typed.forget();
             anyhow::bail!(
                 "secure input is enabled (a password field has focus); \
