@@ -325,12 +325,15 @@ section { position: relative; }
 @keyframes bar { 0%, 100% { transform: scaleY(.6); } 50% { transform: scaleY(1); } }
 
 /* ---------------- tape ---------------- */
-.tape-wrap { overflow: hidden; }
+/* The ribbon is tilted, so it has to be wider than the viewport (its ends hang
+   off both sides) and the wrapper has to be taller than the ribbon (the tilt
+   lifts one end above it). Get either wrong and the ends show up as cut corners. */
+.tape-wrap { overflow: hidden; padding: clamp(18px, 2.6vw, 44px) 0; }
 .tape {
+  width: 116%; margin-left: -8%;
   background: var(--ink); color: var(--paper);
-  transform: rotate(-1.6deg) scale(1.04);
+  transform: rotate(-1.6deg);
   padding: 15px 0; overflow: hidden; white-space: nowrap;
-  border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink);
 }
 .tape .track { display: inline-flex; gap: 0; animation: slide 38s linear infinite; }
 .tape .track span {
@@ -427,7 +430,10 @@ input[type="range"]::-moz-range-thumb {
   background: var(--paper-2); border: 1px solid var(--rule); border-radius: var(--r-pill);
   padding: 11px 20px; font: 500 14.5px/1 var(--sans); color: var(--ink-2); white-space: nowrap;
 }
-.chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--mint); flex: none; }
+/* the app mark, referenced out of the sprite; colour comes from an inline
+   brand hex on the <svg>, which is why these are not tokens */
+.chip .ico { width: 17px; height: 17px; flex: none; }
+.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
 
 /* ---------------- feature split ---------------- */
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(24px, 4vw, 60px); align-items: center; }

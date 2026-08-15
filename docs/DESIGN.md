@@ -69,6 +69,12 @@ Warm cream canvas, near-black ink, deep green for full-bleed blocks, one mint ac
 Rules: mint fills buttons and small marks only, never large areas. Forest sections always
 carry a serif headline. No gradients except the single mint bloom behind the hero.
 
+The one exception to "never hand-pick a colour" is third-party app marks. They live in an
+inline `<symbol>` sprite at the top of the page, are referenced with `<use href="#i-name">`,
+and take their brand hex from an inline `style="color:…"` on the `<svg>`. Those hexes belong
+to their owners, so they are not tokens and must not be reused for anything else. The marks
+are shown to say where WhisprCatch types, nothing more.
+
 ## A3. Geometry, elevation, motion
 
 - Content column `1140px`, prose/FAQ column `800px`, page padding `24px`.
