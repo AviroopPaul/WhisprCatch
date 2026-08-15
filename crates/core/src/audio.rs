@@ -95,17 +95,43 @@ impl Capture {
     /// Copy of the utterance so far (16 kHz mono) without disarming —
     /// used for rolling transcription passes while the key is held.
     pub fn snapshot(&self) -> Result<Vec<f32>> {
-        let samples = self
-            .inner
-            .lock()
-            .unwrap()
-            .active
-            .clone()
-            .context("snapshot() without begin()")?;
+        self.snapshot_from(0)
+    }
+
+    /// Like `snapshot`, but starting `from` samples into the utterance.
+    ///
+    /// Streaming transcribes a bounded window rather than the whole utterance:
+    /// re-transcribing everything makes each pass cost grow without limit, so a
+    /// long utterance eventually costs more per pass than the interval between
+    /// passes, and the model has a hard duration ceiling besides. `from` is an
+    /// index into the *captured* samples, i.e. at the device rate.
+    pub fn snapshot_from(&self, from: usize) -> Result<Vec<f32>> {
+        let inner = self.inner.lock().unwrap();
+        let active = inner.active.as_ref().context("snapshot() without begin()")?;
+        let start = from.min(active.len());
+        let samples = active[start..].to_vec();
+        drop(inner);
         if self.device_rate == SAMPLE_RATE {
             return Ok(samples);
         }
         resample(&samples, self.device_rate, SAMPLE_RATE)
+    }
+
+    /// Samples captured so far, at the device rate — the unit `snapshot_from`
+    /// expects.
+    pub fn armed_samples(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap()
+            .active
+            .as_ref()
+            .map(|a| a.len())
+            .unwrap_or(0)
+    }
+
+    /// Capture rate, so callers can convert seconds to sample offsets.
+    pub fn device_rate(&self) -> u32 {
+        self.device_rate
     }
 
     /// Disarms and returns the utterance as 16 kHz mono samples.
