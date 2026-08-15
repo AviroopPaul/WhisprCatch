@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Free, Open-Source Wispr Flow Alternative for macOS &amp; Linux | WhisprCatch</title>
+<meta name="description" content="Looking for a Wispr Flow alternative? WhisprCatch is free, open source, and runs speech-to-text on your own CPU. Full feature comparison, pricing maths, what Wispr Flow still does better, and how to switch in one command.">
+<meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+<link rel="canonical" href="https://whisper-catch.vercel.app/wispr-flow-alternative/">
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/icon-512.png">
+
+<meta property="og:site_name" content="WhisprCatch">
+<meta property="og:title" content="The free, open-source Wispr Flow alternative for macOS &amp; Linux">
+<meta property="og:description" content="Same hold-to-talk dictation, none of the subscription. Full comparison: price, privacy, platforms, and the things Wispr Flow still does better.">
+<meta property="og:image" content="https://whisper-catch.vercel.app/assets/og-card.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://whisper-catch.vercel.app/wispr-flow-alternative/">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="The free, open-source Wispr Flow alternative">
+<meta name="twitter:description" content="WhisprCatch does hold-to-talk dictation on your own CPU, for $0. Here is the honest comparison.">
+<meta name="twitter:image" content="https://whisper-catch.vercel.app/assets/og-card.png">
+<meta name="theme-color" content="#fcfbec">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebPage",
+      "@id": "https://whisper-catch.vercel.app/wispr-flow-alternative/#page",
+      "url": "https://whisper-catch.vercel.app/wispr-flow-alternative/",
+      "name": "The free, open-source Wispr Flow alternative for macOS and Linux",
+      "description": "A detailed comparison of WhisprCatch and Wispr Flow: pricing, privacy, platform support, feature gaps, and how to switch.",
+      "inLanguage": "en",
+      "isPartOf": {
+        "@id": "https://whisper-catch.vercel.app/#website"
+      },
+      "about": {
+        "@id": "https://whisper-catch.vercel.app/#app"
+      },
+      "dateModified": "2026-08-15"
+    },
+    {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        {
+          "@type": "ListItem",
+          "position": 1,
+          "name": "WhisprCatch",
+          "item": "https://whisper-catch.vercel.app/"
+        },
+        {
+          "@type": "ListItem",
+          "position": 2,
+          "name": "Wispr Flow alternative",
+          "item": "https://whisper-catch.vercel.app/wispr-flow-alternative/"
+        }
+      ]
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://whisper-catch.vercel.app/wispr-flow-alternative/#faq",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "What is the best free alternative to Wispr Flow?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "WhisprCatch is the closest free, open-source equivalent for macOS and Linux. Same hold-a-key-and-talk pattern, types punctuated text into whatever app has focus, and it costs nothing because the speech model runs on your own CPU instead of a server. The code is MIT-licensed at github.com/AviroopPaul/whisper-catch."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Is there a Wispr Flow alternative for Linux?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. Wispr Flow doesn't ship a Linux app at all. WhisprCatch does: a .deb for Ubuntu and Debian on x86-64, working on both X11 and Wayland, with a one-time polkit prompt for keyboard access. Hold Right Alt, speak, release."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How much does Wispr Flow cost?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "As published on wisprflow.ai/pricing in August 2026: a free tier with weekly word limits, and Pro at $12 a month billed annually or $15 month-to-month. That's $144 to $180 a year, or roughly $432 to $540 over three years. WhisprCatch has no paid tier to compare against."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Is WhisprCatch as accurate as Wispr Flow?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "For plain dictation the gap is small. Parakeet 0.6B and Moonshine both produce properly punctuated, capitalised text. Wispr Flow pulls ahead on personalisation: it learns your names and jargon over time and can rewrite your tone with a cloud model. WhisprCatch types what you said and stops there, which some people prefer and some don't."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Does WhisprCatch send my voice to a server?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. The model runs as int8 ONNX on your CPU. No network calls while you dictate, and audio is never written to disk. The only network use is the one-time model download during setup, after which the app runs offline."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How do I switch from Wispr Flow?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Install WhisprCatch (one Homebrew command on macOS, one .deb on Linux), grant the permissions, quit and reopen once, then cancel your subscription. Rebind the push-to-talk key in settings if you had muscle memory for a different one."
+          }
+        }
+      ]
+    }
+  ]
+}
+</script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Fragment+Mono&family=Newsreader:ital,opsz,wght@0,6..72,300..500;1,6..72,300..500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/site.css">
+<script defer src="/_vercel/insights/script.js"></script>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<div class="nav-shell">
+  <div class="nav" id="nav">
+    <a class="brand" href="/" aria-label="WhisprCatch home">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v3.5"/>
+      </svg>
+      WhisprCatch
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a class="hide-sm" href="/#how">How it works</a>
+      <a class="hide-sm" href="/#price">Pricing</a>
+      <a class="hide-sm" href="/#faq">FAQ</a>
+      <a href="https://github.com/AviroopPaul/whisper-catch">GitHub</a>
+      <a class="btn" href="/#install">Install free</a>
+    </nav>
+  </div>
+</div>
+
+<main id="main">
+
+<article>
+<header class="page-head">
+  <div class="wrap">
+    <nav class="crumbs" aria-label="Breadcrumb">
+      <a href="/">WhisprCatch</a> <span>/</span> Wispr Flow alternative
+    </nav>
+    <p class="eyebrow">Comparison</p>
+    <h1 style="margin-top:18px">The free, open-source <span class="it">Wispr Flow</span> alternative</h1>
+
+    <div class="answer-box">
+      <h2>The short answer</h2>
+      <p>
+        If you want hold-to-talk dictation on macOS or Linux without a subscription,
+        <b>WhisprCatch</b> is the closest free equivalent to Wispr Flow. Same gesture: hold a
+        key, talk, let go, and punctuated text lands wherever your cursor is. The difference
+        is that the speech model runs on your own CPU, so it costs nothing and your audio
+        never goes anywhere.
+      </p>
+      <p>
+        Wispr Flow is still better if you need Windows, a phone app, or AI that rewrites
+        your tone. Both facts fit on the same page, and both are below.
+      </p>
+      <a class="btn" href="/#install">Install it free</a>
+    </div>
+  </div>
+</header>
+
+<section class="band">
+  <div class="wrap">
+    <div class="prose">
+
+      <h2 style="margin-top:0">What Wispr Flow is</h2>
+      <p>
+        Wispr Flow is a paid voice-dictation app from Wispr AI. You hold a key, speak, and
+        it types cleaned-up text into whatever app you're in. It runs on Mac, Windows,
+        iPhone and Android, handles 100+ languages, learns the names and jargon you use, and
+        can rewrite what you said so it reads more formally or more casually depending on
+        where you're typing.
+      </p>
+      <p>
+        It's a good product. The catch is the shape of the deal: your audio goes to their
+        servers, the free tier caps you at a couple of thousand words a week, and the
+        unlimited tier is <strong>$12 a month billed annually, or $15 month-to-month</strong>
+        (as listed on wisprflow.ai/pricing in August 2026). Call it $144 to $180 a year,
+        every year, to talk to a computer you already own.
+      </p>
+
+      <h2>What WhisprCatch is</h2>
+      <p>
+        WhisprCatch is an MIT-licensed dictation app for macOS and Linux that does the same
+        core thing and nothing else. Hold <kbd>Right ⌘</kbd> on a Mac or <kbd>Right Alt</kbd>
+        on Linux, say your sentence, let go, and the punctuated, capitalised version is typed
+        wherever your cursor already was. Words stream in live while you're still talking.
+      </p>
+      <p>
+        The speech model is either <strong>NVIDIA Parakeet 0.6B</strong> (about 660 MB) or
+        <strong>Moonshine base</strong> (about 64 MB), running int8 through ONNX Runtime on
+        your CPU at around 25 times realtime. No GPU. No server. After the one-time model
+        download it works with the Wi-Fi switched off, and there's no analytics code in the
+        binary to argue about.
+      </p>
+
+      <h2>Side by side</h2>
+      <p>
+        Checked in August 2026. Wispr Flow's column reflects its published pricing and
+        feature pages; if something here has gone stale,
+        <a href="https://github.com/AviroopPaul/whisper-catch/issues">open an issue</a> and
+        it gets fixed.
+      </p>
+    </div>
+
+    <div class="table-wrap" style="margin-top:26px">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">&nbsp;</th>
+            <th scope="col" class="us">WhisprCatch</th>
+            <th scope="col">Wispr Flow</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">Price</th><td class="us"><span class="yes">$0, no tiers</span></td><td>Free tier with weekly caps, Pro at $12 to $15 a month</td></tr>
+          <tr><th scope="row">Three-year cost</th><td class="us"><span class="yes">$0</span></td><td>$432 to $540 on Pro</td></tr>
+          <tr><th scope="row">Where transcription runs</th><td class="us"><span class="yes">Your CPU</span></td><td>Their servers</td></tr>
+          <tr><th scope="row">Works offline</th><td class="us"><span class="yes">Yes, after one model download</span></td><td class="no">No</td></tr>
+          <tr><th scope="row">Account needed</th><td class="us"><span class="yes">No</span></td><td>Yes</td></tr>
+          <tr><th scope="row">Word limits</th><td class="us"><span class="yes">None</span></td><td>Free tier is capped weekly</td></tr>
+          <tr><th scope="row">Source code</th><td class="us"><span class="yes">MIT, public</span></td><td class="no">Closed</td></tr>
+          <tr><th scope="row">Linux</th><td class="us"><span class="yes">Yes, .deb, X11 and Wayland</span></td><td class="no">No</td></tr>
+          <tr><th scope="row">macOS</th><td class="us"><span class="yes">Yes, Apple Silicon</span></td><td><span class="yes">Yes</span></td></tr>
+          <tr><th scope="row">Windows</th><td class="us no">No</td><td><span class="yes">Yes</span></td></tr>
+          <tr><th scope="row">iPhone and Android</th><td class="us no">No</td><td><span class="yes">Yes</span></td></tr>
+          <tr><th scope="row">Punctuation and capitalisation</th><td class="us"><span class="yes">Yes, from the model</span></td><td><span class="yes">Yes</span></td></tr>
+          <tr><th scope="row">AI tone rewriting</th><td class="us no">No, it types what you said</td><td><span class="yes">Yes</span></td></tr>
+          <tr><th scope="row">Learns your vocabulary</th><td class="us no">Not yet</td><td><span class="yes">Yes</span></td></tr>
+          <tr><th scope="row">Snippets and shortcuts</th><td class="us no">No</td><td><span class="yes">Yes</span></td></tr>
+          <tr><th scope="row">Languages</th><td class="us">English (model dependent)</td><td><span class="yes">100+</span></td></tr>
+          <tr><th scope="row">Team billing and admin</th><td class="us no">No</td><td><span class="yes">Yes</span></td></tr>
+          <tr><th scope="row">Audio used for training</th><td class="us"><span class="yes">Impossible, it never leaves</span></td><td>Opt out in privacy settings</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="prose">
+      <h2>The pricing maths</h2>
+      <p>
+        A subscription is easy to wave off at $15. Stretched out, it's the whole argument:
+      </p>
+      <ul>
+        <li><strong>One year</strong> on Wispr Flow Pro: $144 annual, $180 monthly. WhisprCatch: $0.</li>
+        <li><strong>Three years</strong>: $432 to $540. WhisprCatch: $0.</li>
+        <li><strong>Five years</strong>: $720 to $900. WhisprCatch: still $0.</li>
+        <li><strong>A five-person team, three years</strong>: $2,160 to $2,700. WhisprCatch: $0, with nobody to invoice.</li>
+      </ul>
+      <p>
+        There's a <a href="/#price">slider on the home page</a> if you want to plug in your
+        own numbers. The point isn't that $15 is outrageous. It's that the transcription is
+        happening on a chip you already paid for.
+      </p>
+
+      <h2>Which one should you actually use?</h2>
+      <div class="picks">
+        <div class="pick ours">
+          <p class="who">Pick WhisprCatch if</p>
+          <h3>You want it free and private</h3>
+          <ul>
+            <li>You're on macOS or Linux and that's where you work</li>
+            <li>You'd rather your voice never left the machine</li>
+            <li>You dictate on planes, trains, and bad hotel Wi-Fi</li>
+            <li>You want to read the code before trusting it</li>
+            <li>You want punctuated text, not a model's rewrite of you</li>
+            <li>You're allergic to another monthly line item</li>
+          </ul>
+        </div>
+        <div class="pick theirs">
+          <p class="who">Pick Wispr Flow if</p>
+          <h3>You need the extras</h3>
+          <ul>
+            <li>You're on Windows, or you dictate from your phone</li>
+            <li>You want the same setup synced across devices</li>
+            <li>You want AI to adjust tone per app</li>
+            <li>You switch between many languages mid-sentence</li>
+            <li>You need snippets and a learned dictionary</li>
+            <li>You're buying seats for a team with central billing</li>
+          </ul>
+        </div>
+      </div>
+      <p class="small">
+        Plenty of people run both, honestly. Free tool on the laptop, paid app on the phone.
+      </p>
+
+      <h2>Switching over takes about a minute</h2>
+      <h3>On macOS</h3>
+      <button class="cmd" type="button" data-cmd="brew install --cask AviroopPaul/whisprcatch/whisprcatch" data-loc="compare" aria-label="Copy the Homebrew install command">
+        <code><span class="p">$</span> brew install --cask AviroopPaul/whisprcatch/whisprcatch</code>
+        <span class="cmd-copy">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+          <span>copy</span>
+        </span>
+      </button>
+      <p>
+        Open the app, let the wizard walk you through <strong>Accessibility</strong>,
+        <strong>Input Monitoring</strong> and <strong>Microphone</strong>, then quit and
+        reopen it once. That last step matters: macOS only re-reads permissions when an app
+        starts, so a fresh grant reads as denied until you relaunch. Then hold
+        <kbd>Right ⌘</kbd> and talk.
+      </p>
+
+      <h3>On Linux</h3>
+      <button class="cmd" type="button" data-cmd="sudo apt install ./whisper-catch_amd64.deb" data-loc="compare-apt" aria-label="Copy the apt install command">
+        <code><span class="p">$</span> sudo apt install ./whisper-catch_amd64.deb</code>
+        <span class="cmd-copy">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+          <span>copy</span>
+        </span>
+      </button>
+      <p>
+        Grab the .deb from the
+        <a href="https://github.com/AviroopPaul/whisper-catch/releases/latest">latest release</a>,
+        install it, answer one polkit prompt for keyboard access, and hold
+        <kbd>Right Alt</kbd>. Works on X11 and Wayland.
+      </p>
+      <h3>Then</h3>
+      <p>
+        Cancel the subscription. Set the push-to-talk key to whatever you had bound before
+        (it's in settings, and most keys are fair game). Run
+        <code>whisper-catch doctor</code> if anything feels off, it prints exactly which
+        permissions are live and which model is loaded.
+      </p>
+
+      <h2>Common questions</h2>
+    </div>
+
+    <div class="faq-list" style="max-width:74ch">
+      <details open>
+        <summary>What is the best free alternative to Wispr Flow?</summary>
+        <p class="answer">WhisprCatch is the closest free, open-source equivalent for macOS and Linux. Same hold-a-key-and-talk pattern, types punctuated text into whatever app has focus, and it costs nothing because the speech model runs on your own CPU instead of a server. The code is MIT-licensed at <a href="https://github.com/AviroopPaul/whisper-catch">github.com/AviroopPaul/whisper-catch</a>.</p>
+      </details>
+      <details>
+        <summary>Is there a Wispr Flow alternative for Linux?</summary>
+        <p class="answer">Yes. Wispr Flow doesn't ship a Linux app at all. WhisprCatch does: a .deb for Ubuntu and Debian on x86-64, working on both X11 and Wayland, with a one-time polkit prompt for keyboard access. Hold <kbd>Right Alt</kbd>, speak, release.</p>
+      </details>
+      <details>
+        <summary>How much does Wispr Flow cost?</summary>
+        <p class="answer">As published on wisprflow.ai/pricing in August 2026: a free tier with weekly word limits, and Pro at $12 a month billed annually or $15 month-to-month. That's $144 to $180 a year, or roughly $432 to $540 over three years. WhisprCatch has no paid tier to compare against.</p>
+      </details>
+      <details>
+        <summary>Is WhisprCatch as accurate as Wispr Flow?</summary>
+        <p class="answer">For plain dictation the gap is small. Parakeet 0.6B and Moonshine both produce properly punctuated, capitalised text. Wispr Flow pulls ahead on personalisation: it learns your names and jargon over time and can rewrite your tone with a cloud model. WhisprCatch types what you said and stops there, which some people prefer and some don't.</p>
+      </details>
+      <details>
+        <summary>Does WhisprCatch send my voice to a server?</summary>
+        <p class="answer">No. The model runs as int8 ONNX on your CPU. No network calls while you dictate, and audio is never written to disk. The only network use is the one-time model download during setup, after which the app runs offline.</p>
+      </details>
+      <details>
+        <summary>How do I switch from Wispr Flow?</summary>
+        <p class="answer">Install WhisprCatch (one Homebrew command on macOS, one .deb on Linux), grant the permissions, quit and reopen once, then cancel your subscription. Rebind the push-to-talk key in settings if you had muscle memory for a different one.</p>
+      </details>
+    </div>
+  </div>
+</section>
+
+<section class="band band-forest closer">
+  <div class="wrap">
+    <p class="eyebrow center">Go on then</p>
+    <h2 class="display" style="margin-top:20px">Stop paying to <span class="it">talk.</span></h2>
+    <p class="lede" style="margin:26px auto 0;text-align:center">
+      Free, open source, and running on your own machine in about a minute.
+    </p>
+    <div class="cta-row">
+      <button class="btn" type="button" data-cmd="brew install --cask AviroopPaul/whisprcatch/whisprcatch" data-loc="compare-closer">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M16.365 1.43c0 1.14-.493 2.27-1.177 3.08-.744.9-1.99 1.57-2.987 1.57-.12 0-.23-.02-.3-.03-.01-.06-.04-.22-.04-.39 0-1.15.572-2.27 1.206-2.98.804-.94 2.142-1.64 3.248-1.68.03.13.05.28.05.43zm4.565 15.71c-.03.07-.463 1.58-1.518 3.12-.945 1.34-1.94 2.71-3.43 2.71-1.517 0-1.9-.88-3.63-.88-1.698 0-2.302.91-3.67.91-1.377 0-2.332-1.26-3.428-2.8-1.287-1.82-2.323-4.63-2.323-7.28 0-4.28 2.797-6.55 5.552-6.55 1.448 0 2.675.95 3.6.95.865 0 2.222-1.01 3.902-1.01.613 0 2.886.06 4.374 2.19-.13.09-2.383 1.37-2.383 4.19 0 3.26 2.854 4.42 2.954 4.45z"/>
+        </svg>
+        <span class="btn-label">Copy install command</span>
+      </button>
+      <a class="btn btn-ghost" href="/" style="color:var(--on-forest);border-color:var(--on-forest-rule)">See how it works</a>
+    </div>
+  </div>
+</section>
+</article>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <a class="brand" href="/">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v3.5"/>
+          </svg>
+          WhisprCatch
+        </a>
+        <p class="foot-blurb">Free, open-source push-to-talk dictation for macOS and Linux. Runs entirely on your own machine.</p>
+      </div>
+      <div>
+        <h5>Product</h5>
+        <ul>
+          <li><a href="/#how">How it works</a></li>
+          <li><a href="/#price">Pricing</a></li>
+          <li><a href="/#privacy">Privacy</a></li>
+          <li><a href="/#install">Install</a></li>
+          <li><a href="/#faq">FAQ</a></li>
+        </ul>
+      </div>
+      <div>
+        <h5>Compare</h5>
+        <ul>
+          <li><a href="/wispr-flow-alternative/">Wispr Flow alternative</a></li>
+          <li><a href="/#compare">Feature comparison</a></li>
+          <li><a href="/llms.txt">llms.txt</a></li>
+        </ul>
+      </div>
+      <div>
+        <h5>Source</h5>
+        <ul>
+          <li><a href="https://github.com/AviroopPaul/whisper-catch">GitHub repository</a></li>
+          <li><a href="https://github.com/AviroopPaul/whisper-catch/releases/latest">Latest release</a></li>
+          <li><a href="https://github.com/AviroopPaul/whisper-catch/issues">Report an issue</a></li>
+          <li><a href="https://github.com/AviroopPaul/whisper-catch/blob/main/LICENSE">MIT licence</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="foot-end">
+      <p class="foot-quirk">Liberate the keyboard.</p>
+      <p class="foot-meta">MIT © 2026 · <a href="https://github.com/AviroopPaul/whisper-catch">github.com/AviroopPaul/whisper-catch</a></p>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  /* nav shadow once scrolled */
+  var nav = document.getElementById("nav");
+  var onScroll = function () { nav.classList.toggle("stuck", window.scrollY > 12); };
+  onScroll();
+  window.addEventListener("scroll", onScroll, { passive: true });
+
+  window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+
+  /* copy the install command */
+  document.querySelectorAll("[data-cmd]").forEach(function (el) {
+    var original = null;
+
+    function flash(ok) {
+      var label = el.querySelector(".cmd-copy span") || el.querySelector(".btn-label");
+      if (!label) return;
+      if (original === null) original = label.textContent;
+      label.textContent = ok ? "copied" : "press ⌘C";
+      el.classList.add("copied");
+      setTimeout(function () {
+        label.textContent = original;
+        el.classList.remove("copied");
+      }, 1800);
+    }
+
+    el.addEventListener("click", function () {
+      var cmd = el.getAttribute("data-cmd");
+      va("event", { name: "copy_brew_command", data: { location: el.getAttribute("data-loc") || "compare" } });
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(cmd).then(function () { flash(true); }, function () { flash(false); });
+        return;
+      }
+      var ta = document.createElement("textarea");
+      ta.value = cmd;
+      ta.setAttribute("readonly", "");
+      ta.style.cssText = "position:absolute;left:-9999px;top:0;";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      flash(ok);
+    });
+  });
+})();
+</script>
+
+</body>
+</html>

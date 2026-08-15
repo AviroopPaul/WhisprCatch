@@ -4,111 +4,101 @@
 <meta charset="utf-8">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fragment+Mono&family=Newsreader:ital,opsz,wght@1,6..72,400;1,6..72,500&family=Schibsted+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Fragment+Mono&family=Newsreader:ital,opsz,wght@0,6..72,300..500;1,6..72,300..500&display=swap" rel="stylesheet">
 <style>
+  /* Tokens mirror docs/DESIGN.md Part A ("warm paper"). Render at 1200x630. */
   :root {
-    --bg: #0a0c10;
-    --panel-2: #12161e;
-    --line: rgba(233, 238, 247, .08);
-    --line-strong: rgba(233, 238, 247, .16);
-    --ink: #edeff4;
-    --dim: #8a93a6;
-    --faint: #5b6374;
-    --teal: #5de8cd;
-    --red: #f0655a;
-    --sans: "Schibsted Grotesk", sans-serif;
+    --paper: #fcfbec;
+    --paper-2: #fffef7;
+    --paper-3: #f3f1de;
+    --ink: #16191b;
+    --ink-2: #545b57;
+    --ink-3: #878d86;
+    --rule: rgba(22, 25, 27, .12);
+    --forest: #063c34;
+    --on-forest: #eaf6f2;
+    --mint: #5de8cd;
+    --ember: #e4572e;
+    --sans: "Figtree", sans-serif;
     --serif: "Newsreader", Georgia, serif;
     --mono: "Fragment Mono", monospace;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 1200px; height: 630px; overflow: hidden; }
   body {
-    background: var(--bg);
+    background: var(--paper);
     color: var(--ink);
     font-family: var(--sans);
     -webkit-font-smoothing: antialiased;
     position: relative;
   }
 
-  /* ambient glow, echoing the hero */
+  /* the same mint bloom the hero has */
   .glow {
     position: absolute; inset: 0;
-    background:
-      radial-gradient(52% 62% at 84% 10%, rgba(93, 232, 205, .13), transparent 68%),
-      radial-gradient(40% 52% at 8% 96%, rgba(93, 232, 205, .06), transparent 70%);
+    background: radial-gradient(46% 58% at 82% 8%, rgba(93, 232, 205, .30), transparent 70%);
   }
-  /* film grain */
-  .grain {
-    position: absolute; inset: 0; opacity: .05;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  }
-  /* hairline frame, inset so platform corner-rounding never clips it */
-  .frame { position: absolute; inset: 24px; border: 1px solid var(--line); border-radius: 18px; }
 
   .card {
     position: absolute; inset: 0;
-    padding: 78px 92px 70px;
+    padding: 62px 74px 58px;
     display: flex; flex-direction: column; justify-content: space-between;
   }
 
-  .brand { display: flex; align-items: center; gap: 14px; font-weight: 700; font-size: 30px; letter-spacing: -.02em; }
-  .brand svg { color: var(--teal); }
+  .brand {
+    display: flex; align-items: center; gap: 12px;
+    font-weight: 700; font-size: 27px; letter-spacing: -.02em;
+  }
+  .brand svg { color: var(--forest); }
 
   h1 {
-    font-size: 87px; font-weight: 700;
-    line-height: 1.06; letter-spacing: -.034em;
+    font-family: var(--serif); font-weight: 400;
+    font-size: 108px; line-height: .92; letter-spacing: -.035em;
   }
-  h1 .flow { font-family: var(--serif); font-style: italic; font-weight: 500; letter-spacing: 0; }
-  h1 .linux { color: var(--teal); }
-  .caret {
-    display: inline-block; width: .1em; height: .74em; background: var(--teal);
-    margin-left: .07em; transform: translateY(.06em);
+  h1 .it { font-style: italic; }
+  .sub {
+    margin-top: 22px; font-size: 25px; color: var(--ink-2); letter-spacing: -.01em;
   }
 
-  .foot { display: flex; align-items: center; justify-content: space-between; }
+  .foot { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
 
-  /* the listening pill — the product's one visible piece of UI */
-  .pill {
-    display: inline-flex; align-items: center; gap: 13px;
-    background: var(--panel-2); border: 1px solid var(--line-strong);
-    border-radius: 999px; padding: 15px 26px;
-    font-size: 22px; font-weight: 500; color: var(--ink);
+  .pricetag {
+    display: inline-flex; align-items: center; gap: 14px;
+    background: var(--paper-2); border: 1px solid var(--rule);
+    border-radius: 999px; padding: 10px 10px 10px 24px;
+    font-size: 20px; color: var(--ink-2);
   }
-  .pill .dot { width: 13px; height: 13px; border-radius: 50%; background: var(--red); }
-  .pill .bars { display: flex; align-items: center; gap: 4px; height: 24px; }
-  .pill .bars i { width: 4px; border-radius: 2px; background: var(--teal); display: block; }
-  .pill .bars i:nth-child(1) { height: 9px; }
-  .pill .bars i:nth-child(2) { height: 21px; }
-  .pill .bars i:nth-child(3) { height: 13px; }
-  .pill .bars i:nth-child(4) { height: 18px; }
-  .pill .bars i:nth-child(5) { height: 8px; }
+  .pricetag s { color: var(--ink-3); text-decoration-color: var(--ember); text-decoration-thickness: 2px; }
+  .pricetag b {
+    background: var(--forest); color: var(--on-forest); font-weight: 600;
+    padding: 10px 20px; border-radius: 999px; font-size: 20px;
+  }
 
-  .meta { font-family: var(--mono); font-size: 20px; color: var(--dim); text-align: right; line-height: 1.75; }
-  .meta b { color: var(--faint); font-weight: 400; }
+  .meta { font-family: var(--mono); font-size: 18px; color: var(--ink-3); text-align: right; line-height: 1.7; }
+  .meta b { color: var(--ink-2); font-weight: 400; }
 </style>
 </head>
 <body>
   <div class="glow"></div>
-  <div class="grain"></div>
-  <div class="frame"></div>
 
   <div class="card">
     <div class="brand">
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v3.5"/>
       </svg>
       WhisprCatch
     </div>
 
-    <h1>The free, open-source<br><span class="flow">Wisprflow</span> alternative —<br>on <span class="linux">Linux</span>.<span class="caret"></span></h1>
+    <div>
+      <h1>You talk. <span class="it">It types.</span></h1>
+      <p class="sub">Free, on-device dictation for macOS &amp; Linux. Nothing leaves your machine.</p>
+    </div>
 
     <div class="foot">
-      <div class="pill">
-        <span class="dot"></span>
-        Listening
-        <span class="bars"><i></i><i></i><i></i><i></i><i></i></span>
+      <div class="pricetag">
+        Everyone else: <s>$12 to $25 a month</s> <b>This one: $0</b>
       </div>
-      <div class="meta">100% on-device · no cloud, no account<br><b>whisper-catch.vercel.app</b></div>
+      <div class="meta">open source, MIT<br><b>whisper-catch.vercel.app</b></div>
     </div>
   </div>
 </body>

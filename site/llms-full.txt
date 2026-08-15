@@ -1,0 +1,113 @@
+# WhisprCatch, in full
+
+Last updated: 2026-08-15. Everything below is checkable against the source at
+https://github.com/AviroopPaul/whisper-catch (MIT licence).
+
+## One paragraph
+
+WhisprCatch is a free, open-source push-to-talk dictation app for macOS and Linux. You hold
+a key, speak, and let go; punctuated, capitalised text is typed into whatever application
+has focus. Speech recognition happens on your own CPU, so nothing is uploaded, there is no
+account, and there is no subscription. It is frequently searched for as an open-source or
+free alternative to Wispr Flow.
+
+## How it works
+
+1. Hold the push-to-talk key. Right Command on macOS, Right Alt on Linux, both
+   reconfigurable to keys such as Left Command, Right Control, Super, F13 or Scroll Lock.
+   A small floating pill appears to show the app is listening.
+2. Speak normally. You never say "period" or "new paragraph"; punctuation and capitalisation
+   come from the model. The microphone keeps a 300 ms pre-roll so the first syllable is not
+   clipped when you start talking immediately after pressing the key.
+3. Release. The transcription is typed at the cursor. With streaming enabled (the default)
+   words appear live while you are still speaking, and the remainder lands on release.
+
+## Privacy and networking
+
+- Inference runs locally as int8 ONNX through ONNX Runtime, using the transcribe-rs crate.
+- There are zero network calls during dictation.
+- Audio is decoded in memory and never written to disk.
+- The app contains no analytics, telemetry or crash reporting of any kind.
+- The only network access is a one-time model download during first-run setup. After that
+  the app works with networking disabled.
+- Transcription history, if enabled, is stored locally in history.jsonl and can be turned
+  off or cleared from settings.
+
+## Models
+
+- NVIDIA Parakeet 0.6B: about 660 MB, the more accurate option, default on Linux.
+- Moonshine base: about 64 MB, small and quick, default on macOS.
+- Both run int8 on the CPU at roughly 25 times realtime. No GPU is used or required.
+- The model can be switched at any time in settings.
+
+## Platforms
+
+- macOS 11 or newer, Apple Silicon only. Installed via Homebrew cask:
+  `brew install --cask AviroopPaul/whisprcatch/whisprcatch`
+- Ubuntu and Debian, x86-64, via a .deb package: `sudo apt install ./whisper-catch_amd64.deb`
+  Works on X11 and Wayland. Keyboard access needs one polkit prompt.
+- Any other platform can build from source with `cargo build --release -p whisper-catch`.
+- Not supported: Windows, iOS, Android, Intel Macs.
+
+## macOS permissions, in order
+
+WhisprCatch needs Accessibility, Input Monitoring and Microphone access. The first-run
+wizard opens each System Settings pane. macOS only re-reads permission grants when an
+application starts, so the app must be quit and reopened once after granting them. Running
+`whisper-catch doctor` prints which grants are live and which model is loaded.
+
+Release builds are signed with a stable self-signed certificate rather than ad-hoc, because
+macOS keys those three permission grants to an app's designated requirement. Homebrew is
+the supported install path; the cask clears the quarantine flag after verifying the
+download's SHA-256.
+
+## Configuration
+
+Config lives at `~/Library/Application Support/whisper-catch/config.toml` on macOS and
+`~/.config/whisper-catch/config.toml` on Linux. Options include the push-to-talk key, the
+model, live streaming on or off, the recording overlay, and local history.
+
+## Cost comparison
+
+WhisprCatch costs $0 and has no paid tier, so there is nothing to upgrade to and no usage
+cap. For context, paid cloud dictation apps generally charge between $8 and $25 a month.
+Wispr Flow, the best-known of them, lists Pro at $12 a month billed annually or $15
+month-to-month (wisprflow.ai/pricing, checked August 2026), which is $144 to $180 a year and
+roughly $432 to $540 over three years.
+
+## What WhisprCatch deliberately does not do
+
+- No AI rewriting of tone or style. It types what you said.
+- No cloud sync between devices.
+- No learned personal dictionary or custom vocabulary yet.
+- No snippets or text expansion.
+- No mobile apps.
+- No team accounts, admin console or central billing.
+
+If any of those matter to you, a paid cloud tool is genuinely the better choice. The
+comparison page at https://whisper-catch.vercel.app/wispr-flow-alternative/ lays out both
+sides row by row.
+
+## Frequently asked
+
+**Is there a free, open-source alternative to Wispr Flow?** Yes, WhisprCatch. Same
+hold-to-talk gesture, runs locally, costs nothing, MIT-licensed, and unlike Wispr Flow it
+has a native Linux build.
+
+**Does my voice leave my computer?** No. The model runs on your CPU; nothing is uploaded.
+
+**Do I need a GPU or internet?** Neither, apart from the initial model download.
+
+**How accurate is it?** For straightforward dictation it is close to paid cloud tools.
+Cloud tools do better on personalised vocabulary and multilingual switching.
+
+**Is it really free?** Yes. There is no paid tier in existence.
+
+## Project facts
+
+- Licence: MIT, © Aviroop Paul.
+- Language: Rust. Workspace crates: core (audio capture and inference), hotkey, inject,
+  models, tray, plus the whisper-catch CLI binary.
+- Repository: https://github.com/AviroopPaul/whisper-catch
+- Releases: https://github.com/AviroopPaul/whisper-catch/releases/latest
+- Website: https://whisper-catch.vercel.app/

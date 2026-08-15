@@ -7,60 +7,90 @@ from the nearest token.
 
 The two surfaces now speak **two deliberate languages**:
 
-- **Landing page** — unchanged: Inter, one teal accent, light-friendly marketing surface
-  (Part A below).
+- **Website** — "**warm paper**": a cream editorial marketing surface, serif display type,
+  deep-green section blocks, one mint accent. Confident and well-funded looking, aimed at
+  people comparing us against paid dictation subscriptions (Part A below).
 - **Desktop app** — "**tactile engineer dark**", adopted from the EchoNode design handoff
   (archived verbatim at `docs/DESIGN-handoff.md`): precise, developer-native,
-  keyboard-first. The app should feel like a hardware push-to-talk radio — status LEDs,
+  keyboard-first. The app should feel like a hardware push-to-talk radio: status LEDs,
   signal meters, mono uppercase labels (Part B below).
 
 ---
 
-# Part A — Landing page (site/index.html)
+# Part A — Website ("warm paper")
+
+Tokens live in **`site/assets/site.css`** and are shared by every page under `site/`.
+Pages never hand-pick a colour. `docs/og-card.html` mirrors the same tokens.
 
 ## A1. Typography
 
-One hosted font via a single Google Fonts `<link>`: **Inter** (weights 400, 500, 600, 700).
-Fallback stack: `Inter, system-ui, -apple-system, "Segoe UI", sans-serif`.
-Mono (kbd, code, demo): `ui-monospace, "Cascadia Code", "JetBrains Mono", monospace` — not hosted.
+Three hosted families via a single Google Fonts `<link>`:
 
-| Token        | Size (px)              | Weight | Line height | Tracking  | Use |
-|--------------|------------------------|--------|-------------|-----------|-----|
-| `display`    | clamp(38, 6vw, 60)     | 700    | 1.08        | -0.03em   | Hero h1 only |
-| `h2`         | clamp(26, 3.5vw, 34)   | 700    | 1.15        | -0.02em   | Section titles |
-| `h3`         | 18                     | 600    | 1.3         | -0.01em   | Card titles, FAQ questions |
-| `body-lg`    | 18–19                  | 400    | 1.6         | 0         | Hero sub, section intros |
-| `body`       | 15.5–16                | 400    | 1.6         | 0         | Card copy, FAQ answers |
-| `small`      | 13.5                   | 400/500| 1.5         | 0         | Captions, footer, CTA note |
-| `mono`       | 14                     | 400/600| 1.7         | 0         | Demo, install block, `kbd` |
-| `eyebrow`    | 13                     | 600    | 1           | +0.08em, uppercase | Kicker above h2 |
+- **Newsreader** (400, roman + italic, variable optical size) — all display type. The
+  italic carries the emphasis in every headline ("You talk. *It types.*").
+- **Figtree** (400/500/600/700) — UI and body text.
+- **Fragment Mono** (400) — commands, terminal blocks, numeric readouts.
 
-## A2. Color (web only)
+`kbd` uses `system-ui` first, because Fragment Mono has no ⌘ or ⌥ glyph.
 
-One accent family: **teal**. Neutrals are cool slate.
+| Token      | Size (px)               | Family    | Weight | Line height | Tracking            | Use |
+|------------|-------------------------|-----------|--------|-------------|---------------------|-----|
+| `display`  | clamp(46, 8.4vw, 108)   | Newsreader| 400    | 0.95        | -0.032em            | Hero h1, closer |
+| `h2`       | clamp(33, 5vw, 60)      | Newsreader| 400    | 1.03        | -0.026em            | Section titles |
+| `h3`       | clamp(23, 2.3vw, 28)    | Newsreader| 400    | 1.16        | -0.018em            | Card titles |
+| `body-lg`  | clamp(17, 1.55vw, 20.5) | Figtree   | 400    | 1.55        | 0                   | Section intros (`.lede`) |
+| `body`     | 16.5                    | Figtree   | 400    | 1.62        | 0                   | Default |
+| `small`    | 13.5                    | Figtree   | 400    | 1.5         | 0                   | Captions, footnotes |
+| `eyebrow`  | 12                      | Figtree   | 600    | 1           | +0.15em, uppercase  | Kicker above every h2 |
+| `mono`     | 13–14                   | Fragment  | 400    | 1.9         | 0                   | Commands, terminal |
 
-| Token           | Hex        | Use |
-|-----------------|-----------|-----|
-| `bg-0`          | `#0b0e14` | Page background |
-| `bg-1`          | `#11151f` | Raised areas: demo frame, install block, alt bands |
-| `bg-2`          | `#151a26` | Cards |
-| `border`        | `#232a3a` | 1px hairlines |
-| `border-strong` | `#334155` | Hovered card/control borders |
-| `text-1`        | `#e6e9f0` | Primary text |
-| `text-2`        | `#8b93a7` | Secondary/muted |
-| `accent`        | `#5eead4` | Links, icons, highlights, focus rings (teal-300) |
-| `accent-hover`  | `#99f6e4` | Hover on accent text/links only |
-| `accent-subtle` | `rgba(94,234,212,.10)` | Tinted chips, selected states, icon plates |
-| `on-accent`     | `#042f2c` | Text on accent-filled buttons |
-| `success`       | `#34d399` | |
-| `error`         | `#f87171` | |
-| `warning`       | `#fbbf24` | Use sparingly |
+## A2. Colour
 
-Rules: never accent-fill large areas; no gradients; no pure black/white.
-Section list, spacing scale, and copy voice for the landing page are unchanged — see git
-history of this file (pre-EchoNode revision) if a web section needs its full spec again:
-sections `96px` vertical rhythm, cards `24px` padding, radius 6/8/12/16, content column
-960px, copy short/confident/privacy-forward, concrete numbers over adjectives.
+Warm cream canvas, near-black ink, deep green for full-bleed blocks, one mint accent.
+
+| Token         | Hex / value              | Use |
+|---------------|--------------------------|-----|
+| `paper`       | `#fcfbec`                | Page canvas |
+| `paper-2`     | `#fffef7`                | Raised cards, nav, command chips |
+| `paper-3`     | `#f3f1de`               | Alternate bands, table head, footer |
+| `ink`         | `#16191b`                | Primary text |
+| `ink-2`       | `#545b57`                | Secondary text |
+| `ink-3`       | `#878d86`                | Eyebrows, captions, muted |
+| `rule`        | `rgba(22,25,27,.12)`     | 1px hairlines |
+| `rule-2`      | `rgba(22,25,27,.22)`     | Hovered borders, strikethroughs |
+| `forest`      | `#063c34`                | Full-bleed dark sections, dark buttons |
+| `forest-2`    | `#0a4f44`                | Cards inside a forest section |
+| `on-forest`   | `#eaf6f2`                | Text on forest |
+| `mint`        | `#5de8cd`                | Primary button fill, ticks, LED bars |
+| `on-mint`     | `#06342c`                | Text on mint fills |
+| `ember`       | `#e4572e`                | The price you are *not* paying, recording LED |
+| `butter`      | `#ffc96b`                | Highlighter marks (sparingly) |
+
+Rules: mint fills buttons and small marks only, never large areas. Forest sections always
+carry a serif headline. No gradients except the single mint bloom behind the hero.
+
+## A3. Geometry, elevation, motion
+
+- Content column `1140px`, prose/FAQ column `800px`, page padding `24px`.
+- Section rhythm: `clamp(72px, 9.5vw, 132px)` top and bottom.
+- Radius: `8` chips · `12` command chips · `18` · `26` cards · `34` big cards · `999` pills.
+- Elevation is three warm shadows (`--sh-1/2/3`), softest on cards, deepest under the hero
+  media. Never a hard black shadow.
+- Motion: 16px rise + fade on scroll (`.reveal`, 0.7s), 38–46s linear marquees, 2s LED
+  pulse. Everything collapses under `prefers-reduced-motion`.
+
+## A4. Copy voice
+
+Short declaratives, contractions, concrete numbers. **No em dashes.** One dry joke per
+section is allowed; the footer keeps its quirk line. State what the app cannot do as
+plainly as what it can, and never let a claim outrun the code.
+
+## A5. SEO surface
+
+Every page carries: one `h1`, keyword-bearing `h2`s, canonical URL, Open Graph and Twitter
+cards, and a JSON-LD `@graph`. `FAQPage` answers must match the visible `<details>` text
+word for word. `site/llms.txt` and `site/llms-full.txt` are the machine-readable summary
+for answer engines; `robots.txt` names the AI crawlers explicitly.
 
 ---
 
