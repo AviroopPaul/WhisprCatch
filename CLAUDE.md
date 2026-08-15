@@ -53,13 +53,21 @@ code.
 - `crates/` — `core` (audio + inference pipeline), `hotkey` (global key listener), `inject` (types text at the cursor), `text` (deterministic cleanup between transcription and injection), `models` (model download/selection), `tray` (tray app, settings, history)
 - `site/` — the marketing site (static, no build step): `index.html`, `wispr-flow-alternative/index.html`, shared tokens in `assets/site.css`, SEO surface in `robots.txt` / `sitemap.xml` / `llms.txt` / `llms-full.txt`, plus `api/waitlist.js` (Vercel function storing macOS waitlist emails in Vercel Blob). Design tokens live in `docs/DESIGN.md` Part A; never hand-pick a colour, and keep copy free of em dashes.
 - `packaging/deb`, `packaging/macos`, `packaging/homebrew` — .deb, .dmg, and Homebrew cask
-- `docs/` — design notes
+- `docs/` — design notes, plus `docs/screenshots/` (app captures used by the README and the site)
 
 ## Workflow rules
 
 1. **Every PR gets a tracking issue.** Create the GitHub issue first (what's broken / what we're doing), then reference it from the PR body with `Closes #N`.
 2. **Frontend changes require screenshots in the PR.** Any change to `site/` (or anything user-visible) must include screenshots for review: desktop (1440px) and mobile (390px and 360px), before/after for visual changes, plus any interactive states touched (e.g. form errors). Host them on the `pr-assets` orphan branch under `pr-<N>/` and hot-link via `https://raw.githubusercontent.com/AviroopPaul/whisper-catch/pr-assets/pr-<N>/<file>.png`. Never merge or delete `pr-assets`.
 3. **Keep this file current.** Any change to architecture, deployment, or workflow lands with a matching update to CLAUDE.md in the same PR. Keep it lean — pointers and rules, not essays.
+
+## App screenshots
+
+Captures for the README and the landing page are produced by the app itself, never
+mocked up: `WC_SHOT=<path>` saves the window to PNG, `WC_WIZARD_STEP=<step>` opens the
+wizard on a given step, and **`WC_DEMO_HISTORY=1` must be set** so the history pane
+shows sample transcripts instead of whatever the person capturing has dictated. Full
+detail in `docs/DESIGN.md` §B7. Published to `docs/screenshots/` and `site/assets/`.
 
 ## Deploy & release
 

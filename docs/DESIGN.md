@@ -116,6 +116,10 @@ Embedded in the binary (`apps/cli/assets/fonts/`, OFL — license alongside):
 - Sans: **Geist** (Regular + Medium + SemiBold) — UI text, labels, buttons, titles.
 - Mono: **Geist Mono** (Regular + Medium) — timestamps, hotkey chips, section labels,
   numeric readouts, paths.
+- Serif: **Newsreader** (Regular + Italic) — display type only: wizard step titles, the
+  history empty state, and the transcript body in the detail pane. The same face the
+  website sets its headlines in, and used the same way: roman then italic for the
+  emphasised clause ("Three *permissions.*"). Never for UI chrome.
 
 egui families: `Proportional` → Geist, `Monospace` → Geist Mono, plus named families
 `GeistMedium` / `GeistSemiBold` / `GeistMonoMedium` (egui's `strong()` only recolors, so
@@ -129,25 +133,32 @@ sizes on one screen. **Anything uppercase is mono** (`theme::mono_upper`,
 
 ## B2. Palette (dark-only)
 
-Zinc neutrals + three signal colors. Signal colors mean state — never decoration.
+Warm near-black neutrals — a dark cousin of the website's cream, not pure zinc —
+plus the site's mint as the one accent and two signal colors. Signal colors mean
+state, never decoration.
 
-| Token       | Value                | Use |
-|-------------|----------------------|-----|
-| `BG`        | `#09090b` (zinc-950) | Window background |
-| `SURFACE`   | `#18181b` (zinc-900) | Cards, selected list rows, pill plates |
-| `SURFACE_2` | `#27272a` (zinc-800) | Buttons, inputs, raised controls |
-| `SURFACE_3` | `#34343a`            | Hover/active fills, toggle troughs |
-| `FG`        | `#e8e8eb`            | Primary text, primary-button fill |
-| `TEXT_2`    | `#a1a1aa` (zinc-400) | Secondary text |
-| `MUTED`     | `#71717a` (zinc-500) | Labels, timestamps, metadata |
-| `BORDER`    | white 8%             | 1px hairlines everywhere |
-| `RING`      | white 20%            | Focus/selected/hover rings |
-| `RED`       | `#ef4444`            | Recording (LED, waveform, destructive) |
-| `AMBER`     | `#f59e0b`            | Processing (spinner, dots) + hotkey chips |
-| `GREEN`     | `#10b981`            | Active / ready / ok |
+| Token       | Value       | Use |
+|-------------|-------------|-----|
+| `BG`        | `#0b0d0c`   | Window background |
+| `SURFACE`   | `#141817`   | Cards, selected list rows, icon plates |
+| `SURFACE_2` | `#1c2120`   | Buttons, inputs, raised controls |
+| `SURFACE_3` | `#262c2a`   | Hover/active fills, toggle troughs |
+| `FG`        | `#e9efec`   | Primary text |
+| `TEXT_2`    | `#9aa5a0`   | Secondary text |
+| `MUTED`     | `#6e7873`   | Labels, timestamps, metadata |
+| `BORDER`    | `#1e2322`   | 1px hairlines everywhere |
+| `RING`      | `#333b39`   | Focus/selected/hover rings |
+| `MINT`      | `#5de8cd`   | Primary button fill, ready/active, ticks, selected-row rail |
+| `ON_MINT`   | `#06342c`   | Text on a mint fill |
+| `RED`       | `#ef5f52`   | Recording (LED, waveform, destructive) |
+| `AMBER`     | `#f0a94c`   | Processing (spinner, dots) + hotkey chips |
 
-`theme::tint(color)` = the color at ~12% alpha, for chip fills behind signal text.
-The primary button is `FG` fill with `BG` text — signal colors are never button fills.
+`MINT` is the website's accent, unchanged. That single shared value is what makes
+the app and the landing page read as one product.
+
+`theme::tint(color)` = ~9% alpha, for chip fills behind signal text.
+`theme::tint_strong(color)` = ~18%, for the ring around a tinted plate.
+The primary button is a `MINT` fill with `ON_MINT` text — the site's CTA, in the dark.
 
 ## B3. Radius, elevation, motion
 
@@ -171,7 +182,10 @@ The primary button is `FG` fill with `BG` text — signal colors are never butto
 ## B5. Surfaces
 
 ### Main window (`settings_app.rs`)
-Opens maximized. Header (52px): green LED + "WhisprCatch" left · **top-center segmented
+Opens at **1000×680**, centered, min 720×480. Not maximized and geometry is not
+persisted: this is a utility window, and a remembered 27-inch frame is mostly
+background. macOS hands a window back at its own size regardless, so both windows
+assert their size once from inside `update()` on the first frame. Header (52px): green LED + "WhisprCatch" left · **top-center segmented
 control** (History | Settings) · mono stats readout right ("163 WORDS · 9 UTT · 1 MIN").
 
 - **History**: left sidebar (288px) = search field + chronological list. Row = mono
@@ -205,7 +219,7 @@ divider · **Quit WhisprCatch**. Icons: idle = outline/template mic, recording =
 muted = crossed mic (Linux icon names; macOS uses a template glyph).
 
 ### Wizard (`wizard.rs`)
-520×560 fixed. Green step dots (done fill / current ring), "STEP N OF 4" in mono
+560×640 fixed, centered, non-resizable. Green step dots (done fill / current ring), "STEP N OF 4" in mono
 uppercase, painted stroke icon on a surface plate, SemiBold 23 title, green mono
 privacy chip, green download progress bar with mono readout, amber spinner while
 waiting on authorization, amber key chip on the done screen. One primary button,
@@ -216,3 +230,24 @@ pinned near the bottom.
 Same voice as the site: short, confident, privacy-forward, concrete numbers
 ("0.38S INFERENCE", not "blazingly fast"). Mono uppercase for machine facts, sentence
 case for human sentences. Quirk allowed once per surface (wizard done-screen).
+**No em dashes**, same as Part A — that applies to log lines and error strings too,
+not just what's on screen.
+
+
+## B7. Capturing screenshots
+
+The README and the website show real renders, not mockups. Three dev-only hooks
+produce them; none is reachable from normal use:
+
+- `WC_SHOT=<path>` (+ `WC_SHOT_FRAMES`, default 30) saves a PNG of the window after
+  N frames and exits — `apps/cli/src/shot.rs`.
+- `WC_WIZARD_STEP=welcome|permission|download|done` opens the wizard on that step, so
+  captures don't depend on real permission or model state. The forced download step
+  never fetches anything.
+- `WC_DEMO_HISTORY=1` swaps the transcript log for a fixed sample set. **Always capture
+  with this on** — the history pane otherwise shows whatever the person running the
+  capture actually dictated.
+
+`whisper-catch wizard` is a hidden subcommand that runs the wizard on its own.
+Published files live in `docs/screenshots/` (full size, for the README) and
+`site/assets/` (resized, for the landing page).

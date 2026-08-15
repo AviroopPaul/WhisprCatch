@@ -29,14 +29,75 @@ enum Tab {
     Settings,
 }
 
+/// Opening size of the settings window, in points.
+const WINDOW_W: f32 = 1000.0;
+const WINDOW_H: f32 = 680.0;
+
+/// Dev-only: `WC_DEMO_HISTORY=1` swaps the real transcript log for a fixed
+/// sample set. Screenshots for the README and the website are taken with this
+/// on, so nobody's actual dictation ends up published.
+fn demo_history() -> Option<(Vec<history::Entry>, (u64, u64, f32))> {
+    if std::env::var("WC_DEMO_HISTORY").is_err() {
+        return None;
+    }
+    // Fixed timestamps so consecutive captures are identical.
+    let base = 1_760_000_000_u64;
+    let rows: [(u64, f32, f32, &str); 7] = [
+        (base, 11.2, 0.31,
+         "Morning. The migration finished overnight and nothing looks broken, \
+          but I'd like a second pair of eyes on the rollback path before we \
+          call it done. Can you take a look this afternoon?"),
+        (base - 900, 6.4, 0.19,
+         "Push the release notes to the draft branch and I'll do a pass on \
+          the wording tonight."),
+        (base - 2_400, 18.7, 0.44,
+         "Three things from standup. The flaky overlay test is quarantined, \
+          the Wayland fallback landed behind a flag, and we still need someone \
+          to own the notarisation ticket before the next tag."),
+        (base - 5_100, 4.1, 0.12,
+         "Reply to Priya: yes to Thursday, and I'll bring the latency numbers."),
+        (base - 9_800, 26.3, 0.61,
+         "Longer one. The reason inference feels instant is that the model is \
+          already resident when the key goes down, so the only work left on \
+          release is the tail of the audio. That's why the first word appears \
+          before you've finished the sentence."),
+        (base - 14_200, 9.8, 0.27,
+         "Note to self: check whether the 300 millisecond pre-roll is still \
+          enough on the older MacBook."),
+        (base - 21_600, 3.2, 0.09, ""),
+    ];
+    let entries: Vec<history::Entry> = rows
+        .iter()
+        .map(|(ts, dur_s, infer_s, text)| history::Entry {
+            ts: *ts,
+            dur_s: *dur_s,
+            infer_s: *infer_s,
+            text: (*text).to_string(),
+            // sample rows are already what the polish chain would emit
+            raw: None,
+        })
+        .collect();
+    let words = entries
+        .iter()
+        .map(|e| e.text.split_whitespace().count() as u64)
+        .sum();
+    let secs = entries.iter().map(|e| e.dur_s).sum();
+    let count = entries.len() as u64;
+    Some((entries, (count, words, secs)))
+}
+
 pub fn run(tab: Option<String>) -> Result<()> {
     let cfg = config::load().unwrap_or_default();
     let options = eframe::NativeOptions {
+        // A utility window, not a workspace: opening maximized left a narrow
+        // column of content stranded in the middle of a 27" display. Geometry
+        // is deliberately not persisted either — a remembered 1440-wide window
+        // would keep reproducing that, and this always opens composed.
         viewport: egui::ViewportBuilder::default()
-            .with_maximized(true)
-            .with_inner_size([1080.0, 720.0])
-            .with_min_inner_size([640.0, 420.0]),
+            .with_inner_size([WINDOW_W, WINDOW_H])
+            .with_min_inner_size([720.0, 480.0]),
         centered: true,
+        persist_window: false,
         ..Default::default()
     };
     eframe::run_native(
@@ -85,13 +146,18 @@ struct App {
     copied: Option<Instant>,
     /// In-flight model download, if any.
     dl: Option<ModelDl>,
+    /// Cleared after the opening size has been asserted once.
+    needs_size: bool,
     shot: crate::shot::Shot,
 }
 
 impl App {
     fn new(cfg: config::Config, tab: Option<&str>) -> Self {
         let autostart_on = autostart::is_enabled();
-        let entries = history::load(500).unwrap_or_default();
+        let (entries, totals) = match demo_history() {
+            Some(demo) => demo,
+            None => (history::load(500).unwrap_or_default(), history::totals()),
+        };
         let selected = entries.first().map(|e| e.ts);
         Self {
             tab: if tab == Some("settings") {
@@ -102,7 +168,7 @@ impl App {
             cfg,
             autostart_on,
             entries,
-            totals: history::totals(),
+            totals,
             status: String::new(),
             saved_ok: false,
             confirm_clear: false,
@@ -111,6 +177,7 @@ impl App {
             confirm_delete: None,
             copied: None,
             dl: None,
+            needs_size: true,
             shot: crate::shot::Shot::from_env(),
         }
     }
@@ -172,6 +239,13 @@ impl App {
     }
 
     fn reload_history(&mut self) {
+        if let Some((entries, totals)) = demo_history() {
+            self.entries = entries;
+            self.totals = totals;
+            self.selected = self.entries.first().map(|e| e.ts);
+            self.confirm_delete = None;
+            return;
+        }
         self.entries = history::load(500).unwrap_or_default();
         self.totals = history::totals();
         if !self
@@ -284,6 +358,16 @@ fn ghost_button(ui: &mut egui::Ui, text: impl Into<egui::RichText>) -> egui::Res
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // macOS hands a resizable window back at whatever size it was last
+        // seen, which for anyone who ran the old maximized build means a
+        // 27-inch window of mostly background. Assert the designed size once,
+        // then leave the window alone for the rest of the session.
+        if self.needs_size {
+            self.needs_size = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                WINDOW_W, WINDOW_H,
+            )));
+        }
         self.shot.tick(ctx);
         self.poll_download();
         if self.dl.is_some() {
@@ -304,7 +388,7 @@ impl eframe::App for App {
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
                             ui.set_min_height(52.0);
-                            theme::led(ui, theme::GREEN, false);
+                            theme::led(ui, theme::MINT, false);
                             ui.add_space(2.0);
                             ui.label(
                                 egui::RichText::new("WhisprCatch")
@@ -413,12 +497,8 @@ impl App {
                 theme::MUTED,
             );
             ui.add_space(18.0);
-            ui.label(
-                egui::RichText::new("No transcripts yet")
-                    .font(theme::medium(15.0))
-                    .color(theme::FG),
-            );
-            ui.add_space(8.0);
+            theme::display(ui, "Nothing said ", "yet.", 27.0);
+            ui.add_space(10.0);
             ui.horizontal(|ui| {
                 let w = 240.0;
                 ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
@@ -581,11 +661,22 @@ impl App {
                                     },
                                 );
                             });
+                            // A silent utterance still gets a row; without this
+                            // it renders as a blank gap that reads as a bug.
+                            let blank = text.trim().is_empty();
+                            let preview = if blank { "(nothing was said)" } else { text };
                             let mut job = egui::text::LayoutJob::single_section(
-                                text.to_owned(),
+                                preview.to_owned(),
                                 egui::TextFormat {
                                     font_id: egui::FontId::proportional(12.5),
-                                    color: if selected { theme::FG } else { theme::TEXT_2 },
+                                    color: if blank {
+                                        theme::MUTED
+                                    } else if selected {
+                                        theme::FG
+                                    } else {
+                                        theme::TEXT_2
+                                    },
+                                    italics: blank,
                                     ..Default::default()
                                 },
                             );
@@ -606,6 +697,16 @@ impl App {
                 egui::CornerRadius::same(6),
                 egui::Stroke::new(1.0, theme::RING),
                 egui::StrokeKind::Inside,
+            );
+            // mint rail on the selected row, as on the website's feature list
+            let r = resp.rect;
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.left(), r.top() + 6.0),
+                    egui::vec2(2.0, r.height() - 12.0),
+                ),
+                egui::CornerRadius::same(1),
+                theme::MINT,
             );
         } else if resp.hovered() {
             ui.painter().rect_stroke(
@@ -668,7 +769,7 @@ impl App {
                     .copied
                     .is_some_and(|at| at.elapsed() < Duration::from_millis(1500));
                 if flash {
-                    ui.label(theme::mono_upper("copied", 10.5, theme::GREEN));
+                    ui.label(theme::mono_upper("copied", 10.5, theme::MINT));
                     ui.ctx().request_repaint_after(Duration::from_millis(200));
                 } else if ghost_button(
                     ui,
@@ -702,11 +803,22 @@ impl App {
 
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             // readable measure: cap the transcript column
-            ui.set_max_width(720.0);
+            ui.set_max_width(680.0);
+            if entry.text.trim().is_empty() {
+                ui.label(
+                    egui::RichText::new("Nothing was said in this one.")
+                        .size(15.0)
+                        .italics()
+                        .color(theme::MUTED),
+                );
+                return;
+            }
+            // Newsreader for the transcript itself: this is prose to read,
+            // and it is the same face the website sets its headlines in.
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(&entry.text)
-                        .size(15.0)
+                        .font(theme::serif(18.0))
                         .color(theme::FG),
                 )
                 .wrap(),
@@ -762,7 +874,7 @@ impl App {
                     self.save();
                 }
                 if !self.status.is_empty() {
-                    let color = if self.saved_ok { theme::GREEN } else { theme::RED };
+                    let color = if self.saved_ok { theme::MINT } else { theme::RED };
                     let prefix = if self.saved_ok { icons::CHECK } else { icons::WARNING };
                     ui.label(
                         egui::RichText::new(format!("{prefix} {}", self.status))
@@ -791,7 +903,7 @@ impl App {
             ok = false;
         }
         if ok {
-            self.status = "Saved — model and key changes apply after the daemon restarts.".into();
+            self.status = "Saved. Model and key changes apply after the daemon restarts.".into();
         }
         self.saved_ok = ok;
     }
@@ -854,7 +966,7 @@ impl App {
                 ui.add(
                     egui::ProgressBar::new(frac)
                         .desired_height(6.0)
-                        .fill(theme::GREEN)
+                        .fill(theme::MINT)
                         .corner_radius(egui::CornerRadius::same(4)),
                 );
                 ui.add_space(6.0);
@@ -875,8 +987,8 @@ impl App {
                 }
             } else if complete {
                 ui.horizontal(|ui| {
-                    theme::led(ui, theme::GREEN, false);
-                    ui.label(theme::mono_upper("ready", 10.5, theme::GREEN));
+                    theme::led(ui, theme::MINT, false);
+                    ui.label(theme::mono_upper("ready", 10.5, theme::MINT));
                     ui.label(theme::mono_upper(
                         "· applies after the daemon restarts",
                         10.0,
@@ -931,7 +1043,7 @@ impl App {
                 ui.label(egui::RichText::new("Hold").small().color(theme::MUTED));
                 theme::key_chip(ui, config::key_label(&self.cfg.key));
                 ui.label(
-                    egui::RichText::new("— speak — release to type.")
+                    egui::RichText::new("and speak. Release to type.")
                         .small()
                         .color(theme::MUTED),
                 );
@@ -990,7 +1102,7 @@ impl App {
                         ui.label(
                             egui::RichText::new(format!("{} granted", icons::CHECK))
                                 .small()
-                                .color(theme::GREEN),
+                                .color(theme::MINT),
                         );
                     }
                     Some(false) => {

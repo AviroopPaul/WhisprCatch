@@ -82,7 +82,7 @@ mod linux {
             };
             vec![
                 StandardItem {
-                    label: format!("{status} — {}", self.info.model),
+                    label: format!("{status} · {}", self.info.model),
                     enabled: false,
                     ..Default::default()
                 }

@@ -74,6 +74,9 @@ enum Cmd {
     /// Internal: floating recording indicator (spawned by the daemon)
     #[command(hide = true)]
     Overlay,
+    /// Internal: run the first-run setup wizard on its own (design + QA)
+    #[command(hide = true)]
+    Wizard,
     /// Download the default model without starting the daemon
     DownloadModel,
     /// Print permission + model status (troubleshooting)
@@ -105,6 +108,11 @@ fn main() -> Result<()> {
     match &cmd {
         Cmd::Settings { tab } => return settings_app::run(tab.clone()),
         Cmd::Overlay => return overlay::run(),
+        Cmd::Wizard => {
+            let model_id = wc_models::ModelId::parse(&cfg.model);
+            wizard::run(model_id, config::key_label(&cfg.key))?;
+            return Ok(());
+        }
         Cmd::DownloadModel => {
             let model_id = wc_models::ModelId::parse(&cfg.model);
             let dir = model_id.spec().ensure(&wc_core::models_dir())?;
@@ -136,7 +144,7 @@ fn main() -> Result<()> {
                 );
                 println!("  (Microphone is prompted automatically on first capture.)");
                 println!(
-                    "\nNote: after enabling a permission you must QUIT and REOPEN the app — \
+                    "\nNote: after enabling a permission you must QUIT and REOPEN the app. \
                      macOS caches the grant per process."
                 );
             }
@@ -175,7 +183,7 @@ fn main() -> Result<()> {
                 }
             } else if !wc_hotkey::keyboard_accessible() {
                 anyhow::bail!(
-                    "no access to input devices — run 'sudo usermod -aG input $USER' \
+                    "no access to input devices. Run 'sudo usermod -aG input $USER' \
                      and re-login, or launch whisper-catch from your app menu to set up graphically"
                 );
             }
@@ -215,7 +223,7 @@ fn main() -> Result<()> {
         Cmd::Record { seconds } => {
             let cap = Capture::open()?;
             cap.begin();
-            eprintln!("recording {seconds}s — speak now...");
+            eprintln!("recording {seconds}s, speak now...");
             std::thread::sleep(Duration::from_secs(seconds));
             let samples = cap.end()?;
             let t0 = std::time::Instant::now();
@@ -274,6 +282,7 @@ fn main() -> Result<()> {
         }
         Cmd::Settings { .. }
         | Cmd::Overlay
+        | Cmd::Wizard
         | Cmd::DownloadModel
         | Cmd::Doctor
         | Cmd::Autostart { .. } => {
@@ -437,11 +446,11 @@ fn run_ptt(
     } else {
         Some(Injector::new()?)
     };
-    eprintln!("ready — hold {key:?} and speak, release to type. Ctrl-C to quit.");
+    eprintln!("ready. Hold {key:?} and speak, release to type. Ctrl-C to quit.");
     if gui_session() {
         notify(
             "WhisprCatch is running",
-            &format!("Hold {key:?} and speak — release to type. Look for the mic in the top bar."),
+            &format!("Hold {key:?} and speak, release to type. Look for the mic in the top bar."),
         );
     }
 

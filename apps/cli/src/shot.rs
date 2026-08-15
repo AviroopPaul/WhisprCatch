@@ -48,7 +48,7 @@ impl Shot {
                 image::RgbaImage::from_raw(w as u32, h as u32, img.as_raw().to_vec())
                     .expect("screenshot buffer");
             buf.save(&path).expect("write screenshot");
-            eprintln!("WC_SHOT saved {path}");
+            eprintln!("WC_SHOT saved {path} ({w}x{h} px, viewport {:?})", ctx.screen_rect().size());
             std::process::exit(0);
         }
     }
