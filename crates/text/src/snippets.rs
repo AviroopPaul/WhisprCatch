@@ -37,10 +37,13 @@ impl Transform for Snippets {
         text.to_string()
     }
 
-    /// Append-safe: an expansion replaces its trigger in place and generally
-    /// grows the text. Nothing before the trigger moves.
-    fn append_safe(&self) -> bool {
-        true
+    /// Not prefix-stable. With the snippet "my address" -> "1 Infinite Loop":
+    /// a streaming pass that has heard `"send to my"` types those 10
+    /// characters, and the finished `"send to my address please"` polishes to
+    /// `"send to 1 Infinite Loop please"` — the trigger began before the
+    /// prefix boundary, so the text already on screen has to be taken back.
+    fn prefix_stable(&self) -> bool {
+        false
     }
 }
 
@@ -60,8 +63,17 @@ mod tests {
         assert!(!SnippetsConfig::default().enabled);
     }
 
+    /// #47: keep this false unless you can prove the prefix property, and add
+    /// a `prefix_violation` case here showing why the proof holds.
     #[test]
-    fn is_append_safe() {
-        assert!(Snippets::new(SnippetsConfig::default()).append_safe());
+    fn is_not_prefix_stable() {
+        assert!(!Snippets::new(SnippetsConfig::default()).prefix_stable());
+    }
+
+    #[test]
+    fn nothing_to_validate_yet() {
+        assert!(Snippets::new(SnippetsConfig::default())
+            .validate()
+            .is_empty());
     }
 }

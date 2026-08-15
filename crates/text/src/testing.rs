@@ -66,7 +66,38 @@ pub fn torture_inputs() -> Vec<String> {
     // this; anything that chokes here is quadratic and would show up as a
     // freeze on release.
     v.push("the quick brown fox jumps over the lazy dog. ".repeat(45_000));
+    // A single 100k-character token with no whitespace anywhere. Different
+    // code path from the input above: anything that splits on whitespace and
+    // works per word sees one enormous word here instead of many small ones.
+    v.push("a".repeat(100_000));
+    // Same, multibyte, so a naive byte-index slice lands mid-character.
+    v.push("é".repeat(50_000));
     v
+}
+
+/// Executable definition of the property [`Transform::prefix_stable`] claims:
+/// for every prefix `p` of `w`, `apply(p)` must be a prefix of `apply(w)`.
+///
+/// Returns the first `(p, apply(p), apply(w))` that violates it. `None` means
+/// the transform held on every pair tried — which is evidence, not proof.
+///
+/// This is the check #50 needs and the one each of #43-#48 should run against
+/// its real implementation before ever returning `true`.
+pub fn prefix_violation(t: &dyn Transform, whole: &str) -> Option<(String, String, String)> {
+    let polished_whole = t.apply(whole);
+    // every character boundary, so multi-word triggers get cut in every place
+    // they can be cut
+    for (i, _) in whole
+        .char_indices()
+        .chain(std::iter::once((whole.len(), ' ')))
+    {
+        let prefix = &whole[..i];
+        let polished_prefix = t.apply(prefix);
+        if !polished_whole.starts_with(&polished_prefix) {
+            return Some((prefix.to_string(), polished_prefix, polished_whole));
+        }
+    }
+    None
 }
 
 /// The contract for a no-op stub: byte-identical output for every input in the
@@ -85,7 +116,7 @@ pub fn assert_noop(t: &dyn Transform) {
     }
 }
 
-fn truncate(s: &str) -> String {
+pub fn truncate(s: &str) -> String {
     if s.chars().count() <= 60 {
         return s.to_string();
     }

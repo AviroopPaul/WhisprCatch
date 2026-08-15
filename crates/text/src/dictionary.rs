@@ -37,10 +37,15 @@ impl Transform for Dictionary {
         text.to_string()
     }
 
-    /// Append-safe: substitution happens inside a matched span, so text before
-    /// it never moves and nothing already typed has to be taken back.
-    fn append_safe(&self) -> bool {
-        true
+    /// Not prefix-stable. With the entry "push to get" -> "push to GitHub":
+    /// a streaming pass that has heard `"push to get"` types all 11
+    /// characters, and the finished utterance `"push to get now"` polishes to
+    /// `"push to GitHub now"`, which does not start with what is on screen —
+    /// the last 3 characters have to be retracted. A trigger phrase that
+    /// straddles the prefix boundary breaks the property even though the
+    /// substitution is "in place".
+    fn prefix_stable(&self) -> bool {
+        false
     }
 }
 
@@ -60,8 +65,17 @@ mod tests {
         assert!(!DictionaryConfig::default().enabled);
     }
 
+    /// #43: keep this false unless you can prove the prefix property, and add
+    /// a `prefix_violation` case here showing why the proof holds.
     #[test]
-    fn is_append_safe() {
-        assert!(Dictionary::new(DictionaryConfig::default()).append_safe());
+    fn is_not_prefix_stable() {
+        assert!(!Dictionary::new(DictionaryConfig::default()).prefix_stable());
+    }
+
+    #[test]
+    fn nothing_to_validate_yet() {
+        assert!(Dictionary::new(DictionaryConfig::default())
+            .validate()
+            .is_empty());
     }
 }

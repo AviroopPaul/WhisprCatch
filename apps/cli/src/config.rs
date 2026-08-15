@@ -21,8 +21,10 @@ pub struct Config {
     /// Deterministic text cleanup (#36). Every transform ships off, so a
     /// config that predates this section behaves exactly as it did.
     ///
-    /// Must stay last: TOML puts tables after scalars, and
-    /// `toml::to_string_pretty` errors out if a plain value follows a table.
+    /// Last by convention, not by requirement: `toml` 0.9 hoists scalars above
+    /// tables when it serializes, so a plain field declared after this one
+    /// still round-trips. (That was not true of `toml` 0.8, which errored.)
+    /// Keeping it last just makes the written file read in declaration order.
     pub polish: wc_text::PolishConfig,
 }
 
@@ -166,13 +168,14 @@ overlay = true
         assert_eq!(cfg.overlay, def.overlay);
     }
 
-    /// `toml` refuses to serialize a plain value after a table, so adding a
-    /// scalar field below `polish` would make Settings → Save panic at
-    /// runtime with nothing at compile time to catch it.
+    /// Settings → Save serializes the whole `Config`, so a change that makes
+    /// `to_string_pretty` fail is a runtime panic with nothing at compile time
+    /// to catch it. Adding a table field is the usual way to cause that, which
+    /// is why this exists — `toml` 0.9 handles it, `toml` 0.8 did not.
     #[test]
     fn default_config_round_trips_through_toml() {
         let text = toml::to_string_pretty(&Config::default())
-            .expect("scalar fields must be declared before `polish`");
+            .expect("Config must stay serializable — Settings → Save depends on it");
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.key, Config::default().key);
         assert!(wc_text::Polish::from_config(&back.polish).is_empty());
@@ -190,15 +193,23 @@ overlay = true
         );
     }
 
-    /// A newer build writes settings this one has never heard of; ignoring
-    /// them beats refusing to start.
+    /// A newer build writes settings this one has never heard of. Ignoring
+    /// them beats refusing to start — but "ignored" is the whole story, not
+    /// half of it: `save` writes the typed struct back, so the next time the
+    /// user touches Settings those keys are gone from `config.toml`. Running
+    /// an older build and saving therefore discards a newer build's polish
+    /// settings. That is tolerable only because #43 and #47 store the data
+    /// users actually author in their own files; if anything ever needs to
+    /// survive a downgrade, it cannot live in this struct.
     #[test]
-    fn unknown_keys_do_not_break_loading() {
-        let cfg: Config = toml::from_str(&format!(
-            "{V0_4_CONFIG}tone = \"casual\"\n\n[polish.tone]\nenabled = true\n"
-        ))
-        .unwrap();
+    fn unknown_keys_load_but_are_dropped_on_the_next_save() {
+        let from_newer_build =
+            format!("{V0_4_CONFIG}tone = \"casual\"\n\n[polish.tone]\nenabled = true\n");
+        let cfg: Config = toml::from_str(&from_newer_build).unwrap();
         assert_eq!(cfg.key, "ralt");
         assert!(wc_text::Polish::from_config(&cfg.polish).is_empty());
+
+        let written = toml::to_string_pretty(&cfg).unwrap();
+        assert!(!written.contains("tone"), "{written}");
     }
 }

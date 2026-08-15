@@ -419,12 +419,14 @@ fn run_ptt(
         log::info!("text polish: {}", polish.names().join(" -> "));
         if cfg.streaming && polish.has_rewriting_transforms() {
             // Streaming types words as they settle; polish only runs on the
-            // final transcript. A transform that deletes text cannot take back
-            // what is already on screen, so live output stays unpolished until
-            // injector replace (#41) and streaming reconciliation (#50) land.
+            // final transcript. None of the six transforms is prefix-stable —
+            // not even the substituting ones, whose trigger phrases straddle
+            // the streaming boundary — so anything enabled here can disagree
+            // with what is already on screen. Live output therefore stays raw
+            // until injector replace (#41) and reconciliation (#50) land.
             log::warn!(
-                "streaming is on and the polish chain rewrites text — words typed \
-                 live are not polished until #50 lands"
+                "streaming is on and the polish chain can rewrite words already typed — \
+                 live output stays unpolished until #50 lands"
             );
         }
     }
@@ -776,7 +778,7 @@ mod tests {
         fn apply(&self, text: &str) -> String {
             text.to_uppercase()
         }
-        fn append_safe(&self) -> bool {
+        fn prefix_stable(&self) -> bool {
             true
         }
     }
@@ -861,7 +863,7 @@ mod tests {
                 w.pop();
                 w.join(" ")
             }
-            fn append_safe(&self) -> bool {
+            fn prefix_stable(&self) -> bool {
                 false
             }
         }

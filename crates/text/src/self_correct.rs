@@ -17,7 +17,7 @@ pub struct SelfCorrectConfig {
 
 /// Drops the retracted half of a marked correction.
 ///
-/// Runs *before* [`crate::Filler`] — "I mean" is both this transform's marker
+/// Runs *before* [`crate::Fillers`] — "I mean" is both this transform's marker
 /// and a hedge that filler removal strips. See `Polish::from_config`.
 pub struct SelfCorrect {
     #[allow(dead_code)] // read once #48 implements `apply`
@@ -41,9 +41,12 @@ impl Transform for SelfCorrect {
         text.to_string()
     }
 
-    /// NOT append-safe: it deletes the retracted words, which may already have
-    /// been typed by a streaming pass. Live streaming (#50) must skip it.
-    fn append_safe(&self) -> bool {
+    /// Not prefix-stable, and the most obviously so: a streaming pass that has
+    /// heard `"meet Tuesday"` has already typed it, and the finished
+    /// `"meet Tuesday, I mean Wednesday"` polishes to `"meet Wednesday"`. The
+    /// retracted words are on the user's screen before the marker that
+    /// retracts them is ever spoken.
+    fn prefix_stable(&self) -> bool {
         false
     }
 }
@@ -64,8 +67,17 @@ mod tests {
         assert!(!SelfCorrectConfig::default().enabled);
     }
 
+    /// #48: this one can never become true — a correction is only knowable
+    /// after the marker, which always arrives later than the text it retracts.
     #[test]
-    fn is_not_append_safe() {
-        assert!(!SelfCorrect::new(SelfCorrectConfig::default()).append_safe());
+    fn is_not_prefix_stable() {
+        assert!(!SelfCorrect::new(SelfCorrectConfig::default()).prefix_stable());
+    }
+
+    #[test]
+    fn nothing_to_validate_yet() {
+        assert!(SelfCorrect::new(SelfCorrectConfig::default())
+            .validate()
+            .is_empty());
     }
 }

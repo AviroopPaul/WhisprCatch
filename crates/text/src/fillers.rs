@@ -9,7 +9,7 @@ use crate::Transform;
 /// land first.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct FillerConfig {
+pub struct FillersConfig {
     /// Off until #44 lands. Nothing here changes a byte of output today.
     pub enabled: bool,
 }
@@ -19,18 +19,18 @@ pub struct FillerConfig {
 /// Runs *after* [`crate::SelfCorrect`]: "I mean" is a hedge this transform
 /// strips and a correction marker #48 needs to see first. See
 /// `Polish::from_config`.
-pub struct Filler {
+pub struct Fillers {
     #[allow(dead_code)] // read once #44 implements `apply`
-    cfg: FillerConfig,
+    cfg: FillersConfig,
 }
 
-impl Filler {
-    pub fn new(cfg: FillerConfig) -> Self {
+impl Fillers {
+    pub fn new(cfg: FillersConfig) -> Self {
         Self { cfg }
     }
 }
 
-impl Transform for Filler {
+impl Transform for Fillers {
     fn name(&self) -> &'static str {
         "fillers"
     }
@@ -41,9 +41,11 @@ impl Transform for Filler {
         text.to_string()
     }
 
-    /// NOT append-safe: it deletes words that a streaming pass may already
-    /// have typed. Live streaming (#50) must skip it.
-    fn append_safe(&self) -> bool {
+    /// Not prefix-stable: it deletes. A streaming pass that has heard
+    /// `"so um"` types both words, and the finished `"so um yeah"` polishes to
+    /// `"so yeah"` — shorter than what is already on screen. Deletion can
+    /// never satisfy the prefix property.
+    fn prefix_stable(&self) -> bool {
         false
     }
 }
@@ -55,17 +57,24 @@ mod tests {
 
     #[test]
     fn stub_is_a_byte_identical_no_op() {
-        assert_noop(&Filler::new(FillerConfig { enabled: true }));
-        assert_noop(&Filler::new(FillerConfig::default()));
+        assert_noop(&Fillers::new(FillersConfig { enabled: true }));
+        assert_noop(&Fillers::new(FillersConfig::default()));
     }
 
     #[test]
     fn disabled_by_default() {
-        assert!(!FillerConfig::default().enabled);
+        assert!(!FillersConfig::default().enabled);
+    }
+
+    /// #44: this one can never become true — deleting a word always shortens
+    /// text a streaming pass may already have typed.
+    #[test]
+    fn is_not_prefix_stable() {
+        assert!(!Fillers::new(FillersConfig::default()).prefix_stable());
     }
 
     #[test]
-    fn is_not_append_safe() {
-        assert!(!Filler::new(FillerConfig::default()).append_safe());
+    fn nothing_to_validate_yet() {
+        assert!(Fillers::new(FillersConfig::default()).validate().is_empty());
     }
 }

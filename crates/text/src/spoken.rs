@@ -37,11 +37,13 @@ impl Transform for Spoken {
         text.to_string()
     }
 
-    /// Append-safe: each command is rewritten where it sits. The result is
-    /// shorter in characters but never reorders, and never reaches back past
-    /// the phrase it matched.
-    fn append_safe(&self) -> bool {
-        true
+    /// Not prefix-stable. "open paren" is two words: a streaming pass that has
+    /// heard `"hello open"` types those 10 characters, and the finished
+    /// `"hello open paren world"` polishes to `"hello ( world"`, which does
+    /// not start with them. Any multi-word command can be cut in half by the
+    /// prefix boundary.
+    fn prefix_stable(&self) -> bool {
+        false
     }
 }
 
@@ -61,8 +63,15 @@ mod tests {
         assert!(!SpokenConfig::default().enabled);
     }
 
+    /// #45: keep this false unless you can prove the prefix property, and add
+    /// a `prefix_violation` case here showing why the proof holds.
     #[test]
-    fn is_append_safe() {
-        assert!(Spoken::new(SpokenConfig::default()).append_safe());
+    fn is_not_prefix_stable() {
+        assert!(!Spoken::new(SpokenConfig::default()).prefix_stable());
+    }
+
+    #[test]
+    fn nothing_to_validate_yet() {
+        assert!(Spoken::new(SpokenConfig::default()).validate().is_empty());
     }
 }

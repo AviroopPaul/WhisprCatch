@@ -41,10 +41,13 @@ impl Transform for Numbers {
         text.to_string()
     }
 
-    /// Append-safe: each number phrase is rewritten where it sits. Shorter in
-    /// characters, but nothing before it moves and nothing is reordered.
-    fn append_safe(&self) -> bool {
-        true
+    /// Not prefix-stable. A streaming pass that has heard `"twenty"` types
+    /// `"20"`, and the finished `"twenty five percent"` polishes to
+    /// `"25 percent"` — the `0` already on screen has to become a `5`.
+    /// Compound numerals are exactly the case this transform exists for, and
+    /// they always straddle the prefix boundary partway through.
+    fn prefix_stable(&self) -> bool {
+        false
     }
 }
 
@@ -64,8 +67,15 @@ mod tests {
         assert!(!NumbersConfig::default().enabled);
     }
 
+    /// #46: keep this false unless you can prove the prefix property, and add
+    /// a `prefix_violation` case here showing why the proof holds.
     #[test]
-    fn is_append_safe() {
-        assert!(Numbers::new(NumbersConfig::default()).append_safe());
+    fn is_not_prefix_stable() {
+        assert!(!Numbers::new(NumbersConfig::default()).prefix_stable());
+    }
+
+    #[test]
+    fn nothing_to_validate_yet() {
+        assert!(Numbers::new(NumbersConfig::default()).validate().is_empty());
     }
 }
