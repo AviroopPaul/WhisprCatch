@@ -20,12 +20,40 @@ jobs:
 
       - name: Build .dmg
         env:
-          # To ship a signed + notarized build, add secrets and matching steps:
-          # MACOS_SIGN_ID plus AC_* notarytool credentials.
-          SIGN_ID: ${{ secrets.MACOS_SIGN_ID != '' && secrets.MACOS_SIGN_ID || '-' }}
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
           cargo build --release -p whisper-catch
-          packaging/macos/build-dmg.sh
+
+          # The certificate is what macOS keys users' Accessibility / Input
+          # Monitoring / Microphone grants to. Shipping an ad-hoc build silently
+          # revokes all three for everyone who upgrades, so make that loud
+          # rather than letting it pass as a normal release.
+          if [ -z "$MACOS_CERT_P12" ]; then
+            echo "::error::MACOS_CERT_P12 is not set. An ad-hoc signed build would"
+            echo "::error::reset every existing user's macOS permissions on upgrade."
+            echo "::error::See packaging/macos/make-signing-cert.sh."
+            exit 1
+          fi
+
+          P12="$RUNNER_TEMP/signing.p12"
+          printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$P12"
+          trap 'rm -f "$P12"' EXIT
+
+          SIGN_P12="$P12" SIGN_P12_PASSWORD="$MACOS_CERT_PASSWORD" \
+            packaging/macos/build-dmg.sh
+
+      # Guards against a silent regression to cdhash-pinned identity: if this
+      # string ever changes between releases, upgrades stop preserving grants.
+      - name: Verify the signing identity is certificate-pinned
+        run: |
+          DR="$(codesign -d -r- dist/WhisprCatch.app 2>&1 | grep designated || true)"
+          echo "$DR"
+          case "$DR" in
+            *"certificate root"*) echo "OK — identity is pinned to the certificate." ;;
+            *) echo "::error::Expected a certificate-pinned designated requirement, got: $DR"
+               exit 1 ;;
+          esac
 
       - uses: actions/upload-artifact@v4
         with:
@@ -67,3 +95,56 @@ jobs:
         with:
           files: dist/*.deb
           fail_on_unmatched_files: true
+
+  # Points the Homebrew tap at the release that was just published, so
+  # `brew upgrade --cask whisprcatch` picks it up without a manual edit.
+  homebrew:
+    needs: macos
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: whisprcatch-macos-arm64
+          path: dist
+
+      - name: Publish cask to the tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN not set — skipping tap update."
+            echo "::warning::Publish the cask by hand or brew users stay on the old version."
+            exit 0
+          fi
+
+          VERSION="${GITHUB_REF_NAME#v}"
+          DMG="dist/WhisprCatch-${VERSION}-arm64.dmg"
+          [ -f "$DMG" ] || { echo "::error::missing $DMG"; exit 1; }
+          SHA="$(sha256sum "$DMG" | cut -d' ' -f1)"
+          echo "v$VERSION  sha256=$SHA"
+
+          # Only the two release-specific fields are rewritten; everything else
+          # stays under review in packaging/homebrew/whisprcatch.rb.
+          sed -e "s|^  version \".*\"|  version \"${VERSION}\"|" \
+              -e "s|^  sha256 .*|  sha256 \"${SHA}\"|" \
+              packaging/homebrew/whisprcatch.rb > /tmp/whisprcatch.rb
+          grep -E '^  (version|sha256)' /tmp/whisprcatch.rb
+
+          git clone --depth 1 \
+            "https://x-access-token:${TAP_TOKEN}@github.com/AviroopPaul/homebrew-whisprcatch.git" /tmp/tap
+          mkdir -p /tmp/tap/Casks
+          cp /tmp/whisprcatch.rb /tmp/tap/Casks/whisprcatch.rb
+
+          cd /tmp/tap
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "cask already up to date"
+            exit 0
+          fi
+          git add Casks/whisprcatch.rb
+          git commit -m "whisprcatch ${VERSION}"
+          git push

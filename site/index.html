@@ -28,12 +28,12 @@
       "@type": "SoftwareApplication",
       "@id": "https://whisper-catch.vercel.app/#app",
       "name": "WhisprCatch",
-      "operatingSystem": "Linux",
+      "operatingSystem": "macOS, Linux",
       "applicationCategory": "UtilitiesApplication",
       "applicationSubCategory": "Speech to Text / Dictation",
-      "description": "Free, open-source push-to-talk dictation for Linux. Hold a key, speak, and punctuated, capitalized text is typed at your cursor in any application. Runs 100% on-device — no cloud, no account, no subscription. An open-source alternative to Wispr Flow for Linux users.",
+      "description": "Free, open-source push-to-talk dictation for macOS and Linux. Hold a key, speak, and punctuated, capitalized text is typed at your cursor in any application. Runs 100% on-device — no cloud, no account, no subscription. An open-source alternative to Wispr Flow.",
       "url": "https://whisper-catch.vercel.app/",
-      "downloadUrl": "https://github.com/AviroopPaul/whisper-catch/releases/latest/download/whisper-catch_amd64.deb",
+      "downloadUrl": "https://github.com/AviroopPaul/whisper-catch/releases/latest",
       "installUrl": "https://whisper-catch.vercel.app/#install",
       "screenshot": "https://whisper-catch.vercel.app/assets/hero-demo-poster.jpg",
       "license": "https://opensource.org/licenses/MIT",
@@ -57,8 +57,8 @@
       "mainEntity": [
         {
           "@type": "Question",
-          "name": "Is there a Wispr Flow alternative for Linux?",
-          "acceptedAnswer": { "@type": "Answer", "text": "Yes — WhisprCatch is a free, open-source Wispr Flow alternative built for Linux. It has the same hold-to-talk flow: hold a key, speak, release, and punctuated text is typed at your cursor in any app. Unlike cloud dictation tools it runs entirely on your machine, with no account and no subscription." }
+          "name": "Is there a Wispr Flow alternative for macOS and Linux?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Yes — WhisprCatch is a free, open-source Wispr Flow alternative for macOS and Linux. It has the same hold-to-talk flow: hold a key, speak, release, and punctuated text is typed at your cursor in any app. Unlike cloud dictation tools it runs entirely on your machine, with no account and no subscription." }
         },
         {
           "@type": "Question",
@@ -72,13 +72,13 @@
         },
         {
           "@type": "Question",
-          "name": "Which Linux distributions does it support?",
-          "acceptedAnswer": { "@type": "Answer", "text": "WhisprCatch ships as a .deb for Ubuntu and Debian on x86-64, and builds from source elsewhere. It types into anything with focus — editors, browsers, chat apps, terminals." }
+          "name": "Which platforms does it support?",
+          "acceptedAnswer": { "@type": "Answer", "text": "macOS 11+ on Apple Silicon, installed with Homebrew, and Ubuntu or Debian on x86-64 via a .deb. Anything else builds from source. It types into whatever has focus — editors, browsers, chat apps, terminals." }
         },
         {
           "@type": "Question",
           "name": "Is there a macOS version?",
-          "acceptedAnswer": { "@type": "Answer", "text": "A macOS (Apple Silicon) build is in the works. Join the waitlist on whisper-catch.vercel.app and you'll get one email when it ships." }
+          "acceptedAnswer": { "@type": "Answer", "text": "Yes. Install it with: brew install --cask AviroopPaul/whisprcatch/whisprcatch. It runs on Apple Silicon with macOS 11 or newer. On first launch macOS asks for Accessibility, Input Monitoring and Microphone permission; grant those, quit and reopen the app, then hold Right Command to dictate." }
         }
       ]
     }
@@ -195,14 +195,8 @@
   }
   .hero .sub b { color: var(--ink); font-weight: 500; }
   .cta { margin-top: 32px; display: flex; align-items: center; justify-content: center; gap: 14px; flex-wrap: wrap; }
-  .cta .wl { margin: 0; min-height: 0; display: flex; flex-direction: column; align-items: center; }
-  .cta .wl-trigger {
-    font: inherit; font-size: 15.5px; font-weight: 600; letter-spacing: -.01em; color: var(--ink);
-    border: 1px solid var(--line-strong); border-style: solid; border-radius: 10px;
-    padding: 14px 24px; background: rgba(255, 255, 255, .02); white-space: nowrap;
-  }
-  @media (max-width: 480px) { .cta .wl-trigger { font-size: 13.5px; padding: 12px 16px; } }
-  .cta .wl-trigger b { font-weight: 600; }
+  .cta button.btn { font: inherit; border: 0; cursor: pointer; }
+  @media (max-width: 480px) { .cta .btn { font-size: 13.5px; padding: 12px 18px; } }
   .btn {
     display: inline-flex; align-items: center; gap: 10px;
     background: var(--teal); color: var(--teal-deep);
@@ -223,48 +217,65 @@
   .hero-note span { white-space: nowrap; }
 
 
-  /* ---------- macOS waitlist ---------- */
-  .wl { margin-top: 22px; min-height: 44px; }
-  .wl-trigger {
-    display: inline-flex; align-items: center; gap: 10px;
-    font: 400 13px/1 var(--mono); color: var(--dim);
-    background: transparent; border: 1px dashed var(--line-strong); border-radius: 999px;
-    padding: 12px 19px; cursor: pointer;
-    transition: color .15s ease, border-color .15s ease, background .15s ease;
+  /* ---------- secondary button + copyable install command ---------- */
+  .btn-alt {
+    background: transparent; color: var(--ink);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
   }
-  .wl-trigger svg { flex: none; opacity: .8; }
-  .wl-trigger:hover { color: var(--ink); border-color: rgba(93, 232, 205, .45); background: var(--teal-soft); }
-  .wl-trigger b { color: var(--teal); font-weight: 400; }
-  .wl-trigger .wl-copy { text-align: left; min-width: 0; }
-  @media (max-width: 480px) { .wl-trigger { max-width: 100%; } .wl-trigger .wl-copy { line-height: 1.5; } }
-  .wl-form { display: none; align-items: stretch; gap: 8px; max-width: 400px; }
-  .wl.open .wl-form { display: flex; }
-  .wl.open .wl-trigger { display: none; }
-  .wl-form input {
-    flex: 1; min-width: 0;
-    font: 400 13.5px/1 var(--mono); color: var(--ink);
-    background: var(--panel); border: 1px solid var(--line-strong); border-radius: 10px;
-    padding: 13px 15px; outline: none;
-    transition: border-color .15s ease;
+  .btn-alt:hover { background: var(--panel); box-shadow: inset 0 0 0 1px var(--line-strong); transform: translateY(-1px); }
+
+  /* the brew command, click-to-copy */
+  .cmd {
+    display: flex; align-items: center; gap: 12px;
+    margin: 22px auto 0; max-width: 560px; width: 100%; min-width: 0;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; text-align: left;
+    cursor: pointer; font: inherit;
+    transition: border-color .15s ease, background .15s ease;
   }
-  .wl-form input:focus { border-color: rgba(93, 232, 205, .55); }
-  .wl-form input::placeholder { color: var(--faint); }
-  .wl-submit {
-    font: inherit; font-weight: 700; font-size: 13.5px; letter-spacing: -.01em;
-    color: var(--teal-deep); background: var(--teal);
-    border: 0; border-radius: 10px; padding: 0 19px; cursor: pointer; white-space: nowrap;
-    transition: background .15s ease;
+  .cmd:hover { border-color: rgba(93, 232, 205, .45); background: var(--teal-soft); }
+  .cmd code {
+    flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap;
+    font: 400 13px/1.45 var(--mono); color: var(--dim);
   }
-  .wl-submit:hover { background: #7cf0da; }
-  .wl-submit:disabled { opacity: .55; cursor: default; }
-  .wl-msg { display: none; font: 400 13px/1.6 var(--mono); color: var(--teal); align-items: center; gap: 9px; min-height: 44px; }
-  .wl-msg svg { flex: none; }
-  .wl.done .wl-form, .wl.done .wl-trigger { display: none; }
-  .wl.done .wl-msg { display: inline-flex; }
-  .wl-err { display: none; margin-top: 9px; font: 400 12px/1.5 var(--mono); color: #f0918a; }
-  .wl.error .wl-err { display: block; }
-  .install .wl { display: flex; flex-direction: column; align-items: center; }
-  .install .wl-err { text-align: center; }
+  .cmd code .p { color: var(--teal); user-select: none; }
+  .cmd .cmd-copy {
+    flex: none; display: inline-flex; align-items: center; gap: 6px;
+    font: 400 12px/1 var(--mono); color: var(--faint);
+    transition: color .15s ease;
+  }
+  .cmd:hover .cmd-copy { color: var(--teal); }
+  .cmd.copied .cmd-copy { color: var(--teal); }
+  .cmd .cmd-copy svg { flex: none; }
+  @media (max-width: 480px) {
+    .cmd { padding: 12px 13px; gap: 9px; }
+    .cmd code { font-size: 11.5px; }
+    .cmd .cmd-copy span { display: none; }
+  }
+
+  /* per-platform install blocks */
+  .plats { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 40px; text-align: left; }
+  .plat {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 26px 24px;
+    /* grid items default to min-width:auto, so the nowrap command inside would
+       otherwise stretch the track past the viewport */
+    min-width: 0;
+  }
+  .plat h3 {
+    display: flex; align-items: center; gap: 10px;
+    margin: 0 0 6px; font-size: 16px; font-weight: 650; letter-spacing: -.015em; color: var(--ink);
+  }
+  .plat h3 svg { flex: none; opacity: .85; }
+  .plat p { margin: 0 0 18px; font: 400 13.5px/1.65 var(--sans); color: var(--dim); }
+  .plat .cmd { margin: 0; max-width: none; }
+  .plat .cmd + .cmd, .plat .btn + .cmd { margin-top: 10px; }
+  .plat .btn { width: 100%; justify-content: center; }
+  .plat-note {
+    margin: 14px 0 0 !important;
+    font: 400 12px/1.6 var(--mono) !important; color: var(--faint) !important;
+    overflow-wrap: anywhere;
+  }
+  @media (max-width: 720px) { .plats { grid-template-columns: 1fr; } }
 
   /* ================= hero video ================= */
   .hero-video {
@@ -331,16 +342,7 @@
   /* install */
   .install { text-align: center; }
   .install h2, .install .lede { margin-left: auto; margin-right: auto; }
-  .install .cta { justify-content: center; margin-top: 40px; }
-  .term {
-    margin: 34px auto 0; max-width: 520px;
-    font: 400 13px/1 var(--mono); color: var(--dim);
-    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-    padding: 15px 20px; text-align: left; overflow-x: auto; white-space: nowrap;
-  }
-  .term .p { color: var(--teal); user-select: none; }
-  @media (max-width: 480px) { .term { font-size: 11.5px; padding: 13px 14px; } }
-  .install-note { margin-top: 22px; font: 400 12.5px/1.7 var(--mono); color: var(--faint); }
+  .plat-note code { font: inherit; color: var(--dim); }
 
   /* footer */
   footer { border-top: 1px solid var(--line); padding: 56px 0 64px; text-align: center; }
@@ -400,7 +402,7 @@
     </a>
     <nav class="nav-right" aria-label="Main">
       <a class="gh" href="https://github.com/AviroopPaul/whisper-catch">GitHub</a>
-      <a class="nav-dl" href="https://github.com/AviroopPaul/whisper-catch/releases/latest/download/whisper-catch_amd64.deb">Download</a>
+      <a class="nav-dl" href="#install">Download</a>
     </nav>
   </div>
 </header>
@@ -411,33 +413,31 @@
   <section class="hero">
     <div class="wrap">
       <h1 class="rise">You <em class="voice">talk.</em> It <span class="typed">types</span>.<span class="caret-block" aria-hidden="true"></span></h1>
-      <p class="sub rise d1">Push-to-talk dictation for Linux — punctuated text lands at your cursor, in any app. <b>Entirely on your machine.</b></p>
+      <p class="sub rise d1">Push-to-talk dictation for macOS and Linux — punctuated text lands at your cursor, in any app. <b>Entirely on your machine.</b></p>
       <div class="cta rise d2">
-        <a class="btn" href="https://github.com/AviroopPaul/whisper-catch/releases/latest/download/whisper-catch_amd64.deb">
+        <button class="btn" type="button" data-cmd="brew install --cask AviroopPaul/whisprcatch/whisprcatch" data-loc="hero">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M16.365 1.43c0 1.14-.493 2.27-1.177 3.08-.744.9-1.99 1.57-2.987 1.57-.12 0-.23-.02-.3-.03-.01-.06-.04-.22-.04-.39 0-1.15.572-2.27 1.206-2.98.804-.94 2.142-1.64 3.248-1.68.03.13.05.28.05.43zm4.565 15.71c-.03.07-.463 1.58-1.518 3.12-.945 1.34-1.94 2.71-3.43 2.71-1.517 0-1.9-.88-3.63-.88-1.698 0-2.302.91-3.67.91-1.377 0-2.332-1.26-3.428-2.8-1.287-1.82-2.323-4.63-2.323-7.28 0-4.28 2.797-6.55 5.552-6.55 1.448 0 2.675.95 3.6.95.865 0 2.222-1.01 3.902-1.01.613 0 2.886.06 4.374 2.19-.13.09-2.383 1.37-2.383 4.19 0 3.26 2.854 4.42 2.954 4.45z"/>
+          </svg>
+          <span class="btn-label">Copy brew command</span>
+        </button>
+        <a class="btn btn-alt" href="https://github.com/AviroopPaul/whisper-catch/releases/latest/download/whisper-catch_amd64.deb">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/>
           </svg>
           Download for Linux
         </a>
-        <div class="wl" data-wl>
-        <button class="wl-trigger" type="button">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d="M16.365 1.43c0 1.14-.493 2.27-1.177 3.08-.744.9-1.99 1.57-2.987 1.57-.12 0-.23-.02-.3-.03-.01-.06-.04-.22-.04-.39 0-1.15.572-2.27 1.206-2.98.804-.94 2.142-1.64 3.248-1.68.03.13.05.28.05.43zm4.565 15.71c-.03.07-.463 1.58-1.518 3.12-.945 1.34-1.94 2.71-3.43 2.71-1.517 0-1.9-.88-3.63-.88-1.698 0-2.302.91-3.67.91-1.377 0-2.332-1.26-3.428-2.8-1.287-1.82-2.323-4.63-2.323-7.28 0-4.28 2.797-6.55 5.552-6.55 1.448 0 2.675.95 3.6.95.865 0 2.222-1.01 3.902-1.01.613 0 2.886.06 4.374 2.19-.13.09-2.383 1.37-2.383 4.19 0 3.26 2.854 4.42 2.954 4.45z"/>
+      </div>
+      <button class="cmd rise d2" type="button" data-cmd="brew install --cask AviroopPaul/whisprcatch/whisprcatch" data-loc="hero-cmd" aria-label="Copy the Homebrew install command">
+        <code><span class="p">$</span> brew install --cask AviroopPaul/whisprcatch/whisprcatch</code>
+        <span class="cmd-copy">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
           </svg>
-          <span class="wl-copy">macOS coming soon · <b>join the waitlist</b></span>
-        </button>
-        <form class="wl-form" novalidate>
-          <input type="email" name="email" autocomplete="email" placeholder="you@email.com" aria-label="Email address for the macOS waitlist" required>
-          <button class="wl-submit" type="submit">Notify me</button>
-        </form>
-        <p class="wl-msg" role="status">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5 9.5 17 19 7"/></svg>
-          you're on the list — one email when it ships
-        </p>
-        <p class="wl-err" role="alert"></p>
-      </div>
-      </div>
-      <p class="hero-note rise d3"><span>free &amp; open source ·</span> <span>no cloud, no account ·</span> <span>linux today</span></p>
+          <span>copy</span>
+        </span>
+      </button>
+      <p class="hero-note rise d3"><span>free &amp; open source ·</span> <span>no cloud, no account ·</span> <span>macOS &amp; linux</span></p>
     </div>
 
     <!-- hero demo video -->
@@ -467,33 +467,52 @@
   <section class="install" id="install">
     <div class="wrap">
       <h2 class="reveal">Install in a minute.</h2>
-      <p class="lede reveal" data-d="1">Download, double-click — a first-run wizard does the rest.</p>
-      <div class="cta reveal" data-d="1">
-        <a class="btn" href="https://github.com/AviroopPaul/whisper-catch/releases/latest/download/whisper-catch_amd64.deb">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/>
-          </svg>
-          Download .deb
-        </a>
-      </div>
-      <div class="term reveal" data-d="2"><span class="p">$</span> sudo apt install ./whisper-catch_amd64.deb</div>
-      <p class="install-note reveal" data-d="2">linux x86-64 today</p>
-      <div class="wl reveal" data-d="2" data-wl>
-        <button class="wl-trigger" type="button">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d="M16.365 1.43c0 1.14-.493 2.27-1.177 3.08-.744.9-1.99 1.57-2.987 1.57-.12 0-.23-.02-.3-.03-.01-.06-.04-.22-.04-.39 0-1.15.572-2.27 1.206-2.98.804-.94 2.142-1.64 3.248-1.68.03.13.05.28.05.43zm4.565 15.71c-.03.07-.463 1.58-1.518 3.12-.945 1.34-1.94 2.71-3.43 2.71-1.517 0-1.9-.88-3.63-.88-1.698 0-2.302.91-3.67.91-1.377 0-2.332-1.26-3.428-2.8-1.287-1.82-2.323-4.63-2.323-7.28 0-4.28 2.797-6.55 5.552-6.55 1.448 0 2.675.95 3.6.95.865 0 2.222-1.01 3.902-1.01.613 0 2.886.06 4.374 2.19-.13.09-2.383 1.37-2.383 4.19 0 3.26 2.854 4.42 2.954 4.45z"/>
-          </svg>
-          <span class="wl-copy">macOS coming soon · <b>join the waitlist</b></span>
-        </button>
-        <form class="wl-form" novalidate>
-          <input type="email" name="email" autocomplete="email" placeholder="you@email.com" aria-label="Email address for the macOS waitlist" required>
-          <button class="wl-submit" type="submit">Notify me</button>
-        </form>
-        <p class="wl-msg" role="status">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5 9.5 17 19 7"/></svg>
-          you're on the list — one email when it ships
-        </p>
-        <p class="wl-err" role="alert"></p>
+      <p class="lede reveal" data-d="1">One command, or one download — a first-run wizard does the rest.</p>
+      <div class="plats reveal" data-d="1">
+        <div class="plat">
+          <h3>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M16.365 1.43c0 1.14-.493 2.27-1.177 3.08-.744.9-1.99 1.57-2.987 1.57-.12 0-.23-.02-.3-.03-.01-.06-.04-.22-.04-.39 0-1.15.572-2.27 1.206-2.98.804-.94 2.142-1.64 3.248-1.68.03.13.05.28.05.43zm4.565 15.71c-.03.07-.463 1.58-1.518 3.12-.945 1.34-1.94 2.71-3.43 2.71-1.517 0-1.9-.88-3.63-.88-1.698 0-2.302.91-3.67.91-1.377 0-2.332-1.26-3.428-2.8-1.287-1.82-2.323-4.63-2.323-7.28 0-4.28 2.797-6.55 5.552-6.55 1.448 0 2.675.95 3.6.95.865 0 2.222-1.01 3.902-1.01.613 0 2.886.06 4.374 2.19-.13.09-2.383 1.37-2.383 4.19 0 3.26 2.854 4.42 2.954 4.45z"/>
+            </svg>
+            macOS
+          </h3>
+          <p>Apple Silicon, macOS 11+. Installs via Homebrew.</p>
+          <button class="cmd" type="button" data-cmd="brew install --cask AviroopPaul/whisprcatch/whisprcatch" data-loc="install" aria-label="Copy the Homebrew install command">
+            <code><span class="p">$</span> brew install --cask AviroopPaul/whisprcatch/whisprcatch</code>
+            <span class="cmd-copy">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <span>copy</span>
+            </span>
+          </button>
+          <p class="plat-note">then grant Accessibility, Input Monitoring &amp; Microphone, quit and reopen once — and hold Right ⌘ to talk</p>
+        </div>
+        <div class="plat">
+          <h3>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M8 20.5h8"/><path d="M12 17v3.5"/>
+            </svg>
+            Linux
+          </h3>
+          <p>Ubuntu &amp; Debian, x86-64. Download the .deb.</p>
+          <a class="btn" href="https://github.com/AviroopPaul/whisper-catch/releases/latest/download/whisper-catch_amd64.deb">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/>
+            </svg>
+            Download .deb
+          </a>
+          <button class="cmd" type="button" data-cmd="sudo apt install ./whisper-catch_amd64.deb" data-loc="install-apt" aria-label="Copy the apt install command">
+            <code><span class="p">$</span> sudo apt install ./whisper-catch_amd64.deb</code>
+            <span class="cmd-copy">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <span>copy</span>
+            </span>
+          </button>
+          <p class="plat-note">one polkit prompt — then hold Right Alt to talk</p>
+        </div>
       </div>
     </div>
   </section>
@@ -507,8 +526,8 @@
       <p class="lede reveal" data-d="1">The short version: WhisprCatch is the open-source <b>Wispr Flow alternative for Linux</b> — same hold-to-talk dictation, none of the cloud.</p>
       <div class="faq-list reveal" data-d="1">
         <details class="faq">
-          <summary>Is there a Wispr Flow alternative for Linux?</summary>
-          <p class="answer">Yes — that's exactly what WhisprCatch is. Wispr Flow (often searched as "Whisper Flow") doesn't ship a Linux app; WhisprCatch gives you the same flow on Linux: hold a key, speak, release, and punctuated text is typed at your cursor in any app. Free and open source, with no account and no subscription.</p>
+          <summary>Is there an open-source Wispr Flow alternative?</summary>
+          <p class="answer">Yes — that's exactly what WhisprCatch is. Wispr Flow (often searched as "Whisper Flow") is closed and subscription-based, and doesn't ship a Linux app at all; WhisprCatch gives you the same flow on macOS and Linux: hold a key, speak, release, and punctuated text is typed at your cursor in any app. Free and open source, with no account and no subscription.</p>
         </details>
         <details class="faq">
           <summary>Is it really free?</summary>
@@ -519,12 +538,12 @@
           <p class="answer">No. Speech-to-text runs on your CPU with zero network calls while you dictate — fully offline after a one-time model download. Your audio is decoded in memory and never uploaded.</p>
         </details>
         <details class="faq">
-          <summary>Which Linux distros does it work on?</summary>
-          <p class="answer">Ubuntu and Debian (x86-64) via the .deb today; anything else builds from source. It types into whatever has focus — editors, browsers, chat apps, terminals.</p>
+          <summary>Which platforms does it work on?</summary>
+          <p class="answer">macOS 11+ on Apple Silicon via Homebrew, and Ubuntu or Debian (x86-64) via the .deb; anything else builds from source. It types into whatever has focus — editors, browsers, chat apps, terminals.</p>
         </details>
         <details class="faq">
-          <summary>What about macOS?</summary>
-          <p class="answer">An Apple Silicon build is in the works — join the waitlist above and you'll get exactly one email when it ships.</p>
+          <summary>What do I need to do on macOS after installing?</summary>
+          <p class="answer">macOS needs three permissions before WhisprCatch can hear the hotkey and type for you: <b>Accessibility</b>, <b>Input Monitoring</b> and <b>Microphone</b>. Open the app once and the first-run wizard walks you through each one. macOS only re-reads them when an app starts, so quit and reopen WhisprCatch afterwards — then hold <b>Right ⌘</b> and talk. Run <code>whisper-catch doctor</code> any time to see which grants are live.</p>
         </details>
       </div>
     </div>
@@ -567,44 +586,44 @@
     });
   });
 
-  /* ---------- macOS waitlist ---------- */
-  document.querySelectorAll("[data-wl]").forEach(function (wl) {
-    var form   = wl.querySelector(".wl-form");
-    var input  = wl.querySelector("input");
-    var submit = wl.querySelector(".wl-submit");
-    var err    = wl.querySelector(".wl-err");
+  /* ---------- copy the brew command ---------- */
+  document.querySelectorAll("[data-cmd]").forEach(function (el) {
+    var original = null;
 
-    wl.querySelector(".wl-trigger").addEventListener("click", function () {
-      wl.classList.add("open");
-      input.focus();
-    });
+    // Swap only a dedicated label element — never el.textContent, which would
+    // delete the button's inline SVG.
+    function flash(ok) {
+      var label = el.querySelector(".cmd-copy span") || el.querySelector(".btn-label");
+      if (!label) return;
+      if (original === null) original = label.textContent;
+      label.textContent = ok ? "copied" : "press ⌘C";
+      el.classList.add("copied");
+      setTimeout(function () {
+        label.textContent = original;
+        el.classList.remove("copied");
+      }, 1800);
+    }
 
-    form.addEventListener("submit", function (e) {
-      e.preventDefault();
-      wl.classList.remove("error");
-      var email = input.value.trim();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
-        wl.classList.add("error");
-        err.textContent = "that doesn't look like an email";
-        input.focus();
+    el.addEventListener("click", function () {
+      var cmd = el.getAttribute("data-cmd");
+      va("event", { name: "copy_brew_command", data: { location: el.getAttribute("data-loc") || "page" } });
+
+      // navigator.clipboard needs a secure context; fall back to a hidden
+      // textarea + execCommand so this still works over plain http.
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(cmd).then(function () { flash(true); }, function () { flash(false); });
         return;
       }
-      submit.disabled = true;
-      submit.textContent = "Adding…";
-      fetch("/api/waitlist", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email })
-      }).then(function (r) {
-        if (!r.ok) throw new Error(String(r.status));
-        wl.classList.add("done");
-        va("event", { name: "waitlist_join" });
-      }).catch(function () {
-        wl.classList.add("error");
-        err.textContent = "something broke — try again in a minute";
-        submit.disabled = false;
-        submit.textContent = "Notify me";
-      });
+      var ta = document.createElement("textarea");
+      ta.value = cmd;
+      ta.setAttribute("readonly", "");
+      ta.style.cssText = "position:absolute;left:-9999px;top:0;";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      flash(ok);
     });
   });
 

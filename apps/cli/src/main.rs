@@ -73,6 +73,8 @@ enum Cmd {
     Overlay,
     /// Download the default model without starting the daemon
     DownloadModel,
+    /// Print permission + model status (troubleshooting)
+    Doctor,
     /// Start whisper-catch automatically on login
     Autostart {
         #[arg(long, conflicts_with = "disable")]
@@ -96,6 +98,37 @@ fn main() -> Result<()> {
             let model_id = wc_models::ModelId::parse(&cfg.model);
             let dir = model_id.spec().ensure(&wc_core::models_dir())?;
             log::info!("{} model ready at {}", model_id.slug(), dir.display());
+            return Ok(());
+        }
+        Cmd::Doctor => {
+            let model_id = wc_models::ModelId::parse(&cfg.model);
+            let yn = |b: bool| if b { "yes" } else { "NO" };
+            println!("WhisprCatch {}", env!("CARGO_PKG_VERSION"));
+            println!("  config:        {}", config::config_path().display());
+            println!("  models dir:    {}", wc_core::models_dir().display());
+            println!("  model:         {} ({})", model_id.slug(), model_id.label());
+            println!(
+                "  model ready:   {}",
+                yn(model_id.spec().is_complete(&wc_core::models_dir()))
+            );
+            println!(
+                "  hotkey:        {} ({})",
+                config::key_label(&cfg.key),
+                cfg.key
+            );
+            #[cfg(target_os = "macos")]
+            {
+                println!("  Accessibility:    {}", yn(wc_hotkey::keyboard_accessible()));
+                println!(
+                    "  Input Monitoring: {}",
+                    yn(wc_hotkey::input_monitoring_granted())
+                );
+                println!("  (Microphone is prompted automatically on first capture.)");
+                println!(
+                    "\nNote: after enabling a permission you must QUIT and REOPEN the app — \
+                     macOS caches the grant per process."
+                );
+            }
             return Ok(());
         }
         Cmd::Autostart { enable, disable } => {
@@ -224,7 +257,11 @@ fn main() -> Result<()> {
                 res?;
             }
         }
-        Cmd::Settings { .. } | Cmd::Overlay | Cmd::DownloadModel | Cmd::Autostart { .. } => {
+        Cmd::Settings { .. }
+        | Cmd::Overlay
+        | Cmd::DownloadModel
+        | Cmd::Doctor
+        | Cmd::Autostart { .. } => {
             unreachable!()
         }
     }
