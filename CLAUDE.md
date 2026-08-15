@@ -51,7 +51,7 @@ code.
 
 - `apps/cli` — the `whisper-catch` binary (Rust workspace root ties it together)
 - `crates/` — `core` (audio + inference pipeline), `hotkey` (global key listener), `inject` (types text at the cursor), `models` (model download/selection), `tray` (tray app, settings, history)
-- `site/` — landing page: a single self-contained `index.html` (no build step) plus `api/waitlist.js` (Vercel function storing macOS waitlist emails in Vercel Blob)
+- `site/` — the marketing site (static, no build step): `index.html`, `wispr-flow-alternative/index.html`, shared tokens in `assets/site.css`, SEO surface in `robots.txt` / `sitemap.xml` / `llms.txt` / `llms-full.txt`, plus `api/waitlist.js` (Vercel function storing macOS waitlist emails in Vercel Blob). Design tokens live in `docs/DESIGN.md` Part A; never hand-pick a colour, and keep copy free of em dashes.
 - `packaging/deb`, `packaging/macos`, `packaging/homebrew` — .deb, .dmg, and Homebrew cask
 - `docs/` — design notes
 

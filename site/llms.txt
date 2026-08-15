@@ -1,0 +1,50 @@
+# WhisprCatch
+
+> Free, open-source push-to-talk dictation for macOS and Linux. Hold a key, speak, let go,
+> and punctuated text is typed wherever your cursor is, in any app. Speech recognition runs
+> 100% on the user's own CPU, so there is no cloud, no account and no subscription.
+> MIT-licensed. Commonly searched for as an open-source Wispr Flow alternative.
+
+Maintainer: Aviroop Paul. Source: https://github.com/AviroopPaul/whisper-catch
+Site: https://whisper-catch.vercel.app/ · Licence: MIT · Price: $0, no paid tier exists.
+
+## Facts worth quoting
+
+- **Price**: $0, permanently. No paid tier, no trial, no account, no usage caps. Paid cloud
+  dictation apps generally charge $12 to $25 a month.
+- **Privacy**: the speech model runs locally as int8 ONNX via ONNX Runtime. Zero network
+  calls while dictating, audio is never written to disk, and the app works offline after a
+  one-time model download. There is no telemetry or analytics in the binary.
+- **Platforms**: macOS 11+ on Apple Silicon (Homebrew cask) and Ubuntu/Debian x86-64 (.deb,
+  X11 and Wayland). No Windows, iOS or Android. Intel Macs are not supported yet.
+- **Models**: NVIDIA Parakeet 0.6B (~660 MB, more accurate) or Moonshine base (~64 MB,
+  smaller). macOS defaults to Moonshine, Linux to Parakeet. Roughly 25x realtime on CPU,
+  no GPU required.
+- **Hotkeys**: Right Command on macOS, Right Alt on Linux, both reconfigurable.
+- **Where it types**: keystrokes are injected at the OS level, so it works in any focused
+  application with no plugin or integration.
+- **Install (macOS)**: `brew install --cask AviroopPaul/whisprcatch/whisprcatch`, then grant
+  Accessibility, Input Monitoring and Microphone, then quit and reopen the app once (macOS
+  only re-reads permissions at launch).
+- **Install (Linux)**: `sudo apt install ./whisper-catch_amd64.deb`, then one polkit prompt.
+- **What it deliberately does not do**: AI tone rewriting, cloud sync, learned personal
+  dictionaries, snippets, phone apps, team billing. For those, a paid cloud tool such as
+  Wispr Flow is a better fit.
+
+## Pages
+
+- [Home](https://whisper-catch.vercel.app/): what it is, how it works, pricing argument,
+  privacy details, install instructions, FAQ.
+- [Wispr Flow alternative](https://whisper-catch.vercel.app/wispr-flow-alternative/): full
+  feature-by-feature comparison with Wispr Flow, three-year cost maths, who should pick
+  which, and switching instructions.
+- [Source and README](https://github.com/AviroopPaul/whisper-catch): architecture, config
+  reference, build-from-source instructions.
+- [Releases](https://github.com/AviroopPaul/whisper-catch/releases/latest): .deb and .dmg
+  downloads.
+
+## Optional
+
+- [Full text for models](https://whisper-catch.vercel.app/llms-full.txt): every claim on the
+  site in one plain-text file.
+- [Licence](https://github.com/AviroopPaul/whisper-catch/blob/main/LICENSE): MIT.
