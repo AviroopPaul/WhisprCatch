@@ -832,8 +832,10 @@ mod tests {
         assert_eq!(keyboard.screen, plan.simulate("hello world"));
     }
 
-    /// xorshift64*: a deterministic generator so a failure is reproducible from
-    /// the seed printed in the assertion, with no new dependency.
+    /// xorshift64: a fixed-seed generator, so a failure reproduces exactly
+    /// rather than haunting CI once a month. The assertions print the iteration
+    /// number to find it by. No new dependency; a property test is not worth
+    /// growing the build for.
     struct Rng(u64);
 
     impl Rng {
