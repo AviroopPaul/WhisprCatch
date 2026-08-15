@@ -73,6 +73,8 @@ fn demo_history() -> Option<(Vec<history::Entry>, (u64, u64, f32))> {
             dur_s: *dur_s,
             infer_s: *infer_s,
             text: (*text).to_string(),
+            // sample rows are already what the polish chain would emit
+            raw: None,
         })
         .collect();
     let words = entries
