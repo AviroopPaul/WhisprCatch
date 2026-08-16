@@ -95,7 +95,9 @@ While the key is held the daemon re-transcribes recent audio every `STREAM_INTER
 
 ## Text cleanup — read before touching `crates/text`
 
-`wc-text` is the one seam between transcription and injection (`finish()` in `apps/cli/src/main.rs`). It is pure: no I/O, no platform code, no network, no async, no model. A transform that needs any of those belongs somewhere else.
+`wc-text` is the one seam between transcription and injection (`finish()` in `apps/cli/src/main.rs`). Every `Transform::apply` is pure: no I/O, no platform code, no network, no async, no model. A transform that needs any of those in `apply` belongs somewhere else.
+
+- **The one exception is loading user-authored rules, and it happens in the constructor, never in `apply`.** A transform whose rules are the user's own data reads them from its own file in the config dir — `dictionary.csv` (#43) and `snippets.txt` (#47) — because those are meant to be shared with a team or checked into dotfiles, not buried in `config.toml`. Each such transform also exposes a disk-free constructor (`Dictionary::from_csv`) for tests and the Settings preview, takes an optional `path` override in its config, treats a missing file as "no rules", and reports a malformed line through `validate()` rather than swallowing it. `crates/text/src/lib.rs`'s module doc still says the crate does no I/O at all and is now stale.
 
 - **One transform per module file**, each owning its own `Config` and its `Transform` impl. `lib.rs` holds the chain and nothing transform-specific, so the six cleanup issues can land in parallel without touching the same file.
 - **The chain order is fixed and load-bearing**: dictionary → snippets → spoken → self_correct → fillers → numbers. `self_correct` must run before `fillers` — "I mean" is both a correction marker and a hedge filler removal strips, so reversing them breaks self-correction silently. `self_correct_runs_before_fillers` is the test that catches it.
