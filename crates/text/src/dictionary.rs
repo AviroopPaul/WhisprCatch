@@ -108,7 +108,7 @@
 //! It does **not** catch everything, and the shapes it misses are not exotic.
 //! An exhaustive search over two-rule dictionaries drawn from an eight-word
 //! vocabulary — `the_clean_but_not_idempotent_gap_is_pinned`, 1176
-//! dictionaries, 657 of them clean — finds 80 that are clean and still not
+//! dictionaries, 474 of them clean — finds 60 that are clean and still not
 //! idempotent. The product's own name is one:
 //!
 //! ```text
@@ -123,7 +123,7 @@
 //! * **A single-token pattern containing punctuation** (`whispr-catch`,
 //!   `bar.baz`, `c++`) can be assembled from a replacement and the text next
 //!   to it. Check 2 skips it because it is one token; check 1 never sees the
-//!   surrounding text. This is the bulk of the 80.
+//!   surrounding text. This is the bulk of the 60.
 //! * **An empty replacement** is exempt from both checks, and deleting a token
 //!   is the most reliable way to make two others adjacent.
 //! * **Check 2 joins with a single space**, so it cannot construct a probe
@@ -1544,16 +1544,23 @@ mod tests {
     /// the number. If it makes it **larger**, something regressed.
     #[test]
     fn the_clean_but_not_idempotent_gap_is_pinned() {
-        // deliberately overlapping: one word is a prefix of another, one joins
-        // two others with punctuation, one is a cased form of another
+        // Deliberately overlapping: one word is a prefix of another, one joins
+        // two others with punctuation, one is a cased form of another, and one
+        // is whitespace-separated.
+        //
+        // That last entry is load-bearing. Without it every pattern in the
+        // search is a single token, `chain_hazards`'s `tokens.len() < 2` guard
+        // skips check 2 in all 1176 dictionaries, and deleting check 2
+        // outright leaves this test passing unchanged. `multi_word` below
+        // asserts it stays exercised.
         const VOCAB: [&str; 8] = [
             "wisper",
             "whispr",
             "catch",
             "whispr-catch",
+            "whispr catch",
             "WhisprCatch",
             "a",
-            "ab",
             "",
         ];
 
@@ -1576,6 +1583,7 @@ mod tests {
 
         let mut dictionaries = 0usize;
         let mut clean = 0usize;
+        let mut multi_word = 0usize;
         let mut gaps: Vec<String> = Vec::new();
         for (i, first) in rules.iter().enumerate() {
             for second in &rules[i + 1..] {
@@ -1585,6 +1593,9 @@ mod tests {
                     first.0, first.1, second.0, second.1
                 );
                 let d = dict(&csv);
+                if d.rules.iter().any(|r| r.tokens.len() >= 2) {
+                    multi_word += 1;
+                }
                 if !d.validate().is_empty() {
                     continue;
                 }
@@ -1603,7 +1614,8 @@ mod tests {
         }
 
         println!(
-            "{dictionaries} two-rule dictionaries, {clean} clean, {} not idempotent",
+            "{dictionaries} two-rule dictionaries, {clean} clean, {} not idempotent, \
+             {multi_word} with a multi-word pattern",
             gaps.len()
         );
         assert!(
@@ -1613,6 +1625,11 @@ mod tests {
         assert!(
             clean > 200,
             "only {clean} of {dictionaries} validated clean"
+        );
+        assert!(
+            multi_word > 300,
+            "only {multi_word} dictionaries have a multi-word pattern, so chain_hazards check 2 \
+             is barely exercised — put a whitespace-separated entry back in VOCAB"
         );
 
         // the counterexample from the review, spelled out so it cannot be lost
@@ -1629,7 +1646,7 @@ mod tests {
 
         assert_eq!(
             gaps.len(),
-            80,
+            60,
             "the clean-but-not-idempotent gap changed size. Smaller is the goal \
              — lower this number. Larger means something regressed.\n{}",
             gaps.join("\n")
@@ -1880,6 +1897,42 @@ mod tests {
         // marks outside the Latin/Greek/Cyrillic block are not flagged: many
         // scripts have no precomposed form and would be false positives
         assert_eq!(dict("ก\u{0e31},X\n").validate(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn scratch_probe_guard() {
+        let v = dict("foo,bar\nBAR,Z,exact\n").validate();
+        println!("SCRATCH probe guard -> {v:?}");
+    }
+
+    /// `push_replacement` can emit a replacement shouted or capitalised, so
+    /// probing only its verbatim spelling misses an `exact` rule keyed to a
+    /// cased form. Nothing else in the suite catches that: the exhaustive
+    /// search generates two-column CSV, so it never produces an `exact` rule,
+    /// and reverting the three-casing probe leaves every other test passing.
+    #[test]
+    fn a_shouted_replacement_feeding_an_exact_rule_is_reported() {
+        // "FOO" -> shouted "BAR" -> the exact rule fires on the second pass
+        let d = dict("foo,bar\nBAR,Z,exact\n");
+        assert_eq!(
+            d.validate().len(),
+            1,
+            "a shouted replacement feeding an exact rule must be reported: {:?}",
+            d.validate()
+        );
+        // and the report is true: this dictionary really is not idempotent
+        assert_eq!(d.apply("FOO"), "BAR");
+        assert_eq!(d.apply("BAR"), "Z");
+        // while the verbatim spelling on its own leads nowhere, which is why
+        // probing only that spelling found nothing
+        assert_eq!(d.apply("foo"), "bar");
+        assert_eq!(d.apply("bar"), "bar");
+
+        // the same hole one casing over: capitalised rather than shouted
+        let d = dict("foo,bar\nBar,Z,exact\n");
+        assert_eq!(d.validate().len(), 1, "{:?}", d.validate());
+        assert_eq!(d.apply("Foo"), "Bar");
+        assert_eq!(d.apply("Bar"), "Z");
     }
 
     #[test]
