@@ -54,6 +54,20 @@
 //! * **Leftmost, then longest, then first in the file.** One left-to-right
 //!   pass; a replacement is never rescanned, so `a -> b` and `b -> c` do not
 //!   chain.
+//! * **No Unicode normalisation.** Lowercase character streams are compared as
+//!   they are, so a pattern typed in decomposed form (`cafe` + U+0301) will
+//!   not match the precomposed `café` a transcript contains. Since nothing
+//!   about that is visible to the user, a decomposed pattern is a [`validate`]
+//!   warning rather than a silent miss.
+//! * **An apostrophe is a boundary, and that cuts both ways.** `sam -> Sam`
+//!   correctly fixes `sam's`, and by the same mechanism `it -> IT` turns
+//!   `it's` into `IT's`. `exact` mode does **not** help — it changes case
+//!   sensitivity, not boundaries. The only workaround today is not to write a
+//!   one-word rule for a word that is also common English.
+//! * **Whitespace is left exactly as found.** A rule with an empty
+//!   replacement deletes its word and leaves the two spaces around it, so
+//!   `basically` in `"it is basically fine"` gives `"it is  fine"`. Tidying
+//!   that up belongs to filler removal (#44), which has to solve it anyway.
 //!
 //! # Case
 //!
@@ -71,21 +85,61 @@
 //! fixes case reproduces its own input when uppercased. `exact` mode turns all
 //! of this off and matches byte for byte.
 //!
-//! # Idempotence
+//! # Idempotence — read this before relying on it
 //!
-//! `apply(apply(x)) == apply(x)` holds for every dictionary [`validate`] calls
-//! clean, and that is the contract. It cannot hold unconditionally: a
-//! dictionary containing both `a -> b` and `b -> c` either chains (banned by
-//! the issue) or is not idempotent, and there is no third answer. So the
-//! chain is *reported*, not silently repaired — a dictionary is the user's
-//! data, and quietly disabling one of their rules to satisfy a mathematical
-//! property is worse than telling them about it.
+//! **`apply(apply(x)) == apply(x)` is not guaranteed, and a clean
+//! [`validate`] does not make it so.** Do not design against the stronger
+//! claim; an earlier version of this file made it and it was wrong.
+//!
+//! Some non-idempotence is unavoidable. A dictionary containing both
+//! `a -> b` and `b -> c` either chains — banned, `apply("a")` must be `"b"` —
+//! or is not idempotent. Faced with that, this transform reports rather than
+//! repairs: a dictionary is the user's data, and quietly disabling one of
+//! their rules to satisfy a mathematical property is worse than telling them
+//! about it.
+//!
+//! [`validate`] catches the two chain shapes people actually write:
+//!
+//! 1. a replacement another rule rewrites (`a -> b` beside `b -> c`), probed
+//!    in each casing the transform can emit;
+//! 2. a multi-*word* pattern that only appears once a replacement is in place
+//!    (`foo -> bar baz` beside `baz qux -> Z`).
+//!
+//! It does **not** catch everything, and the shapes it misses are not exotic.
+//! An exhaustive search over two-rule dictionaries drawn from an eight-word
+//! vocabulary — `the_clean_but_not_idempotent_gap_is_pinned`, 1176
+//! dictionaries, 657 of them clean — finds 80 that are clean and still not
+//! idempotent. The product's own name is one:
+//!
+//! ```text
+//! wisper -> whispr,  whispr-catch -> WhisprCatch
+//!   "wisper-catch" -> "whispr-catch" -> "WhisprCatch"    validate() == []
+//! ```
+//!
+//! Three known holes, all of them the same root cause — the checks reason
+//! about whitespace-separated words, and matches also form across punctuation
+//! and across deletions:
+//!
+//! * **A single-token pattern containing punctuation** (`whispr-catch`,
+//!   `bar.baz`, `c++`) can be assembled from a replacement and the text next
+//!   to it. Check 2 skips it because it is one token; check 1 never sees the
+//!   surrounding text. This is the bulk of the 80.
+//! * **An empty replacement** is exempt from both checks, and deleting a token
+//!   is the most reliable way to make two others adjacent.
+//! * **Check 2 joins with a single space**, so it cannot construct a probe
+//!   where the two halves meet across a hyphen or a full stop.
+//!
+//! Closing them properly means reasoning about matches that span a
+//! replacement boundary at character rather than word granularity. Until then
+//! the honest statement is: idempotence holds for ordinary dictionaries, the
+//! two common chain shapes are reported, and the residue is measured rather
+//! than assumed.
 //!
 //! [`validate`]: Transform::validate
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -137,6 +191,18 @@ struct Rule {
     needs_start_boundary: bool,
     /// The match must not end in the middle of a word.
     needs_end_boundary: bool,
+    /// Lowercased first character of the pattern *after* its leading run of
+    /// word characters, ignoring whitespace — so `w` for `the w0x`, `.` for
+    /// `u.s. mail`, and `None` for a plain single-word pattern.
+    ///
+    /// Every rule in an `anchored` bucket shares the leading word run, which
+    /// is the whole point of the index; this is the next character that can
+    /// tell them apart. Comparing it is a necessary condition for a match, so
+    /// skipping on a mismatch cannot lose one. Without it, a dictionary whose
+    /// patterns cluster on a common first word — `get hub`, `get lab`,
+    /// `get ignore`, which is what real jargon looks like — walks all 500
+    /// rules at every occurrence of that word and costs about 1 ms on its own.
+    disc: Option<char>,
 }
 
 /// Replaces what the model heard with what the user actually writes.
@@ -147,10 +213,12 @@ pub struct Dictionary {
     /// word of the pattern. One hash lookup per word of the transcript is what
     /// keeps a 500-entry dictionary off the critical path.
     anchored: HashMap<String, Vec<usize>>,
-    /// Longest key in `anchored`, in bytes. A word longer than this cannot
-    /// start a match, which is what stops a 100k-character token from being
-    /// lowercased into a key nobody will ever look up.
-    max_key_len: usize,
+    /// Longest *raw* word, in bytes, that could still lowercase to one of the
+    /// keys in `anchored`. A word longer than this cannot start a match, which
+    /// is what stops a 100k-character token from being lowercased into a key
+    /// nobody will ever look up. Deliberately not the longest key: see
+    /// `index`.
+    max_word_len: usize,
     /// Rules that may begin anywhere: patterns starting with punctuation, and
     /// patterns touching a script that has no word boundaries. Keyed by the
     /// lowercased first character. Almost always empty, and skipped entirely
@@ -232,7 +300,7 @@ impl Dictionary {
             enabled,
             rules: Vec::new(),
             anchored: HashMap::new(),
-            max_key_len: 0,
+            max_word_len: 0,
             floating: HashMap::new(),
             load_errors: Vec::new(),
             source,
@@ -325,11 +393,31 @@ impl Dictionary {
             }
             seen.insert((mode, key), rec.line);
 
+            // Matching compares lowercase character streams and does no
+            // normalisation, so a decomposed "cafe" + U+0301 never matches the
+            // precomposed "café" the model actually emits. Silent failure is
+            // the worst outcome for a feature whose entire job is spelling
+            // someone's name right, and which editor wrote the file is not
+            // something the user can see.
+            if let Some(mark) = pattern
+                .chars()
+                .find(|c| (0x0300..=0x036F).contains(&(*c as u32)))
+            {
+                d.load_errors.push(format!(
+                    "{where_}: pattern {pattern:?} is in decomposed form (contains combining mark \
+                     U+{:04X}); transcripts use precomposed characters, so this rule will probably \
+                     never match — write the accented letter as a single character",
+                    mark as u32
+                ));
+            }
+
             let first_char = pattern.chars().next().expect("tokens are non-empty");
             let last_char = pattern.chars().next_back().expect("tokens are non-empty");
+            let disc = discriminator(&pattern);
             d.rules.push(Rule {
                 needs_start_boundary: is_word_char(first_char) && !is_boundaryless(first_char),
                 needs_end_boundary: is_word_char(last_char) && !is_boundaryless(last_char),
+                disc,
                 tokens,
                 pattern,
                 replacement,
@@ -358,7 +446,16 @@ impl Dictionary {
                     .take_while(|c| is_word_char(*c))
                     .flat_map(char::to_lowercase)
                     .collect();
-                self.max_key_len = self.max_key_len.max(key.len());
+                // The cap is compared against the *raw* word in the transcript,
+                // and lowercasing can shrink it: U+1E9E CAPITAL SHARP S is
+                // three bytes and lowercases to a two-byte ß, U+212A KELVIN
+                // SIGN is three bytes and lowercases to a one-byte `k`. Storing
+                // the key's own length would make `word_run_end` reject a word
+                // that does match — and, because the cap is the maximum over
+                // every rule, adding an unrelated long rule would then change
+                // this rule's output. Four bytes per key byte is the widest a
+                // single character can be, so it cannot be too tight.
+                self.max_word_len = self.max_word_len.max(key.len().saturating_mul(4));
                 self.anchored.entry(key).or_default().push(i);
             } else {
                 self.floating.entry(lc_first(first)).or_default().push(i);
@@ -390,7 +487,7 @@ impl Dictionary {
             let mut best: Option<(usize, usize)> = None;
 
             if cw && !prev_word && !self.anchored.is_empty() {
-                if let Some(end) = word_run_end(text, pos, self.max_key_len) {
+                if let Some(end) = word_run_end(text, pos, self.max_word_len) {
                     let word = &text[pos..end];
                     let key: &str =
                         if word.is_ascii() && !word.bytes().any(|b| b.is_ascii_uppercase()) {
@@ -401,13 +498,16 @@ impl Dictionary {
                             key_buf.as_str()
                         };
                     if let Some(ids) = self.anchored.get(key) {
-                        best = self.best_match(text, pos, ids, prev_word);
+                        // Every rule here shares the word just read; this is
+                        // the next character that can rule any of them out.
+                        let disc = (ids.len() > 1).then(|| discriminator(&text[end..]));
+                        best = self.best_match(text, pos, ids, prev_word, disc);
                     }
                 }
             }
             if best.is_none() && !self.floating.is_empty() {
                 if let Some(ids) = self.floating.get(&lc_first(c)) {
-                    best = self.best_match(text, pos, ids, prev_word);
+                    best = self.best_match(text, pos, ids, prev_word, None);
                 }
             }
 
@@ -448,9 +548,18 @@ impl Dictionary {
         pos: usize,
         ids: &[usize],
         prev_word: bool,
+        disc: Option<Option<char>>,
     ) -> Option<(usize, usize)> {
         let mut best: Option<(usize, usize)> = None;
         for &i in ids {
+            if let Some(here) = disc {
+                // A rule that wants a character the transcript does not have
+                // at that position cannot match. Rules with no discriminator
+                // are never skipped.
+                if self.rules[i].disc.is_some() && self.rules[i].disc != here {
+                    continue;
+                }
+            }
             let Some(len) = match_len(&self.rules[i], text, pos, prev_word) else {
                 continue;
             };
@@ -505,14 +614,20 @@ impl Transform for Dictionary {
     }
 
     /// Everything wrong with the user's file, in file order, and then the two
-    /// hazards that only exist between rules.
+    /// chain shapes that only exist between rules.
+    ///
+    /// **An empty result does not mean the dictionary is idempotent** — see
+    /// the module docs for the three shapes these checks miss and the measured
+    /// size of the gap.
     ///
     /// Deliberately independent of `enabled`: someone editing a dictionary they
     /// have not switched on still deserves to be told line 12 is broken.
     ///
-    /// The between-rules half is quadratic and costs about 4 ms on a 500-entry
-    /// dictionary. That is a Settings-save budget, not a keystroke budget —
-    /// #49 should call this on save or on a debounce, never per character.
+    /// The between-rules half is quadratic in the number of *multi-word* rules
+    /// specifically; a single-word dictionary is linear (4000 rules, ~1 ms).
+    /// Mixed: 500 rules ~4 ms, 5000 ~240 ms, 10000 ~970 ms. That is a
+    /// Settings-save budget, not a keystroke budget — #49 should call this on
+    /// save or on a debounce, never per character.
     fn validate(&self) -> Vec<String> {
         let mut msgs = self.load_errors.clone();
         self.chain_hazards(&mut msgs);
@@ -522,23 +637,45 @@ impl Transform for Dictionary {
 }
 
 impl Dictionary {
-    /// The two ways a rule set stops being idempotent, both checked by effect
+    /// The two chain shapes people actually write, both checked by effect
     /// rather than by shape so that the overwhelmingly common `github ->
     /// GitHub` next to `get hub -> GitHub` is not flagged for containing its
     /// own pattern.
+    ///
+    /// Not a decision procedure for idempotence, and never claimed to be
+    /// again: the module docs list what escapes and
+    /// `the_clean_but_not_idempotent_gap_is_pinned` measures it.
     fn chain_hazards(&self, msgs: &mut Vec<String>) {
         // 1. A replacement that some rule rewrites: a -> b next to b -> c.
+        //    Probed in all three casings `push_replacement` can emit, or an
+        //    `exact` rule keyed to the shouted form would never be seen.
         for rule in &self.rules {
             if rule.replacement.is_empty() {
                 continue;
             }
-            let again = self.run(&rule.replacement);
-            if again != rule.replacement {
+            let mut capitalised = String::new();
+            let mut chars = rule.replacement.chars();
+            if let Some(first) = chars.next() {
+                capitalised.extend(first.to_uppercase());
+                capitalised.push_str(chars.as_str());
+            }
+            // One message per rule, not one per casing.
+            let hit = [
+                rule.replacement.clone(),
+                rule.replacement.to_uppercase(),
+                capitalised,
+            ]
+            .into_iter()
+            .find_map(|probe| {
+                let again = self.run(&probe);
+                (again != probe).then_some((probe, again))
+            });
+            if let Some((probe, again)) = hit {
                 msgs.push(format!(
                     "{}:{}: the replacement {:?} is itself rewritten (to {:?}) by another rule, so \
                      applying the dictionary twice would not give the same text; drop one of the \
                      two rules",
-                    self.source, rule.line, rule.replacement, again
+                    self.source, rule.line, probe, again
                 ));
             }
         }
@@ -675,6 +812,13 @@ fn word_run_end(text: &str, at: usize, cap: usize) -> Option<usize> {
         }
     }
     Some(at + end)
+}
+
+/// First character after `s`'s leading run of word characters, skipping
+/// whitespace, lowercased. See [`Rule::disc`].
+fn discriminator(s: &str) -> Option<char> {
+    let rest = s.trim_start_matches(is_word_char);
+    rest.trim_start().chars().next().map(lc_first)
 }
 
 // ---- case ----------------------------------------------------------------
@@ -929,7 +1073,7 @@ fn config_dir(vars: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     } else {
         vars("XDG_CONFIG_HOME")
             .map(PathBuf::from)
-            .filter(|p| Path::new(p).is_absolute())
+            .filter(|p| p.is_absolute())
             .or_else(|| home().map(|h| h.join(".config")))
     }
 }
@@ -1345,18 +1489,18 @@ mod tests {
 
     // ---- idempotence ------------------------------------------------------
 
-    /// The property the chain rules exist to protect. Every dictionary here
-    /// validates clean, which is exactly the condition under which the module
-    /// promises idempotence.
+    /// Dictionaries of the shape people actually write, over the whole small
+    /// corpus. Necessary but nowhere near sufficient — see
+    /// `the_clean_but_not_idempotent_gap_is_pinned`, which is the test that
+    /// actually knows what it is talking about.
     #[test]
-    fn a_clean_dictionary_is_idempotent_on_every_torture_input() {
+    fn ordinary_dictionaries_are_idempotent_on_every_torture_input() {
         let dicts = [
             "sam,Sam\n",
             "hello,Hi there\nworld,Earth\n",
             "the quick,THE QUICK\n",
             "a,A\n",
             "日本語,ニホンゴ\nテキスト,text\n",
-            "e\u{0301}gal,equal\n",
             "правда,Правда\n",
             "um,\n",
             "very,extremely\n",
@@ -1376,6 +1520,120 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every two-rule dictionary that can be built from a small vocabulary,
+    /// against every short probe built from the same vocabulary. Exhaustive,
+    /// deterministic, and it runs in well under a second.
+    ///
+    /// This exists because the test above it agreed with a claim that was
+    /// false. Its patterns and replacements shared no vocabulary, so no rule
+    /// could ever feed another, and it "confirmed" that a dictionary
+    /// `validate()` reports clean is idempotent. It is not: `validate()`
+    /// catches the two chain shapes users actually write, and this search
+    /// measures what is left over. Three shapes are known to escape it —
+    /// listed in the module docs, and the product's own name is one of them:
+    ///
+    /// ```text
+    /// wisper -> whispr,  whispr-catch -> WhisprCatch
+    ///   "wisper-catch" -> "whispr-catch" -> "WhisprCatch"   validate() == []
+    /// ```
+    ///
+    /// The pinned count is a ratchet. If a change to `validate` or to the
+    /// matcher makes it **smaller**, that is the improvement working: lower
+    /// the number. If it makes it **larger**, something regressed.
+    #[test]
+    fn the_clean_but_not_idempotent_gap_is_pinned() {
+        // deliberately overlapping: one word is a prefix of another, one joins
+        // two others with punctuation, one is a cased form of another
+        const VOCAB: [&str; 8] = [
+            "wisper",
+            "whispr",
+            "catch",
+            "whispr-catch",
+            "WhisprCatch",
+            "a",
+            "ab",
+            "",
+        ];
+
+        let rules: Vec<(&str, &str)> = VOCAB
+            .iter()
+            .filter(|p| !p.is_empty())
+            .flat_map(|p| VOCAB.iter().map(move |r| (*p, *r)))
+            .filter(|(p, r)| p != r)
+            .collect();
+
+        let probes: Vec<String> = VOCAB
+            .iter()
+            .flat_map(|u| {
+                VOCAB
+                    .iter()
+                    .flat_map(move |v| [format!("{u} {v}"), format!("{u}-{v}"), format!("{u}{v}")])
+            })
+            .chain(VOCAB.iter().map(|u| (*u).to_string()))
+            .collect();
+
+        let mut dictionaries = 0usize;
+        let mut clean = 0usize;
+        let mut gaps: Vec<String> = Vec::new();
+        for (i, first) in rules.iter().enumerate() {
+            for second in &rules[i + 1..] {
+                dictionaries += 1;
+                let csv = format!(
+                    "\"{}\",\"{}\"\n\"{}\",\"{}\"\n",
+                    first.0, first.1, second.0, second.1
+                );
+                let d = dict(&csv);
+                if !d.validate().is_empty() {
+                    continue;
+                }
+                clean += 1;
+                for probe in &probes {
+                    let once = d.apply(probe);
+                    if d.apply(&once) != once {
+                        gaps.push(format!(
+                            "{:?} -> {:?}, {:?} -> {:?} on {probe:?}",
+                            first.0, first.1, second.0, second.1
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+
+        println!(
+            "{dictionaries} two-rule dictionaries, {clean} clean, {} not idempotent",
+            gaps.len()
+        );
+        assert!(
+            dictionaries > 1000,
+            "the search collapsed to {dictionaries}"
+        );
+        assert!(
+            clean > 200,
+            "only {clean} of {dictionaries} validated clean"
+        );
+
+        // the counterexample from the review, spelled out so it cannot be lost
+        // in an aggregate count
+        let product_name = dict("wisper,whispr\nwhispr-catch,WhisprCatch\n");
+        assert_eq!(product_name.validate(), Vec::<String>::new());
+        assert_eq!(product_name.apply("wisper-catch"), "whispr-catch");
+        assert_eq!(product_name.apply("whispr-catch"), "WhisprCatch");
+        assert!(
+            gaps.iter()
+                .any(|g| g.contains("\"wisper\" -> \"whispr\", \"whispr-catch\"")),
+            "the search stopped finding the known counterexample: {gaps:?}"
+        );
+
+        assert_eq!(
+            gaps.len(),
+            80,
+            "the clean-but-not-idempotent gap changed size. Smaller is the goal \
+             — lower this number. Larger means something regressed.\n{}",
+            gaps.join("\n")
+        );
     }
 
     /// Rules that insert characters designed to break the next pass: a
@@ -1553,12 +1811,26 @@ mod tests {
         assert_eq!(dict("\u{feff}sam,Sam\n").apply("sam"), "Sam");
     }
 
+    /// Deleting a word leaves the spaces that were around it. Deliberate —
+    /// whitespace tidying is filler removal's problem (#44) — but it is
+    /// visible garbage for a tool that types at the cursor, so pin it.
     #[test]
-    fn an_empty_replacement_deletes_the_word() {
+    fn an_empty_replacement_deletes_the_word_and_leaves_the_spaces() {
         let d = dict("basically,\n");
         assert_eq!(d.validate(), Vec::<String>::new());
         assert_eq!(d.apply("it is basically fine"), "it is  fine");
         assert_eq!(d.apply("Basically"), "");
+    }
+
+    /// The cost of treating an apostrophe as a boundary: it is the same
+    /// mechanism that makes the wanted `sam's -> Sam's` work.
+    #[test]
+    fn an_apostrophe_boundary_cuts_both_ways() {
+        assert_eq!(go("sam,Sam\n", "sam's laptop"), "Sam's laptop");
+        assert_eq!(go("it,IT\n", "it's fine"), "IT's fine");
+        // and `exact` is not an escape hatch: it changes case sensitivity,
+        // not boundaries
+        assert_eq!(go("it,IT,exact\n", "it's fine"), "IT's fine");
     }
 
     // ---- validation -------------------------------------------------------
@@ -1579,6 +1851,35 @@ mod tests {
         assert_eq!(msgs.len(), 2, "{msgs:?}");
         assert!(msgs[0].contains("only whitespace"), "{msgs:?}");
         assert!(msgs[1].starts_with("dictionary.csv:2:"), "{msgs:?}");
+    }
+
+    /// The feature exists so the app stops spelling people's names wrong, and
+    /// José, Zoë and Müller are exactly the names at risk: matching does no
+    /// Unicode normalisation, so a pattern typed in an editor that saves NFD
+    /// silently never fires. Silent is the one outcome we cannot ship.
+    #[test]
+    fn a_decomposed_pattern_is_reported_rather_than_failing_silently() {
+        let d = dict("cafe\u{0301},Café\n");
+        assert_eq!(
+            d.rule_count(),
+            1,
+            "the rule still loads, it is just warned about"
+        );
+        let msgs = d.validate();
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert!(msgs[0].contains("decomposed"), "{msgs:?}");
+        assert!(msgs[0].contains("U+0301"), "{msgs:?}");
+        // and the warning is telling the truth: the precomposed transcript
+        // really does not match
+        assert_eq!(d.apply("café"), "café");
+        assert_eq!(d.apply("cafe\u{0301}"), "Café");
+        // the precomposed spelling of the same rule is clean
+        let ok = dict("café,Café\n");
+        assert_eq!(ok.validate(), Vec::<String>::new());
+        assert_eq!(ok.apply("café"), "Café");
+        // marks outside the Latin/Greek/Cyrillic block are not flagged: many
+        // scripts have no precomposed form and would be false positives
+        assert_eq!(dict("ก\u{0e31},X\n").validate(), Vec::<String>::new());
     }
 
     #[test]
@@ -1790,7 +2091,8 @@ mod tests {
         sentence.repeat(6)
     }
 
-    /// 500 entries, the size the issue budgets for.
+    /// 500 entries, the size the issue budgets for, with 500 distinct first
+    /// words.
     fn five_hundred() -> String {
         let mut csv = String::new();
         for i in 0..250 {
@@ -1799,6 +2101,30 @@ mod tests {
         }
         // a handful that actually fire, so the measurement is not of a miss
         csv.push_str("dictionary,Dictionary\ninjector,Injector\nstreaming,Streaming\n");
+        csv
+    }
+
+    /// 500 entries that all start on the *same* word, differing at the second.
+    ///
+    /// Not contrived: real jargon clusters, and `get hub`, `get lab`,
+    /// `get ignore` all land in one bucket of the first-word index, where the
+    /// scan degrades to a linear walk of that bucket at every occurrence of
+    /// the shared word. This is the shape to hold to the 1 ms budget.
+    fn five_hundred_clustered() -> String {
+        let mut csv = String::new();
+        for i in 0..500 {
+            csv.push_str(&format!("the w{i}x,The{i}\n"));
+        }
+        csv
+    }
+
+    /// The pathological version: 500 entries sharing their first *two* words,
+    /// so nothing short of a trie can tell them apart before the third.
+    fn five_hundred_deeply_clustered() -> String {
+        let mut csv = String::new();
+        for i in 0..500 {
+            csv.push_str(&format!("the thing {i},Thing{i}\n"));
+        }
         csv
     }
 
@@ -1837,6 +2163,76 @@ mod tests {
         assert!(
             best < budget,
             "500 entries took {best:?}, budget {budget:?}"
+        );
+    }
+
+    /// The headline number above assumes 500 *distinct* first words. A real
+    /// jargon dictionary clusters, and the scan then walks one bucket at every
+    /// occurrence of the shared word. Measured, not assumed, because "fast in
+    /// the benchmark, slow on the user's file" is the failure mode that never
+    /// gets reported.
+    #[test]
+    fn a_clustered_dictionary_is_still_under_the_budget() {
+        let d = dict(&five_hundred_clustered());
+        assert_eq!(d.rule_count(), 500);
+        // a transcript where the shared first word is the commonest word in it
+        let text = "the thing about the thing is that the thing is the thing. ".repeat(20);
+        for _ in 0..20 {
+            std::hint::black_box(d.apply(&text));
+        }
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..100 {
+            let t0 = std::time::Instant::now();
+            std::hint::black_box(d.apply(&text));
+            best = best.min(t0.elapsed());
+        }
+        let budget = if cfg!(debug_assertions) {
+            std::time::Duration::from_millis(60)
+        } else {
+            std::time::Duration::from_millis(1)
+        };
+        println!(
+            "500 entries sharing one first word, over {} bytes: {best:?} (budget {budget:?})",
+            text.len()
+        );
+        assert!(best < budget, "clustered dictionary took {best:?}");
+    }
+
+    /// The shape the discriminator cannot help with: 500 patterns sharing
+    /// their first *two* words, so nothing before the third tells them apart.
+    ///
+    /// This one is **over** the 1 ms budget and this test says so out loud
+    /// rather than pretending otherwise. Fixing it means replacing the
+    /// first-word index with a trie, which is a lot of code for a dictionary
+    /// nobody has written yet — `the thing 1` .. `the thing 500` is not what
+    /// jargon looks like. If a real user ever hits it, this is the test to
+    /// tighten.
+    #[test]
+    fn deep_clustering_is_the_known_slow_shape() {
+        let d = dict(&five_hundred_deeply_clustered());
+        assert_eq!(d.rule_count(), 500);
+        let text = "the thing about the thing is that the thing is the thing. ".repeat(20);
+        // few iterations on purpose: this measures a shape we already know is
+        // slow, and an unoptimised build pays ~19 ms a pass for it
+        for _ in 0..3 {
+            std::hint::black_box(d.apply(&text));
+        }
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..12 {
+            let t0 = std::time::Instant::now();
+            std::hint::black_box(d.apply(&text));
+            best = best.min(t0.elapsed());
+        }
+        println!(
+            "500 entries sharing two first words, over {} bytes: {best:?} (1 ms budget MISSED by \
+             design)",
+            text.len()
+        );
+        // no budget claim, only a guard against it becoming pathological
+        let ceiling = if cfg!(debug_assertions) { 400 } else { 20 };
+        assert!(
+            best < std::time::Duration::from_millis(ceiling),
+            "deep clustering took {best:?}"
         );
     }
 
@@ -1892,6 +2288,36 @@ mod tests {
         assert_eq!(word_run_end("sam", 0, 8), Some(3));
         assert_eq!(word_run_end("sam", 0, 2), None);
         assert_eq!(word_run_end(",sam", 0, 8), Some(0));
+        // the cap is in bytes, and one character can be four of them
+        assert_eq!(word_run_end("é ", 0, 2), Some(2));
+        assert_eq!(word_run_end("é", 0, 1), None);
+        assert_eq!(word_run_end("日本語 ", 0, 9), Some(9));
+    }
+
+    /// The cap is compared against the raw transcript word, but the key it was
+    /// derived from is lowercased, and lowercasing can *shrink* a word in
+    /// bytes. Deriving the cap from the key's own length made a rule stop
+    /// firing — and because the cap is a maximum over every rule, adding an
+    /// unrelated long rule made it start firing again. The result of one rule
+    /// must never depend on whether some other rule exists.
+    #[test]
+    fn a_shrinking_lowercase_does_not_put_a_word_over_the_cap() {
+        // U+1E9E lowercases to a two-byte ß, so "STRAẞE" is one byte longer
+        // than the key "straße" it must be found under
+        let alone = dict("straße,Strasse\n");
+        let with_a_longer_rule = dict("straße,Strasse\nzzzzzzzzzzzzzzzz,Q\n");
+        assert_eq!(alone.apply("STRAẞE"), "STRASSE");
+        assert_eq!(alone.apply("straße"), "Strasse");
+        assert_eq!(alone.apply("Straße"), "Strasse");
+        assert_eq!(
+            alone.apply("STRAẞE"),
+            with_a_longer_rule.apply("STRAẞE"),
+            "an unrelated rule changed this rule's output"
+        );
+        // U+212A KELVIN SIGN is three bytes and lowercases to a one-byte k, so
+        // the raw word is two bytes over its key
+        let k = dict("kelvin,Kelvin\n");
+        assert_eq!(k.apply("\u{212a}elvin"), "Kelvin");
     }
 
     #[test]
