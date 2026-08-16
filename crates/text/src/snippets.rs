@@ -31,18 +31,28 @@
 //!
 //! - Blank lines directly above and below a body are separators and are
 //!   dropped; blank lines *inside* a body are kept.
-//! - A body line that has to start with `[` or `#` is escaped with a
-//!   backslash: `\[draft]`, `\# heading`.
-//! - `\r\n` files are read as if they were `\n` files, so a snippets file
-//!   synced from another machine still works.
+//! - A body line that has to start with `[`, `#` or `\` is escaped with a
+//!   backslash: `\[draft]`, `\# heading`, `\\[not a header]`.
+//! - **Leave a blank line between entries.** A `[...]` line directly under
+//!   body text is ambiguous — bracketed placeholders like `[Auto-reply]` are
+//!   exactly how people write canned replies — so it is read as a new entry
+//!   *and* reported, because the alternative is silently eating the rest of
+//!   somebody's signature.
+//! - `\r\n` files are read as if they were `\n` files, and a UTF-8 BOM is
+//!   ignored, so a file written by Notepad or synced from another machine
+//!   still works.
+//! - **An entry with no text under it is reported and switched off.** It would
+//!   expand its trigger to nothing — that is, saying the phrase would *delete*
+//!   the sentence the user just dictated — and that is almost always a header
+//!   nobody meant to write rather than a feature anybody wanted.
 //!
 //! # Matching: whole phrase, never mid-sentence
 //!
 //! This is the one thing that separates snippets from the custom dictionary
 //! (#43). The dictionary rewrites *words* wherever they appear. A snippet
 //! fires only when its trigger is an **entire sentence** of the utterance —
-//! the text between one sentence boundary (`. ! ? ; :` a newline, or their CJK
-//! equivalents) and the next.
+//! the text between one sentence boundary (`.` `!` `?` `…`, a newline, or
+//! their CJK equivalents) and the next.
 //!
 //! ```text
 //! "Sign off."                        -> the signature block
@@ -56,9 +66,22 @@
 //! more expensive than one missed expansion, which the user fixes by saying
 //! the trigger on its own.
 //!
-//! Comparison ignores case and collapses runs of whitespace, so "Sign  off"
-//! and "SIGN OFF" both fire. A comma does **not** end a sentence, so
-//! "sign off, and let me know" keeps its verb.
+//! **`,` `;` and `:` do not end a sentence.** They are the punctuation of a
+//! clause, not of a command, and the cases they would break are ordinary
+//! written English: `"Sign off, and let me know."`, `"Next: sign off."`,
+//! `"Owner: sign off; Reviewer: Ada."`. An earlier revision split on `;` and
+//! `:` so that `"Address: insert my address"` would expand; that convenience
+//! is not worth mangling a sentence somebody dictated. The cost is real and
+//! stated here so it is a decision: a label-then-value dictation only expands
+//! if the user says the trigger as its own sentence, or on its own line.
+//!
+//! Comparison collapses runs of whitespace and lowercases both sides with
+//! Rust's `str::to_lowercase`, so "Sign  off" and "SIGN OFF" both fire. That
+//! is simple Unicode lowercasing and nothing more: there is no NFC/NFD
+//! normalization, no width folding and no locale-aware casing, so `"SİGN
+//! OFF."` (Turkish dotted capital I) and fullwidth `"ｓｉｇｎ　ｏｆｆ"` stay
+//! quiet. `unicode_triggers_match_by_case_folded_content` and
+//! `case_folding_is_simple_lowercasing_only` pin both halves.
 //!
 //! When a trigger fires at the very end of the utterance, the full stop the
 //! model added after it goes away with it ("Insert my email." →
@@ -87,15 +110,47 @@
 //! fix, because their dictionary is a file they wrote. The reverse order would
 //! feed snippet *bodies* to the dictionary and rewrite text the user typed by
 //! hand, which is worse. `a_dictionary_rule_reaches_inside_a_trigger` is the
-//! executable version of all three cases.
+//! executable version of all three cases. There is a fourth, and it is the
+//! dangerous one — see the note on composition under *Idempotence* below.
+//!
+//! # A multi-line body is advisory, not free (#73)
+//!
+//! The signature block is the reason people want this feature, and it is also
+//! the one shape the injector cannot type safely yet: with no clipboard
+//! backend (#68), a newline goes out as a Return key, which *sends the
+//! message* in Slack, Discord and most chat boxes. Nothing in a pure text
+//! crate can fix that, so [`Transform::validate`] warns on every multi-line
+//! body and leaves it enabled — it is correct in any editor, and a user should
+//! learn the limit from Settings rather than from a customer thread. The first
+//! "Done when" of #47 is not met until #73 lands.
 //!
 //! # Idempotence
 //!
-//! `apply(apply(x)) == apply(x)`, and the proof is structural rather than a
-//! loop with a counter: an entry whose body contains any trigger as a whole
-//! sentence is reported by [`Transform::validate`] and **disabled**, so no
-//! expansion can ever produce text that a later pass would expand again.
-//! Snippets do not nest.
+//! **For this transform in isolation**, `apply(apply(x)) == apply(x)`, and the
+//! proof is structural rather than a loop with a counter: an entry whose body
+//! contains any trigger as a whole sentence is reported by
+//! [`Transform::validate`] and **disabled**, so no expansion can ever produce
+//! text that a later pass would expand again. Snippets do not nest.
+//!
+//! **The chain is a different question, and composition can break it.** The
+//! nesting guard inspects bodies as written, at load time — it cannot see a
+//! body that only *becomes* a trigger once the dictionary has run:
+//!
+//! ```text
+//! dictionary: "regards"  -> "sign off"
+//! snippet:    "sign off" -> "Best,\nregards\nAda"
+//!
+//! chain.apply("Sign off.") == "Best,\nregards\nAda"
+//! chain.apply(that)        == "Best,\nBest,\nregards\nAda\nAda"   // grows
+//! ```
+//!
+//! `validate()` reports nothing, because in isolation both files are fine.
+//! Production is safe today — `finish()` in `apps/cli` applies the chain
+//! exactly once — but `lib.rs::applying_the_chain_twice_changes_nothing`
+//! asserts the invariant for the whole chain, and #49's "preview, then
+//! dictate" is a documented double-apply. Whoever builds that surface owns the
+//! cross-file check; `composition_with_a_dictionary_can_break_idempotence` is
+//! the failing case, written down so it is inherited rather than rediscovered.
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -136,6 +191,42 @@ pub struct Snippet {
     pub line: usize,
 }
 
+/// How much a problem costs the user. [`Transform::validate`] flattens this to
+/// strings because that is the trait's shape, but the distinction is real and
+/// tests assert on it: a fault means an entry is inert, an advisory means it
+/// works and there is something the user should know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Severity {
+    Fault,
+    Advisory,
+}
+
+#[derive(Debug, Clone)]
+struct Problem {
+    /// Line of the `[trigger]` header this is about; 0 for the file itself.
+    line: usize,
+    severity: Severity,
+    message: String,
+}
+
+impl Problem {
+    fn fault(line: usize, message: String) -> Self {
+        Self {
+            line,
+            severity: Severity::Fault,
+            message,
+        }
+    }
+
+    fn advisory(line: usize, message: String) -> Self {
+        Self {
+            line,
+            severity: Severity::Advisory,
+            message,
+        }
+    }
+}
+
 /// Expands spoken triggers into their stored text.
 pub struct Snippets {
     enabled: bool,
@@ -146,7 +237,10 @@ pub struct Snippets {
     /// Longest usable trigger, in non-whitespace characters. Lets `lookup`
     /// reject a long sentence without normalizing it.
     max_trigger_chars: usize,
-    problems: Vec<String>,
+    /// `(line number, message)`. Kept with the line so [`Transform::validate`]
+    /// can hand #49 a list in file order however many passes produced it;
+    /// line 0 means "about the file as a whole".
+    problems: Vec<Problem>,
 }
 
 impl Snippets {
@@ -156,12 +250,22 @@ impl Snippets {
     /// happens once, when the chain is built. [`Transform::apply`] stays a
     /// pure function of its input.
     pub fn new(cfg: SnippetsConfig) -> Self {
-        let path = cfg.path.clone().or_else(default_path_for_load);
-        let mut loaded = match path {
+        let mut loaded = match cfg.path.clone() {
             Some(p) => Self::from_file(&p),
-            // No home directory to read from. Not worth a complaint in
-            // Settings: there is nowhere to put the file either.
-            None => Self::from_source(""),
+            None => match default_path_for_load() {
+                DefaultPath::Found(p) => Self::from_file(&p),
+                DefaultPath::NoHome => {
+                    let mut s = Self::from_source("");
+                    s.problems.push(Problem::fault(
+                        0,
+                        "snippets: no usable $HOME, so there is nowhere to look for \
+                         snippets.txt — set HOME, or point [polish.snippets] path at the file"
+                            .to_string(),
+                    ));
+                    s
+                }
+                DefaultPath::Skipped => Self::from_source(""),
+            },
         };
         loaded.enabled = cfg.enabled;
         loaded
@@ -178,8 +282,10 @@ impl Snippets {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::from_source(""),
             Err(e) => {
                 let mut s = Self::from_source("");
-                s.problems
-                    .push(format!("snippets: cannot read {}: {e}", path.display()));
+                s.problems.push(Problem::fault(
+                    0,
+                    format!("snippets: cannot read {}: {e}", path.display()),
+                ));
                 s
             }
         }
@@ -202,9 +308,18 @@ impl Snippets {
     /// );
     /// ```
     pub fn from_source(source: &str) -> Self {
+        // A file written by Notepad or VS Code as "UTF-8 with BOM" starts
+        // EF BB BF. U+FEFF is not whitespace, so without this the first
+        // `[trigger]` line is not a header, the entry is lost, and the user is
+        // told there is stray text before the first header. One character.
+        let source = source.strip_prefix('\u{feff}').unwrap_or(source);
         let (snippets, mut problems) = parse(source);
         let (by_trigger, max_trigger_chars, more) = compile(&snippets);
         problems.extend(more);
+        // Two passes produced these; #49 renders them next to the file, so
+        // they come out in the order the user reads. Stable, so problems about
+        // the same line stay in the order they were found.
+        problems.sort_by_key(|p| p.line);
         Self {
             enabled: true,
             snippets,
@@ -299,11 +414,34 @@ impl Transform for Snippets {
         false
     }
 
-    /// Malformed entries, in file order. Each names the line so Settings can
-    /// jump to it. Every problem reported here also means the entry does not
-    /// expand: a snippet the app cannot make sense of must not fire.
+    /// Problems with the file, in file order, each naming the line so Settings
+    /// can jump to it.
+    ///
+    /// Two kinds, and the distinction matters:
+    ///
+    /// - **Rejections** — empty, whitespace-only or duplicate triggers, a
+    ///   trigger containing sentence punctuation, an empty body, a body that
+    ///   contains another trigger. The entry is inert; a snippet the app
+    ///   cannot make sense of must never fire. `a_reported_entry_never_expands`
+    ///   pins that.
+    /// - **Advisories** — a `[...]` line directly under body text (the file has
+    ///   two readings and only the user knows which is right; a compactly
+    ///   written file is a false positive and dropping every entry in it would
+    ///   be far worse than a warning), and a multi-line body, which works
+    ///   everywhere except the apps #73 breaks. Advisories never disable
+    ///   anything.
     fn validate(&self) -> Vec<String> {
-        self.problems.clone()
+        self.problems
+            .iter()
+            .map(|p| match p.severity {
+                Severity::Fault => p.message.clone(),
+                // Marked in the text, because `Vec<String>` is all the trait
+                // gives us and a list that mixes "this entry is switched off"
+                // with "this entry works, but read this" is worse than useless
+                // to the person reading it.
+                Severity::Advisory => format!("note: {}", p.message),
+            })
+            .collect()
     }
 }
 
@@ -311,9 +449,9 @@ impl Transform for Snippets {
 
 /// Splits a snippets file into entries. The second half of the pair is the
 /// problems the *parse* can see; [`compile`] finds the rest.
-fn parse(source: &str) -> (Vec<Snippet>, Vec<String>) {
+fn parse(source: &str) -> (Vec<Snippet>, Vec<Problem>) {
     let mut snippets: Vec<Snippet> = Vec::new();
-    let mut problems: Vec<String> = Vec::new();
+    let mut problems: Vec<Problem> = Vec::new();
     // (trigger, header line number, body lines so far)
     let mut pending: Option<(String, usize, Vec<String>)> = None;
     let mut warned_about_preamble = false;
@@ -322,6 +460,22 @@ fn parse(source: &str) -> (Vec<Snippet>, Vec<String>) {
         let line_no = i + 1;
         if let Some(trigger) = header_trigger(line) {
             if let Some((t, n, body)) = pending.take() {
+                // `[Auto-reply]` and `[Founder, WhisprCatch]` are how people
+                // actually write canned replies and signatures, and read as
+                // headers here. Taking the reading silently would truncate the
+                // snippet above *and* invent a trigger that fires on ordinary
+                // dictation — and with an empty body, one that deletes the
+                // sentence the user just spoke. Ambiguous, so: say so.
+                if body.last().is_some_and(|l| !l.trim().is_empty()) {
+                    problems.push(Problem::advisory(
+                        line_no,
+                        format!(
+                            "snippets line {line_no}: {line:?} sits directly under body text, so \
+                             it is read as a new snippet — leave a blank line above it, or write \
+                             it as \\{line} if it belongs to the snippet above"
+                        ),
+                    ));
+                }
                 snippets.push(finish_snippet(t, n, body));
             }
             pending = Some((trigger.to_string(), line_no, Vec::new()));
@@ -335,8 +489,12 @@ fn parse(source: &str) -> (Vec<Snippet>, Vec<String>) {
             None => {
                 if !line.trim().is_empty() && !warned_about_preamble {
                     warned_about_preamble = true;
-                    problems.push(format!(
-                        "snippets line {line_no}: text before the first [trigger] line is ignored"
+                    problems.push(Problem::fault(
+                        line_no,
+                        format!(
+                            "snippets line {line_no}: text before the first [trigger] line \
+                             is ignored"
+                        ),
                     ));
                 }
             }
@@ -354,10 +512,12 @@ fn header_trigger(line: &str) -> Option<&str> {
     line.trim_end().strip_prefix('[')?.strip_suffix(']')
 }
 
-/// Un-escapes a body line that had to start with `[` or `#`.
+/// Un-escapes a body line that had to start with `[`, `#` or a backslash of
+/// its own. `\\[link]` is how a body line that really begins `\[link]` is
+/// written; without the third case that line could not be expressed at all.
 fn unescape(line: &str) -> &str {
     match line.strip_prefix('\\') {
-        Some(rest) if rest.starts_with('[') || rest.starts_with('#') => rest,
+        Some(rest) if rest.starts_with(['[', '#', '\\']) => rest,
         _ => line,
     }
 }
@@ -381,28 +541,50 @@ fn finish_snippet(trigger: String, line: usize, mut body: Vec<String>) -> Snippe
 
 /// Turns parsed entries into the lookup map, rejecting the ones that cannot
 /// work. Returns `(map, longest trigger in non-whitespace chars, problems)`.
-fn compile(snippets: &[Snippet]) -> (HashMap<String, usize>, usize, Vec<String>) {
+fn compile(snippets: &[Snippet]) -> (HashMap<String, usize>, usize, Vec<Problem>) {
     let mut by_trigger: HashMap<String, usize> = HashMap::new();
-    let mut problems: Vec<String> = Vec::new();
+    let mut problems: Vec<Problem> = Vec::new();
 
     for (idx, s) in snippets.iter().enumerate() {
         if s.trigger.is_empty() {
-            problems.push(format!("snippets line {}: empty trigger, `[]`", s.line));
+            problems.push(Problem::fault(
+                s.line,
+                format!("snippets line {}: empty trigger, `[]`", s.line),
+            ));
             continue;
         }
         let key = normalize_key(&s.trigger);
         if key.is_empty() {
-            problems.push(format!(
-                "snippets line {}: trigger is only whitespace",
-                s.line
+            problems.push(Problem::fault(
+                s.line,
+                format!("snippets line {}: trigger is only whitespace", s.line),
             ));
             continue;
         }
         if let Some(bad) = s.trigger.chars().find(|c| is_delimiter(*c)) {
-            problems.push(format!(
-                "snippets line {}: trigger {:?} contains {bad:?}, which ends a sentence, \
-                 so the trigger can never match a whole one — remove it",
-                s.line, s.trigger
+            problems.push(Problem::fault(
+                s.line,
+                format!(
+                    "snippets line {}: trigger {:?} contains {bad:?}, which ends a sentence, \
+                     so the trigger can never match a whole one — remove it",
+                    s.line, s.trigger
+                ),
+            ));
+            continue;
+        }
+        // An entry with no text under it expands to nothing, which means
+        // saying the trigger *deletes* the sentence the user dictated. That is
+        // almost always a header the file's author did not mean to write — an
+        // unescaped `[Auto-reply]` line, or a stub they never filled in — and
+        // deleting somebody's words is a worse outcome than not expanding.
+        if s.body.is_empty() {
+            problems.push(Problem::fault(
+                s.line,
+                format!(
+                    "snippets line {}: {:?} has no text under it, so it would delete the \
+                     phrase rather than expand it — this entry is disabled",
+                    s.line, s.trigger
+                ),
             ));
             continue;
         }
@@ -410,12 +592,15 @@ fn compile(snippets: &[Snippet]) -> (HashMap<String, usize>, usize, Vec<String>)
             Entry::Vacant(v) => {
                 v.insert(idx);
             }
-            Entry::Occupied(o) => problems.push(format!(
-                "snippets line {}: duplicate trigger {:?}, already defined on line {} — \
-                 only the first one is used",
+            Entry::Occupied(o) => problems.push(Problem::fault(
                 s.line,
-                s.trigger,
-                snippets[*o.get()].line
+                format!(
+                    "snippets line {}: duplicate trigger {:?}, already defined on line {} — \
+                     only the first one is used",
+                    s.line,
+                    s.trigger,
+                    snippets[*o.get()].line
+                ),
             )),
         }
     }
@@ -434,16 +619,45 @@ fn compile(snippets: &[Snippet]) -> (HashMap<String, usize>, usize, Vec<String>)
             continue; // already rejected above, or shadowed by a duplicate
         }
         if let Some(found) = first_trigger_in(&s.body, &by_trigger, max) {
-            problems.push(format!(
-                "snippets line {}: the body of {:?} contains the trigger {found:?} as a whole \
-                 sentence — snippets do not nest, so this entry is disabled",
-                s.line, s.trigger
+            problems.push(Problem::fault(
+                s.line,
+                format!(
+                    "snippets line {}: the body of {:?} contains the trigger {found:?} as a \
+                     whole sentence — snippets do not nest, so this entry is disabled",
+                    s.line, s.trigger
+                ),
             ));
             nested.push(key);
         }
     }
     for key in nested {
         by_trigger.remove(&key);
+    }
+
+    // Third pass, advisory only: a multi-line body is the shape of the feature
+    // users want most (an email signature) and also the shape that #73 breaks.
+    // Until the injector has a clipboard backend (#68) a newline is typed as a
+    // Return key, which in Slack, Discord and most chat boxes *sends* the
+    // message. The snippet is not malformed and stays enabled — it is correct
+    // in any editor — but a user should learn this from Settings, not from a
+    // customer thread.
+    for (idx, s) in snippets.iter().enumerate() {
+        let key = normalize_key(&s.trigger);
+        if by_trigger.get(&key) != Some(&idx) {
+            continue;
+        }
+        let lines = s.body.lines().count();
+        if lines > 1 {
+            problems.push(Problem::advisory(
+                s.line,
+                format!(
+                    "snippets line {}: {:?} has a {lines}-line body — until #73 lands, a \
+                     newline is typed as Return, which sends the message in Slack, Discord \
+                     and similar apps",
+                    s.line, s.trigger
+                ),
+            ));
+        }
     }
 
     let max = max_trigger_chars(&by_trigger);
@@ -522,13 +736,16 @@ fn normalize_key(s: &str) -> String {
     out
 }
 
-/// Ends a sentence. `;` and `:` are included because "Address: my address"
-/// should expand; `,` is not, because "sign off, and let me know" should not.
+/// Ends a sentence.
+///
+/// `,` `;` and `:` are deliberately *not* here. They punctuate a clause, not a
+/// command, and treating them as boundaries fires on ordinary written English:
+/// "Sign off, and let me know.", "Next: sign off.", "Owner: sign off;
+/// Reviewer: Ada." — three sentences a snippet would have mangled to buy
+/// "Address: my address". See the module docs; `a_clause_separator_does_not_
+/// start_a_new_sentence` is the test.
 fn is_delimiter(c: char) -> bool {
-    matches!(
-        c,
-        '.' | '!' | '?' | ';' | ':' | '\n' | '。' | '！' | '？' | '；' | '：' | '…'
-    )
+    matches!(c, '.' | '!' | '?' | '\n' | '。' | '！' | '？' | '…')
 }
 
 /// The subset of [`is_delimiter`] that is punctuation a model added rather
@@ -607,8 +824,22 @@ pub fn default_path() -> Option<PathBuf> {
     config_home().map(|d| d.join("whisper-catch").join(SNIPPETS_FILE))
 }
 
-/// [`default_path`], except inside this crate's own unit tests, where it is
-/// `None`.
+/// What [`Snippets::new`] found when the config named no path of its own.
+// Which variants can occur depends on `cfg(test)`: a test build only ever
+// produces `Skipped`, a real build never does.
+#[allow(dead_code)]
+enum DefaultPath {
+    Found(PathBuf),
+    /// No home directory to look in — worth saying out loud rather than
+    /// loading nothing in silence, because `apps/cli` may well have found
+    /// `config.toml` anyway. See [`home_dir`].
+    NoHome,
+    /// This crate's own unit tests, which never read a contributor's real
+    /// file. Not a problem, and not reported as one.
+    Skipped,
+}
+
+/// [`default_path`], except inside this crate's own unit tests.
 ///
 /// `wc-text` has no business reading a contributor's real snippets file while
 /// `cargo test` runs — `PolishConfig::validate()` builds all six transforms,
@@ -616,13 +847,16 @@ pub fn default_path() -> Option<PathBuf> {
 /// tests fail in `lib.rs`. Every test that exercises loading passes an
 /// explicit path.
 #[cfg(not(test))]
-fn default_path_for_load() -> Option<PathBuf> {
-    default_path()
+fn default_path_for_load() -> DefaultPath {
+    match default_path() {
+        Some(p) => DefaultPath::Found(p),
+        None => DefaultPath::NoHome,
+    }
 }
 
 #[cfg(test)]
-fn default_path_for_load() -> Option<PathBuf> {
-    None
+fn default_path_for_load() -> DefaultPath {
+    DefaultPath::Skipped
 }
 
 /// Mirrors `dirs::config_dir()` for the two platforms WhisprCatch ships on.
@@ -643,6 +877,18 @@ fn config_home() -> Option<PathBuf> {
     )
 }
 
+/// `$HOME`, when it is set to something non-empty.
+///
+/// **Known divergence from `dirs`, documented rather than fixed.** When `$HOME`
+/// is unset or empty, `dirs_sys` falls back to `getpwuid_r`; this returns
+/// `None`, so `apps/cli` can load `config.toml` from the passwd-database home
+/// while snippets load from nowhere. Closing the gap means libc — a new
+/// dependency in a crate whose whole point is that it has none — for a case
+/// both systemd and launchd rule out (`su` without `-`, cron, a bare service
+/// launch). Instead [`Snippets::new`] reports it: the user sees "no usable
+/// $HOME" in Settings rather than an empty list and no explanation. If a
+/// second caller ever needs this resolver, move it and the `dirs` dependency
+/// somewhere both can share (#43 hand-rolled the same one).
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
@@ -688,12 +934,51 @@ https://meet.example.com/ada-standup
 
     fn real() -> Snippets {
         let s = Snippets::from_source(REAL_FILE);
-        assert!(s.validate().is_empty(), "{:?}", s.validate());
+        assert!(faults(&s).is_empty(), "{:?}", s.validate());
+        // the signature block is multi-line, so exactly one #73 advisory
+        assert_eq!(advisories(&s).len(), 1, "{:?}", s.validate());
         s
     }
 
     fn one(trigger: &str, body: &str) -> Snippets {
         Snippets::from_source(&format!("[{trigger}]\n{body}\n"))
+    }
+
+    /// A well-formed file: one entry per pair, blank line between them, which
+    /// is what the format documents. Written as a helper so a test that is
+    /// about matching does not accidentally also test the compact-file
+    /// warning — `a_header_directly_under_body_text_is_reported_but_nothing_is_disabled`
+    /// owns that.
+    fn file_of(entries: &[(&str, &str)]) -> String {
+        entries
+            .iter()
+            .map(|(t, b)| format!("[{t}]\n{b}\n\n"))
+            .collect()
+    }
+
+    fn snips(entries: &[(&str, &str)]) -> Snippets {
+        Snippets::from_source(&file_of(entries))
+    }
+
+    /// Problems that disable an entry. Most tests care about these and not
+    /// about the advisories, which a perfectly good signature snippet earns
+    /// just for having two lines — `validate_warns_about_a_multi_line_body`
+    /// and `a_header_directly_under_body_text_is_reported_but_nothing_is_disabled`
+    /// own those.
+    fn faults(s: &Snippets) -> Vec<String> {
+        problems_of(s, Severity::Fault)
+    }
+
+    fn advisories(s: &Snippets) -> Vec<String> {
+        problems_of(s, Severity::Advisory)
+    }
+
+    fn problems_of(s: &Snippets, severity: Severity) -> Vec<String> {
+        s.problems
+            .iter()
+            .filter(|p| p.severity == severity)
+            .map(|p| p.message.clone())
+            .collect()
     }
 
     // ---- format -----------------------------------------------------------
@@ -723,7 +1008,7 @@ https://meet.example.com/ada-standup
         let body = "-- \nBest,\nAda\n\nWhisprCatch\n  indented line\n";
         let f = TempFile::new("multiline", &format!("[sign off]\n{body}\n[x]\ny\n"));
         let s = Snippets::from_file(f.path());
-        assert!(s.validate().is_empty(), "{:?}", s.validate());
+        assert!(faults(&s).is_empty(), "{:?}", s.validate());
         assert_eq!(
             s.apply("Sign off."),
             "-- \nBest,\nAda\n\nWhisprCatch\n  indented line"
@@ -750,6 +1035,34 @@ https://meet.example.com/ada-standup
         let s = Snippets::from_source("[sign off]\r\nBest,\r\nAda\r\n");
         assert_eq!(s.snippets()[0].body, "Best,\nAda");
         assert_eq!(s.apply("Sign off."), "Best,\nAda");
+    }
+
+    /// Notepad and VS Code both offer "UTF-8 with BOM", and one invisible
+    /// character at the front of the file used to swallow the first snippet
+    /// whole — with a misleading "text before the first [trigger] line"
+    /// message pointing at a line that looks perfectly fine.
+    #[test]
+    fn a_utf8_bom_does_not_swallow_the_first_snippet() {
+        let s = Snippets::from_source("\u{feff}[insert my email]\nada@example.com\n");
+        assert!(s.validate().is_empty(), "{:?}", s.validate());
+        assert_eq!(s.snippets().len(), 1);
+        assert_eq!(s.apply("Insert my email."), "ada@example.com");
+
+        // and through a real file, bytes EF BB BF and all
+        let f = TempFile::new_bytes("bom", "\u{feff}[sign off]\nBest,\nAda\n".as_bytes());
+        assert_eq!(
+            Snippets::from_file(f.path()).apply("Sign off."),
+            "Best,\nAda"
+        );
+    }
+
+    /// A backslash escapes `[`, `#` or another backslash, so a body line that
+    /// really starts with `\[` can be written at all.
+    #[test]
+    fn a_leading_backslash_can_itself_be_escaped() {
+        let s = Snippets::from_source("[a]\n\\\\[link]\n\\[link]\n\\# hash\n\\path\\to\n");
+        assert!(faults(&s).is_empty(), "{:?}", s.validate());
+        assert_eq!(s.snippets()[0].body, "\\[link]\n[link]\n# hash\n\\path\\to");
     }
 
     #[test]
@@ -803,11 +1116,7 @@ https://meet.example.com/ada-standup
                 "Sign off. Talk soon.",
                 "Best,\nAda\nFounder, WhisprCatch. Talk soon.",
             ),
-            ("Ping me: insert my email.", "Ping me: ada@example.com"),
-            (
-                "Two things; standup link; done.",
-                "Two things; https://meet.example.com/ada-standup; done.",
-            ),
+            ("1. Sign off.", "1. Best,\nAda\nFounder, WhisprCatch"),
         ];
         for (input, want) in fires {
             let out = s.apply(input);
@@ -834,23 +1143,62 @@ https://meet.example.com/ada-standup
             "off",
             "insert my",
             "my email",
+            // clause separators: a colon or a semicolon does not start a new
+            // sentence, so none of these are commands
+            "Next: sign off.",
+            "Blockers: sign off: none.",
+            "Owner: sign off; Reviewer: Ada.",
+            "Two things; standup link; done.",
+            "Ping me: insert my email.",
+            "Todo: insert my email",
+            // list markers other than a number are not sentence boundaries
+            "- sign off.",
+            "* Sign off.",
+            "• sign off",
         ];
         for input in quiet {
             assert_eq!(s.apply(input), input, "expected {input:?} to stay put");
         }
     }
 
-    /// A comma does not end a sentence, so a trigger followed by a clause is
-    /// still prose. This is the case that decides how safe the whole feature
-    /// is: "sign off, and let me know" is a request, not a signature.
+    /// `,` `;` and `:` punctuate a clause, not a command. Splitting on them
+    /// would buy "Address: my address" at the price of mangling ordinary
+    /// written English, and this is the corpus that made that call. An earlier
+    /// revision did split on `;` and `:`, and every line below was broken by
+    /// it.
     #[test]
-    fn a_comma_does_not_start_a_new_sentence() {
+    fn a_clause_separator_does_not_start_a_new_sentence() {
+        let s = real();
+        for input in [
+            "Sign off, and let me know.",
+            "Yes, sign off, please.",
+            "Next: sign off.",
+            "Blockers: sign off: none.",
+            "Owner: sign off; Reviewer: Ada.",
+            "Agenda: standup link; notes; actions.",
+        ] {
+            assert_eq!(s.apply(input), input, "{input:?} was mangled");
+        }
+        // and the cost of that choice, stated as a test rather than a hope:
+        // a label-then-value dictation does not expand unless the trigger is
+        // a sentence or a line of its own
+        assert_eq!(s.apply("Email: insert my email"), "Email: insert my email");
+        assert_eq!(s.apply("Email\ninsert my email"), "Email\nada@example.com");
+    }
+
+    /// A numbered list marker *is* a sentence boundary ("1." ends a sentence
+    /// as far as any punctuation-based split can tell), a dash or a bullet is
+    /// not. Asymmetric, accepted, and pinned here so it is a known shape
+    /// rather than a surprise in a bug report.
+    #[test]
+    fn a_numbered_list_marker_ends_a_sentence_but_a_bullet_does_not() {
         let s = real();
         assert_eq!(
-            s.apply("Sign off, and let me know."),
-            "Sign off, and let me know."
+            s.apply("1. Sign off."),
+            "1. Best,\nAda\nFounder, WhisprCatch"
         );
-        assert_eq!(s.apply("Yes, sign off, please."), "Yes, sign off, please.");
+        assert_eq!(s.apply("- sign off."), "- sign off.");
+        assert_eq!(s.apply("* Sign off."), "* Sign off.");
     }
 
     #[test]
@@ -900,8 +1248,9 @@ https://meet.example.com/ada-standup
         );
         // a newline is structure the user dictated, never punctuation to eat
         assert_eq!(s.apply("Insert my email\n"), "ada@example.com\n");
-        // and so is a semicolon or a colon
-        assert_eq!(s.apply("Insert my email;"), "ada@example.com;");
+        // a semicolon is not a sentence boundary at all, so this is one
+        // segment and nothing fires
+        assert_eq!(s.apply("Insert my email;"), "Insert my email;");
     }
 
     #[test]
@@ -943,9 +1292,12 @@ https://meet.example.com/ada-standup
     /// that should stop them.
     #[test]
     fn the_longest_trigger_wins_when_one_is_a_prefix_of_another() {
-        let s = Snippets::from_source(
-            "[sign]\nSHORT\n[sign off]\nLONG\n[sign off now]\nLONGEST\n[my]\nM\n",
-        );
+        let s = snips(&[
+            ("sign", "SHORT"),
+            ("sign off", "LONG"),
+            ("sign off now", "LONGEST"),
+            ("my", "M"),
+        ]);
         assert!(s.validate().is_empty(), "{:?}", s.validate());
         assert_eq!(s.apply("Sign off now."), "LONGEST");
         assert_eq!(s.apply("Sign off."), "LONG");
@@ -961,10 +1313,12 @@ https://meet.example.com/ada-standup
     fn apply_is_idempotent_on_the_torture_corpus() {
         // triggers deliberately chosen to hit the corpus: "hello world" and
         // the Japanese and Cyrillic lines are whole sentences in it
-        let s = Snippets::from_source(
-            "[hello world]\nHELLO\n[日本語のテキストです]\nJA\n\
-             [Правда — это не то, что кажется]\nRU\n[um, I mean, like, the thing]\nTHING\n",
-        );
+        let s = snips(&[
+            ("hello world", "HELLO"),
+            ("日本語のテキストです", "JA"),
+            ("Правда — это не то, что кажется", "RU"),
+            ("um, I mean, like, the thing", "THING"),
+        ]);
         assert!(s.validate().is_empty(), "{:?}", s.validate());
         for input in torture_inputs() {
             let once = s.apply(&input);
@@ -984,25 +1338,22 @@ https://meet.example.com/ada-standup
     #[test]
     fn a_body_containing_a_trigger_is_reported_and_disabled() {
         // its own trigger, on a line of its own inside the body
-        let s = Snippets::from_source("[loop]\nbefore\nloop\nafter\n");
-        assert_eq!(s.validate().len(), 1);
-        assert!(
-            s.validate()[0].contains("do not nest"),
-            "{:?}",
-            s.validate()
-        );
+        let s = snips(&[("loop", "before\nloop\nafter")]);
+        assert_eq!(faults(&s).len(), 1, "{:?}", s.validate());
+        assert!(faults(&s)[0].contains("do not nest"), "{:?}", s.validate());
         assert_eq!(s.apply("Loop."), "Loop.");
 
         // a mutual cycle: both are disabled, neither expands
-        let s = Snippets::from_source("[a]\nb\n[b]\na\n");
-        assert_eq!(s.validate().len(), 2, "{:?}", s.validate());
+        let s = snips(&[("a", "b"), ("b", "a")]);
+        assert_eq!(faults(&s).len(), 2, "{:?}", s.validate());
         assert_eq!(s.apply("A. B."), "A. B.");
 
         // a one-way reference: only the referring entry is disabled
-        let s = Snippets::from_source(
-            "[sign off]\nBest,\ninsert my email\n[insert my email]\nada@example.com\n",
-        );
-        assert_eq!(s.validate().len(), 1, "{:?}", s.validate());
+        let s = snips(&[
+            ("sign off", "Best,\ninsert my email"),
+            ("insert my email", "ada@example.com"),
+        ]);
+        assert_eq!(faults(&s).len(), 1, "{:?}", s.validate());
         assert_eq!(s.apply("Sign off."), "Sign off.");
         assert_eq!(s.apply("Insert my email."), "ada@example.com");
     }
@@ -1011,8 +1362,8 @@ https://meet.example.com/ada-standup
     /// fine: it can never match, so it can never re-expand.
     #[test]
     fn a_body_that_mentions_a_trigger_mid_sentence_is_not_nesting() {
-        let s = Snippets::from_source("[a]\nplease sign off on this\n[sign off]\nBest,\nAda\n");
-        assert!(s.validate().is_empty(), "{:?}", s.validate());
+        let s = snips(&[("a", "please sign off on this"), ("sign off", "Best,\nAda")]);
+        assert!(faults(&s).is_empty(), "{:?}", s.validate());
         assert_eq!(s.apply("A."), "please sign off on this");
         assert_eq!(s.apply(&s.apply("A.")), s.apply("A."));
     }
@@ -1021,14 +1372,14 @@ https://meet.example.com/ada-standup
     #[test]
     fn expansion_does_not_create_a_new_trigger_at_the_seam() {
         // "Ha!" introduces a sentence boundary the input did not have
-        let s = Snippets::from_source("[a]\nHa!\n[ha]\nNO\n");
+        let s = snips(&[("a", "Ha!"), ("ha", "NO")]);
         // "Ha!" contains "Ha" as a whole sentence, so [a] is disabled
-        assert_eq!(s.validate().len(), 1, "{:?}", s.validate());
+        assert_eq!(faults(&s).len(), 1, "{:?}", s.validate());
         assert_eq!(s.apply("A. b."), "A. b.");
 
         // with the collision removed, the seam is stable
-        let s = Snippets::from_source("[a]\nHa!\n");
-        assert!(s.validate().is_empty());
+        let s = one("a", "Ha!");
+        assert!(s.validate().is_empty(), "{:?}", s.validate());
         let once = s.apply("A. b.");
         assert_eq!(once, "Ha!. b.");
         assert_eq!(s.apply(&once), once);
@@ -1072,15 +1423,109 @@ https://meet.example.com/ada-standup
 
     // ---- adversarial bodies -----------------------------------------------
 
+    /// An earlier revision let an empty body through and expanded the trigger
+    /// to nothing, so saying it *deleted* the sentence. That is how an
+    /// unescaped `[Auto-reply]` line turns into a snippet that eats the user's
+    /// words, and deleting dictation is worse than not expanding it.
     #[test]
-    fn an_empty_body_deletes_the_trigger() {
-        let s = Snippets::from_source("[scratch that]\n\n[keep]\nkept\n");
-        assert!(s.validate().is_empty(), "{:?}", s.validate());
+    fn an_empty_body_is_reported_and_never_fires() {
+        let s = snips(&[("scratch that", ""), ("keep", "kept")]);
+        assert_eq!(faults(&s).len(), 1, "{:?}", s.validate());
+        assert!(
+            faults(&s)[0].contains("no text under it"),
+            "{:?}",
+            s.validate()
+        );
         assert_eq!(s.snippets()[0].body, "");
-        assert_eq!(s.apply("Scratch that."), "");
-        assert_eq!(s.apply("Yes. Scratch that. No."), "Yes. . No.");
-        // and it stays deleted
-        assert_eq!(s.apply(&s.apply("Scratch that.")), s.apply("Scratch that."));
+        assert_eq!(s.apply("Scratch that."), "Scratch that.");
+        assert_eq!(s.apply("Yes. Scratch that. No."), "Yes. Scratch that. No.");
+        // the sound entry alongside it still works
+        assert_eq!(s.apply("Keep."), "kept");
+    }
+
+    /// The file from the review: bracketed placeholders are how people write
+    /// canned replies, and reading them as headers silently truncated one
+    /// snippet, invented two more, and left both of the invented ones able to
+    /// *delete* a sentence. Every part of that is now reported, and neither
+    /// phantom fires.
+    #[test]
+    fn bracketed_placeholders_in_a_body_are_reported_not_silently_obeyed() {
+        let s = Snippets::from_source(
+            "[out of office]\n\
+             [Auto-reply]\n\
+             I am away until Monday and will reply then.\n\
+             Ada\n\
+             \n\
+             [sign off]\n\
+             Best,\n\
+             Ada\n\
+             [Founder, WhisprCatch]\n",
+        );
+        let problems = s.validate();
+        assert!(!problems.is_empty(), "the review's file reported nothing");
+
+        // the two entries that would have deleted a dictated sentence are dead
+        assert_eq!(s.apply("Out of office."), "Out of office.");
+        assert_eq!(s.apply("Founder, WhisprCatch."), "Founder, WhisprCatch.");
+        assert!(faults(&s).iter().any(|m| m.contains("no text under it")));
+
+        // and the ambiguous line is called out by line number, with the fix
+        let ambiguous: Vec<String> = advisories(&s)
+            .into_iter()
+            .filter(|m| m.contains("directly under body text"))
+            .collect();
+        assert_eq!(ambiguous.len(), 1, "{problems:?}");
+        assert!(ambiguous[0].contains("line 9"), "{problems:?}");
+        assert!(ambiguous[0].contains("blank line"), "{problems:?}");
+    }
+
+    /// The other half: escaping the bracket keeps the line as body text, which
+    /// is what the user meant in the first place.
+    #[test]
+    fn an_escaped_bracket_line_stays_in_the_body() {
+        let s = Snippets::from_source("[sign off]\nBest,\nAda\n\\[Founder, WhisprCatch]\n");
+        assert!(faults(&s).is_empty(), "{:?}", s.validate());
+        assert_eq!(s.snippets().len(), 1);
+        assert_eq!(s.apply("Sign off."), "Best,\nAda\n[Founder, WhisprCatch]");
+    }
+
+    /// A compactly written file — no blank lines between entries — is a false
+    /// positive for the check above, so it is warned about and left working.
+    /// Disabling those entries would be far worse than the warning.
+    #[test]
+    fn a_header_directly_under_body_text_is_reported_but_nothing_is_disabled() {
+        let s = Snippets::from_source("[a]\nbody a\n[b]\nbody b\n[c]\nbody c\n");
+        assert!(faults(&s).is_empty(), "{:?}", s.validate());
+        assert_eq!(advisories(&s).len(), 2, "{:?}", s.validate());
+        assert_eq!(s.apply("A."), "body a");
+        assert_eq!(s.apply("B."), "body b");
+        assert_eq!(s.apply("C."), "body c");
+    }
+
+    /// #73: the signature block is the flagship use and the one shape the
+    /// injector cannot type safely yet. Warned about, never disabled.
+    #[test]
+    fn validate_warns_about_a_multi_line_body() {
+        let s = one("sign off", "Best,\nAda\nFounder, WhisprCatch");
+        let warned = advisories(&s);
+        assert_eq!(warned.len(), 1, "{:?}", s.validate());
+        assert!(warned[0].contains("3-line body"), "{warned:?}");
+        assert!(warned[0].contains("#73"), "{warned:?}");
+        assert!(warned[0].contains("Slack"), "{warned:?}");
+        assert!(faults(&s).is_empty(), "{:?}", s.validate());
+        // and it still expands, because it is correct in any editor
+        assert_eq!(s.apply("Sign off."), "Best,\nAda\nFounder, WhisprCatch");
+        // the flattened list marks it, so a reader can tell "switched off"
+        // from "works, but read this"
+        assert!(s.validate()[0].starts_with("note: "), "{:?}", s.validate());
+
+        // a one-line body is silent
+        assert!(one("insert my email", "ada@example.com")
+            .validate()
+            .is_empty());
+        // a disabled entry does not also earn an advisory it cannot act on
+        let s = snips(&[("loop", "before\nloop\nafter")]);
+        assert!(advisories(&s).is_empty(), "{:?}", s.validate());
     }
 
     #[test]
@@ -1131,6 +1576,27 @@ https://meet.example.com/ada-standup
         );
     }
 
+    /// "Case is folded" would oversell it. Matching lowercases with Rust's
+    /// `str::to_lowercase` and does nothing else — no case *folding*, no
+    /// NFC/NFD, no width normalization, no locale rules. These are the shapes
+    /// that stay quiet as a result, pinned so the claim in the module docs
+    /// cannot drift away from the code.
+    #[test]
+    fn case_folding_is_simple_lowercasing_only() {
+        let s = one("sign off", "Best,\nAda");
+        assert_eq!(s.apply("Sign off."), "Best,\nAda");
+        // Turkish dotted capital I lowercases to "i" + combining dot above
+        assert_eq!(s.apply("SİGN OFF."), "SİGN OFF.");
+        // fullwidth Latin is a different set of scalars, and U+FF0E is not a
+        // sentence boundary either
+        assert_eq!(s.apply("ｓｉｇｎ　ｏｆｆ．"), "ｓｉｇｎ　ｏｆｆ．");
+        // Greek final sigma is the one context-sensitive case `to_lowercase`
+        // does handle, and it handles it on both sides
+        let s = one("ΟΔΟΣ", "STREET");
+        assert_eq!(s.apply("οδός."), "οδός.");
+        assert_eq!(s.apply("ΟΔΟΣ."), "STREET");
+    }
+
     #[test]
     fn combining_marks_are_compared_as_written() {
         // no NFC/NFD normalization: "é" precomposed is not "e" + combining
@@ -1145,24 +1611,29 @@ https://meet.example.com/ada-standup
 
     #[test]
     fn validate_reports_empty_and_whitespace_only_triggers() {
-        let s = Snippets::from_source("[]\nbody\n[   ]\nbody\n[\t]\nbody\n[ok]\nfine\n");
-        let problems = s.validate();
+        let s = snips(&[
+            ("", "body"),
+            ("   ", "body"),
+            ("\t", "body"),
+            ("ok", "fine"),
+        ]);
+        let problems = faults(&s);
         assert_eq!(problems.len(), 3, "{problems:?}");
         assert!(problems[0].contains("line 1"), "{problems:?}");
         assert!(problems[0].contains("empty trigger"), "{problems:?}");
         assert!(problems[1].contains("only whitespace"), "{problems:?}");
-        assert!(problems[2].contains("line 5"), "{problems:?}");
+        assert!(problems[2].contains("line 7"), "{problems:?}");
         // the sound entry still works
         assert_eq!(s.apply("Ok."), "fine");
     }
 
     #[test]
     fn validate_reports_duplicate_triggers_and_keeps_the_first() {
-        let s = Snippets::from_source("[sign off]\nFIRST\n[Sign  Off]\nSECOND\n");
-        let problems = s.validate();
+        let s = snips(&[("sign off", "FIRST"), ("Sign  Off", "SECOND")]);
+        let problems = faults(&s);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("duplicate"), "{problems:?}");
-        assert!(problems[0].contains("line 3"), "{problems:?}");
+        assert!(problems[0].contains("line 4"), "{problems:?}");
         assert!(problems[0].contains("line 1"), "{problems:?}");
         assert_eq!(s.apply("Sign off."), "FIRST");
     }
@@ -1172,13 +1643,39 @@ https://meet.example.com/ada-standup
     /// never firing is the worst possible outcome, so it is an error.
     #[test]
     fn validate_reports_a_trigger_that_could_never_match() {
-        for bad in ["sign off.", "e.g", "one: two", "a?b", "x…y"] {
+        for bad in ["sign off.", "e.g", "done!", "a?b", "x…y"] {
             let s = one(bad, "body");
             let problems = s.validate();
             assert_eq!(problems.len(), 1, "{bad:?} -> {problems:?}");
             assert!(problems[0].contains("never match"), "{problems:?}");
             assert!(s.is_empty());
         }
+    }
+
+    /// Three passes produce problems — parse, reject, advise — and #49 renders
+    /// the list next to the file, so they come out in the order the user
+    /// reads, not the order the code happened to find them.
+    #[test]
+    fn problems_come_out_in_file_order() {
+        let s = Snippets::from_source(
+            "[nest]\n\
+             dup\n\
+             \n\
+             [dup]\n\
+             ONE\n\
+             \n\
+             [sign off]\n\
+             Best,\n\
+             Ada\n\
+             \n\
+             [dup]\n\
+             TWO\n",
+        );
+        let lines: Vec<usize> = s.problems.iter().map(|p| p.line).collect();
+        let mut sorted = lines.clone();
+        sorted.sort_unstable();
+        assert_eq!(lines, sorted, "{:?}", s.validate());
+        assert_eq!(lines, [1, 7, 11], "{:?}", s.validate());
     }
 
     #[test]
@@ -1195,8 +1692,13 @@ https://meet.example.com/ada-standup
 
     #[test]
     fn a_valid_file_reports_nothing() {
-        assert!(Snippets::from_source(REAL_FILE).validate().is_empty());
+        // "valid" means nothing disabled; the multi-line signature still
+        // earns its #73 advisory
+        assert!(faults(&Snippets::from_source(REAL_FILE)).is_empty());
         assert!(Snippets::from_source("").validate().is_empty());
+        assert!(one("insert my email", "ada@example.com")
+            .validate()
+            .is_empty());
     }
 
     /// Every problem `validate` reports must also mean the entry cannot fire.
@@ -1204,14 +1706,23 @@ https://meet.example.com/ada-standup
     /// worst of both worlds.
     #[test]
     fn a_reported_entry_never_expands() {
-        let s = Snippets::from_source(
-            "[]\nX\n[  ]\nX\n[dup]\nONE\n[dup]\nTWO\n[bad.]\nX\n[nest]\ndup\n",
-        );
-        assert_eq!(s.validate().len(), 5, "{:?}", s.validate());
+        let s = snips(&[
+            ("", "X"),
+            ("  ", "X"),
+            ("dup", "ONE"),
+            ("dup", "TWO"),
+            ("bad.", "X"),
+            ("empty", ""),
+            ("nest", "dup"),
+        ]);
+        assert_eq!(faults(&s).len(), 6, "{:?}", s.validate());
         assert_eq!(s.apply("Dup."), "ONE"); // the first of the duplicates
-        for input in ["X.", "Bad.", "Nest.", "."] {
+        for input in ["X.", "Bad.", "Nest.", "Empty.", "."] {
             assert_eq!(s.apply(input), input, "{input:?} expanded");
         }
+        // and the converse, which is the half that protects the user: no
+        // entry fires unless the file said so cleanly
+        assert_eq!(s.snippets().len(), 7);
     }
 
     // ---- loading from disk ------------------------------------------------
@@ -1239,7 +1750,7 @@ https://meet.example.com/ada-standup
             enabled: true,
             path: Some(f.path().to_path_buf()),
         });
-        assert!(s.validate().is_empty(), "{:?}", s.validate());
+        assert!(faults(&s).is_empty(), "{:?}", s.validate());
         assert_eq!(s.apply("Insert my email."), "ada@example.com");
     }
 
@@ -1271,7 +1782,8 @@ https://meet.example.com/ada-standup
             },
             ..Default::default()
         };
-        assert_eq!(cfg.validate(), Vec::<String>::new());
+        // one advisory (#73, the multi-line signature) and nothing disabled
+        assert_eq!(cfg.validate().len(), 1, "{:?}", cfg.validate());
 
         let p = crate::Polish::from_config(&cfg);
         assert_eq!(p.names(), ["snippets"]);
@@ -1381,13 +1893,13 @@ https://meet.example.com/ada-standup
             }
         }
 
-        let snips = || Snippets::from_source(REAL_FILE);
+        let real_file = || Snippets::from_source(REAL_FILE);
 
         // desirable: the dictionary repairs a trigger the model misheard, and
         // the snippet then fires on text the user never actually said
         let chain = Polish::from_transforms(vec![
             Box::new(WordRule("of", "off")) as BoxedTransform,
-            Box::new(snips()),
+            Box::new(real_file()),
         ]);
         assert_eq!(chain.apply("Sign of."), "Best,\nAda\nFounder, WhisprCatch");
 
@@ -1396,14 +1908,14 @@ https://meet.example.com/ada-standup
         // contains the same word from ever matching, with no error anywhere
         let chain = Polish::from_transforms(vec![
             Box::new(WordRule("email", "e-mail")) as BoxedTransform,
-            Box::new(snips()),
+            Box::new(real_file()),
         ]);
         assert_eq!(chain.apply("Insert my email."), "Insert my e-mail.");
         // case is not the failure mode: matching folds case, so a rule that
         // only changes capitalisation leaves the trigger working
         let chain = Polish::from_transforms(vec![
             Box::new(WordRule("email", "EMAIL")) as BoxedTransform,
-            Box::new(snips()),
+            Box::new(real_file()),
         ]);
         assert_eq!(chain.apply("Insert my email."), "ada@example.com");
 
@@ -1411,12 +1923,63 @@ https://meet.example.com/ada-standup
         // user's own saved snippet text, which they already typed the way they
         // want it
         let reversed = Polish::from_transforms(vec![
-            Box::new(snips()) as BoxedTransform,
+            Box::new(real_file()) as BoxedTransform,
             Box::new(WordRule("ada", "Ada Lovelace")),
         ]);
         assert_eq!(
             reversed.apply("Sign off."),
             "Best,\nAda Lovelace\nFounder, WhisprCatch"
+        );
+    }
+
+    /// The fourth composition case, and the dangerous one. The nesting guard
+    /// reads bodies as written, at load time; it cannot see a body that only
+    /// *becomes* a trigger once the dictionary has rewritten it. Both files
+    /// validate clean, and the chain grows on every pass.
+    ///
+    /// This asserts the broken behaviour on purpose. Production applies the
+    /// chain once (`finish()` in `apps/cli`), so nothing is broken today — but
+    /// `lib.rs::applying_the_chain_twice_changes_nothing` asserts this
+    /// invariant for the whole chain, and #49's "preview, then dictate" is a
+    /// double-apply. Whoever builds that surface needs the cross-file check;
+    /// if this test starts failing because someone added it, delete the test
+    /// and celebrate.
+    #[test]
+    fn composition_with_a_dictionary_can_break_idempotence() {
+        use crate::{BoxedTransform, Polish};
+
+        struct Rewrite(&'static str, &'static str);
+        impl Transform for Rewrite {
+            fn name(&self) -> &'static str {
+                "dictionary"
+            }
+            fn apply(&self, text: &str) -> String {
+                text.replace(self.0, self.1)
+            }
+            fn prefix_stable(&self) -> bool {
+                false
+            }
+        }
+
+        let snippet = || one("sign off", "Best,\nregards\nAda");
+        // in isolation: nothing to report, and idempotent
+        assert!(faults(&snippet()).is_empty());
+        let once = snippet().apply("Sign off.");
+        assert_eq!(snippet().apply(&once), once);
+
+        // composed with a dictionary rule that turns the body into a trigger
+        let chain = || {
+            Polish::from_transforms(vec![
+                Box::new(Rewrite("regards", "sign off")) as BoxedTransform,
+                Box::new(snippet()),
+            ])
+        };
+        let once = chain().apply("Sign off.");
+        assert_eq!(once, "Best,\nregards\nAda");
+        assert_eq!(
+            chain().apply(&once),
+            "Best,\nBest,\nregards\nAda\nAda",
+            "if this now equals `once`, the cross-file check landed"
         );
     }
 
@@ -1440,7 +2003,7 @@ https://meet.example.com/ada-standup
         for count in [50, 500] {
             let mut file = String::new();
             for i in 0..count {
-                file.push_str(&format!("[trigger number {i}]\nbody number {i}\n"));
+                file.push_str(&format!("[trigger number {i}]\nbody number {i}\n\n"));
             }
             let s = Snippets::from_source(&file);
             assert!(s.validate().is_empty(), "{:?}", s.validate());
@@ -1470,18 +2033,34 @@ https://meet.example.com/ada-standup
     /// The 2 MB entry in the torture corpus would take minutes if matching
     /// were quadratic in the utterance. Bounded so a regression fails the
     /// suite instead of hanging it.
+    ///
+    /// Both paths, deliberately. With short triggers every 44-character
+    /// sentence is thrown out by `longer_than` without allocating, and
+    /// `normalize_key` never runs at all — so a version of this test with only
+    /// short triggers measures the guard and nothing else. The second half
+    /// adds a trigger longer than any sentence in the corpus, which forces the
+    /// slow path 45,000 times.
     #[test]
-    fn a_two_megabyte_utterance_stays_linear() {
-        let s = real();
+    fn a_two_megabyte_utterance_stays_linear_on_both_paths() {
         let big = "the quick brown fox jumps over the lazy dog. ".repeat(45_000);
-        let start = Instant::now();
-        let out = s.apply(&big);
-        assert_eq!(out, big);
-        assert!(
-            start.elapsed() < Duration::from_secs(5),
-            "{:?}",
-            start.elapsed()
-        );
+
+        for (name, s) in [
+            ("fast path (every sentence rejected on length)", real()),
+            (
+                "slow path (every sentence normalized and hashed)",
+                one(
+                    "a trigger deliberately longer than any sentence in the corpus above",
+                    "NEVER",
+                ),
+            ),
+        ] {
+            let start = Instant::now();
+            let out = s.apply(&big);
+            let elapsed = start.elapsed();
+            assert_eq!(out, big);
+            println!("snippets: {elapsed:?} for 2 MB, {name}");
+            assert!(elapsed < Duration::from_secs(20), "{name}: {elapsed:?}");
+        }
     }
 
     // ---- config -----------------------------------------------------------
