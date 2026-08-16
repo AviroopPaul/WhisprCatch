@@ -75,7 +75,7 @@ pub fn run(model: ModelId, key_label: &str) -> Result<Outcome> {
         ..Default::default()
     };
     eframe::run_native(
-        "WhisprCatch Setup",
+        &format!("{} Setup", crate::app_name()),
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
@@ -720,7 +720,7 @@ impl eframe::App for Wizard {
 
                     match &mut self.step {
                         Step::Welcome => {
-                            title(ui, "Welcome to ", "WhisprCatch");
+                            title(ui, "Welcome to ", crate::app_name());
                             ui.add_space(12.0);
                             step_body(ui, |ui| {
                                 ui.label(body_text(
@@ -933,7 +933,7 @@ pub fn error_window(message: &str) {
         ..Default::default()
     };
     let _ = eframe::run_native(
-        "WhisprCatch: error",
+        &format!("{}: error", crate::app_name()),
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);

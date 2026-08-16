@@ -101,7 +101,7 @@ pub fn run(tab: Option<String>) -> Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "WhisprCatch",
+        crate::app_name(),
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
@@ -391,7 +391,7 @@ impl eframe::App for App {
                             theme::led(ui, theme::MINT, false);
                             ui.add_space(2.0);
                             ui.label(
-                                egui::RichText::new("WhisprCatch")
+                                egui::RichText::new(crate::app_name())
                                     .font(theme::semibold(14.0))
                                     .color(theme::FG),
                             );
@@ -1160,7 +1160,7 @@ impl App {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new("WhisprCatch")
+                    egui::RichText::new(crate::app_name())
                         .font(theme::medium(13.0))
                         .color(theme::FG),
                 );

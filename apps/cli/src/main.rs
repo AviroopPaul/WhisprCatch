@@ -100,6 +100,7 @@ enum Cmd {
 
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    init_notifications();
     let cli = Cli::parse();
     let cfg = config::load()?;
     let cmd = cli.cmd.unwrap_or_else(default_cmd);
@@ -122,7 +123,7 @@ fn main() -> Result<()> {
         Cmd::Doctor => {
             let model_id = wc_models::ModelId::parse(&cfg.model);
             let yn = |b: bool| if b { "yes" } else { "NO" };
-            println!("WhisprCatch {}", env!("CARGO_PKG_VERSION"));
+            println!("{} {}", app_name(), env!("CARGO_PKG_VERSION"));
             println!("  config:        {}", config::config_path().display());
             println!("  models dir:    {}", wc_core::models_dir().display());
             println!("  model:         {} ({})", model_id.slug(), model_id.label());
@@ -242,6 +243,7 @@ fn main() -> Result<()> {
             let tray_info = wc_tray::TrayInfo {
                 model: model_id.label().to_string(),
                 hotkey: config::key_label(&key_slug).to_string(),
+                app_name: app_name().to_string(),
             };
 
             #[cfg(target_os = "macos")]
@@ -261,7 +263,7 @@ fn main() -> Result<()> {
                     {
                         log::error!("dictation loop stopped: {e:#}");
                         if gui_session() {
-                            notify("WhisprCatch stopped", &format!("{e:#}"));
+                            notify(&format!("{} stopped", app_name()), &format!("{e:#}"));
                         }
                     }
                 });
@@ -273,7 +275,7 @@ fn main() -> Result<()> {
                 let res = run_ptt(state, engine, key, print_only, no_tray, &cfg, tray_info);
                 if let Err(e) = &res {
                     if gui_session() {
-                        notify("WhisprCatch stopped", &format!("{e:#}"));
+                        notify(&format!("{} stopped", app_name()), &format!("{e:#}"));
                         wizard::error_window(&format!("{e:#}"));
                     }
                 }
@@ -316,12 +318,82 @@ fn gui_session() -> bool {
     !std::io::stderr().is_terminal()
 }
 
+/// macOS: read a string key out of the Info.plist beside the executable.
+/// `None` when running as a bare CLI rather than from a .app.
+#[cfg(target_os = "macos")]
+fn bundle_string(key: &str) -> Option<String> {
+    // .../WhisprCatch.app/Contents/MacOS/whisper-catch -> .../Contents/Info.plist
+    let exe = std::env::current_exe().ok()?;
+    let plist = std::fs::read_to_string(exe.parent()?.parent()?.join("Info.plist")).ok()?;
+    let after = plist.split(&format!("<key>{key}</key>")).nth(1)?;
+    let open = after.find("<string>")? + "<string>".len();
+    let close = after[open..].find("</string>")?;
+    Some(after[open..open + close].trim().to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn bundle_identifier() -> Option<String> {
+    bundle_string("CFBundleIdentifier")
+}
+
+/// What to call ourselves in anything the user reads.
+///
+/// A side-by-side local build is a different app with its own bundle id and its
+/// own permission grants, and telling the two apart matters when both are
+/// installed — so it says "WhisprCatch Local" everywhere, not just on the icon.
+/// Taken from CFBundleName, which the packaging scripts already set, so the
+/// name lives in exactly one place per build.
+pub fn app_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        #[cfg(target_os = "macos")]
+        {
+            bundle_string("CFBundleName").unwrap_or_else(|| "WhisprCatch".into())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            "WhisprCatch".into()
+        }
+    })
+    .as_str()
+}
+
+/// macOS only, and it must run before the first `notify`.
+///
+/// notify-rust asks mac-notification-sys to resolve the running app's bundle
+/// id, and when it cannot, mac-notification-sys falls back to the *literal
+/// string* `"use_default"`. macOS then tries to launch an application by that
+/// name, fails, and shows the user a "Choose Application" file picker asking
+/// "Where is use_default?" — instead of a notification.
+///
+/// The lookup fails whenever LaunchServices has not registered the bundle,
+/// which includes every `dist-local` build. Since `run_ptt` notifies on every
+/// GUI startup, that picker greeted the user on *each launch*. Set the id
+/// ourselves so the fallback is unreachable. See issue #85.
+#[cfg(target_os = "macos")]
+fn init_notifications() {
+    let Some(id) = bundle_identifier() else {
+        return; // bare CLI: stderr is the user's channel, not notifications
+    };
+    if let Err(e) = notify_rust::set_application(&id) {
+        log::warn!("notifications disabled: could not set bundle id {id}: {e}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn init_notifications() {}
+
 fn notify(summary: &str, body: &str) {
-    let _ = notify_rust::Notification::new()
+    // Not `let _`: this is the channel that reports the dictation loop dying,
+    // so it must not fail silently itself.
+    if let Err(e) = notify_rust::Notification::new()
         .summary(summary)
         .body(body)
         .icon("audio-input-microphone")
-        .show();
+        .show()
+    {
+        log::warn!("notification failed: {e}");
+    }
 }
 
 /// Returns None when another daemon instance already holds the lock.
@@ -449,7 +521,7 @@ fn run_ptt(
     eprintln!("ready. Hold {key:?} and speak, release to type. Ctrl-C to quit.");
     if gui_session() {
         notify(
-            "WhisprCatch is running",
+            &format!("{} is running", app_name()),
             &format!("Hold {key:?} and speak, release to type. Look for the mic in the top bar."),
         );
     }

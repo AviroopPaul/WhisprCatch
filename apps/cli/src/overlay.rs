@@ -122,7 +122,7 @@ pub fn run() -> anyhow::Result<()> {
 
     let st = state.clone();
     eframe::run_native(
-        "WhisprCatch",
+        crate::app_name(),
         options,
         Box::new(move |cc| {
             theme::install_fonts(&cc.egui_ctx);

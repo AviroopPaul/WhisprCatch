@@ -19,6 +19,11 @@ pub struct TrayInfo {
     pub model: String,
     /// Human hotkey label, e.g. "Right Alt".
     pub hotkey: String,
+    /// What to call the app in the menu bar. A side-by-side local build says
+    /// "WhisprCatch Local", so the two are distinguishable when both are
+    /// installed — they hold separate permission grants and confusing them
+    /// wastes real debugging time.
+    pub app_name: String,
 }
 
 #[cfg(target_os = "linux")]
@@ -55,13 +60,13 @@ mod linux {
         }
 
         fn title(&self) -> String {
-            "WhisprCatch".into()
+            self.info.app_name.clone()
         }
 
         fn tool_tip(&self) -> ksni::ToolTip {
             let s = *self.state.stats.lock().unwrap();
             ksni::ToolTip {
-                title: "WhisprCatch".into(),
+                title: self.info.app_name.clone(),
                 description: format!(
                     "{} words · {} utterances · {:.0}s audio",
                     s.words, s.utterances, s.audio_secs
@@ -227,7 +232,7 @@ mod macos {
 
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip("WhisprCatch")
+            .with_tooltip(&info.app_name)
             .with_icon(mic_icon())
             .with_icon_as_template(true)
             .build()?;
