@@ -149,6 +149,17 @@ struct App {
     /// Cleared after the opening size has been asserted once.
     needs_size: bool,
     shot: crate::shot::Shot,
+    /// Whether this session could take typed text back again, which is what
+    /// decides how live typing and text cleanup combine (#50). Read once:
+    /// on Linux it opens an X11 connection, which is not a per-frame cost.
+    can_replace: crate::ReplaceAvailable,
+    /// Whether the cleanup chain can rewrite words live typing already put on
+    /// screen. **The same predicate the daemon gates on**, not a second one —
+    /// `Polish::is_empty()` and `has_rewriting_transforms()` agree today and
+    /// would silently disagree the day a transform is prefix-stable. Also read
+    /// once: building the chain reads the user's dictionary and snippet files
+    /// from disk, which must not happen once per paint frame.
+    cleanup_rewrites: crate::CleanupRewrites,
 }
 
 impl App {
@@ -159,6 +170,9 @@ impl App {
             None => (history::load(500).unwrap_or_default(), history::totals()),
         };
         let selected = entries.first().map(|e| e.ts);
+        let cleanup_rewrites = crate::CleanupRewrites(
+            wc_text::Polish::from_config(&cfg.polish).has_rewriting_transforms(),
+        );
         Self {
             tab: if tab == Some("settings") {
                 Tab::Settings
@@ -179,6 +193,10 @@ impl App {
             dl: None,
             needs_size: true,
             shot: crate::shot::Shot::from_env(),
+            can_replace: crate::ReplaceAvailable(crate::replace_available(
+                wc_inject::capabilities_for(wc_inject::can_replace_typed_text()),
+            )),
+            cleanup_rewrites,
         }
     }
 
@@ -1055,7 +1073,12 @@ impl App {
         theme::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 12.0;
-            Self::setting_row(ui, "Live typing", "Words appear while you speak", |ui| {
+            // The description is not decoration: it is where the answer to #50
+            // is written down for the user. It is chosen by a pure function so
+            // that the arms cannot be swapped without a test noticing, and it
+            // reads the same two facts the daemon gates on.
+            let desc = crate::live_typing_description(self.cleanup_rewrites, self.can_replace);
+            Self::setting_row(ui, "Live typing", desc, |ui| {
                 theme::toggle(ui, &mut self.cfg.streaming);
             });
             Self::setting_row(

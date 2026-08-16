@@ -87,6 +87,12 @@ Configuration lives at `~/Library/Application Support/whisper-catch/config.toml`
 
 Defaults differ per platform: macOS starts on Moonshine, Linux on Parakeet.
 
+Live typing shows the words the *model* produced. Once a text-cleanup transform is
+enabled, the finished transcript can differ from them, so the release pass replaces
+what was typed live rather than appending to it. Where typed text cannot be taken
+back — Wayland, which offers no way to release a key you are still holding — live
+typing pauses while cleanup is on and the finished text is typed once on release.
+
 ## How it works
 
 Speech models run as int8 ONNX on the CPU via ONNX Runtime ([transcribe-rs](https://crates.io/crates/transcribe-rs)) — no GPU, no network. The mic is kept warm with a 300 ms pre-roll so the first syllable isn't clipped.
