@@ -1,13 +1,14 @@
 //! Filler removal — "um", "uh", "you know", "like". The lowest of Wispr's four
 //! cleanup grades, and the one users notice first.
 //!
-//! Three graded levels, mirroring the grading users already expect:
+//! Three graded levels, mirroring the grading users already expect. **Two of
+//! them ship**:
 //!
-//! | level | removes |
-//! |---|---|
-//! | `off` | nothing — output is byte-identical to the input |
-//! | `light` | hesitation sounds (um, uh, er…) and stutters ("the the the") |
-//! | `medium` | light, plus hedges (like, you know, I mean, sort of, basically, actually) |
+//! | level | removes | selectable |
+//! |---|---|---|
+//! | `off` | nothing — output is byte-identical to the input | yes |
+//! | `light` | hesitation sounds (um, uh, er…) and stutters ("the the the") | yes |
+//! | `medium` | light, plus hedges (like, you know, I mean, sort of…) | **no — see [`FillerLevel::parse`] and #74** |
 //!
 //! # The one rule that matters
 //!
@@ -16,13 +17,11 @@
 //! and it is simply not there. So every judgement call below resolves the same
 //! way: **when in doubt, leave the text alone.**
 //!
-//! That is why `medium` only strips a hedge in *parenthetical position* — set
-//! off by a comma, or standing where a comma would be. "I like this design",
-//! "sort of blue", "you know what you did", "I mean it" and "it was actually
-//! correct" all survive because none of them is parenthetical, and no amount of
-//! word-list tuning can tell them apart from the filler use without one. The
-//! cost is real and deliberate: "it was like really cold", with no comma from
-//! the model, keeps its "like".
+//! `light` earns that. Its word lists are closed classes checked one entry at a
+//! time against a legitimate use, and a hesitation sound is not a word.
+//! `medium` does not, yet: it rests on a comma meaning "this hedge is a
+//! filler", and a comma means nothing of the sort — which is why it is gated
+//! rather than shipped.
 //!
 //! # Repair
 //!
@@ -30,27 +29,38 @@
 //! `replace`. Everything outside the spliced region is copied byte for byte.
 //! Inside it:
 //!
-//! - **Punctuation**: the stronger of the two sides survives — a full stop
-//!   beats a comma — except for a *matched pair of commas*, which was the
-//!   filler's own bracketing and leaves with it. That is the difference between
-//!   "it was, uh, complicated" becoming "it was complicated" and it becoming
-//!   "it was, complicated", which is punctuation the user never said.
+//! - **Punctuation**: a filler sits in a pause, the pause is written as
+//!   punctuation, and afterwards exactly one mark stands for it — the strongest
+//!   found beside *or inside* the removed run, leftmost on a tie. Inside
+//!   matters: "I think so, um. Uh, what's next?" keeps the full stop that ends
+//!   the sentence rather than letting the two commas outvote it. This transform
+//!   does not delete punctuation the model wrote: "However, um, we shipped"
+//!   becomes "However, we shipped", never "However we shipped". The accepted
+//!   cost of that is a comma the user can see and remove — "it was, uh,
+//!   complicated" becomes "it was, complicated".
 //! - **Whitespace**: merged to a single space, or to the line break if either
 //!   side had one, because a paragraph is structure and not spacing.
 //! - **Capitalization**: a word left standing at the start of a sentence is
-//!   capitalized. At the very start of the text, where no full stop can prove a
-//!   sentence began, the removed word's own case is the evidence — "Um, the
-//!   build broke" was a sentence, "um and then I left" is someone dictating
-//!   into the middle of one.
+//!   capitalized. Where nothing proves a sentence began — the start of the
+//!   text, of a line, or of a list item — the removed word's own case is the
+//!   evidence: "Um, the build broke" was a sentence, "um and then I left" is
+//!   someone dictating into the middle of one.
 //!
-//! # Order
+//! # What runs before this
 //!
-//! Runs *after* [`crate::SelfCorrect`]: "I mean" is a hedge this transform
-//! strips and a correction marker #48 needs to see first. See
-//! `Polish::from_config`. This transform is correct either way — it only ever
-//! strips a *comma-closed* "I mean" (", I mean,"), and the correction marker
-//! #48 keys on is the comma-open, comma-*less* form ("Tuesday, I mean
-//! Wednesday"), which is left completely alone.
+//! Two transforms, and both change what this one sees.
+//!
+//! [`crate::Spoken`] (#45) synthesizes `\n\n`, `- ` and `1. ` from dictated
+//! "new paragraph" and "bullet", and a `.` from the spoken word "period". None
+//! of them is distinguishable from model output by the time it gets here, so
+//! the repair treats all three as structure: the ASCII hyphen is deliberately
+//! not droppable punctuation, a line break is never crossed by a mark migrating
+//! left, and a list marker is a fresh start rather than a sentence end.
+//!
+//! [`crate::SelfCorrect`] (#48) owns "I mean" as a correction marker, which is
+//! also a `medium` hedge. With `medium` gated, this transform cannot touch it
+//! at all — one more reason the gate is the right call while #48 is still a
+//! stub on `main`.
 
 use std::fmt;
 
@@ -76,6 +86,10 @@ pub enum FillerLevel {
 }
 
 impl FillerLevel {
+    /// The levels a user can actually select. `Medium` is deliberately absent —
+    /// see [`FillerLevel::parse`].
+    pub const SELECTABLE: [Self; 2] = [Self::Off, Self::Light];
+
     /// The name used in `config.toml` and in Settings (#49).
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -85,12 +99,23 @@ impl FillerLevel {
         }
     }
 
-    /// Case- and whitespace-insensitive; `None` for anything else.
+    /// Case- and whitespace-insensitive; `None` for anything a user may not
+    /// select — which today includes `"medium"`.
+    ///
+    /// **`medium` is gated, not finished.** Its whole safety argument rests on
+    /// a comma being evidence that a hedge is a filler, and a comma is not: it
+    /// marks a prosodic break, which tag questions ("You know, don't you?"),
+    /// hedged answers ("Well, sort of, yes."), vocatives, appositives and
+    /// correction markers ("Tuesday, I mean, Wednesday") produce just as
+    /// readily. Every one of those loses a load-bearing word, and every one of
+    /// them needs the commas to be there — so the level is live *exclusively*
+    /// in the case whose safety nobody has checked against real model output.
+    /// Issue #74 answers that question first. The code stays because `light`
+    /// shares all of it; only the door is locked.
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "off" => Some(Self::Off),
             "light" => Some(Self::Light),
-            "medium" => Some(Self::Medium),
             _ => None,
         }
     }
@@ -102,27 +127,60 @@ impl fmt::Display for FillerLevel {
     }
 }
 
-/// Deliberately lenient: an unrecognized level deserializes to `Off` instead of
-/// failing.
+/// Deliberately lenient: anything this build cannot use deserializes to `Off`
+/// instead of failing.
 ///
-/// `apps/cli` propagates a config parse error out of `main`, so a derived
+/// `apps/cli` propagates a config parse error out of `main`, so a strict
 /// `Deserialize` would turn one typo in a hand-edited `config.toml` — or a
 /// level a newer build wrote and this one has never heard of — into a daemon
 /// that refuses to start. Falling back to the most conservative level keeps
 /// dictation working and costs the user a setting, not their tool.
+///
+/// `deserialize_any`, not `deserialize_str`, because `level = 3` and
+/// `level = true` are the same class of mistake as `level = "meduim"` and
+/// deserve the same landing.
 impl<'de> Deserialize<'de> for FillerLevel {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         struct LevelVisitor;
-        impl de::Visitor<'_> for LevelVisitor {
+        impl<'de> de::Visitor<'de> for LevelVisitor {
             type Value = FillerLevel;
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(r#""off", "light" or "medium""#)
+                f.write_str(r#""off" or "light""#)
             }
             fn visit_str<E: de::Error>(self, s: &str) -> Result<FillerLevel, E> {
                 Ok(FillerLevel::parse(s).unwrap_or(FillerLevel::Off))
             }
+            fn visit_bool<E: de::Error>(self, _: bool) -> Result<FillerLevel, E> {
+                Ok(FillerLevel::Off)
+            }
+            fn visit_i64<E: de::Error>(self, _: i64) -> Result<FillerLevel, E> {
+                Ok(FillerLevel::Off)
+            }
+            fn visit_u64<E: de::Error>(self, _: u64) -> Result<FillerLevel, E> {
+                Ok(FillerLevel::Off)
+            }
+            fn visit_f64<E: de::Error>(self, _: f64) -> Result<FillerLevel, E> {
+                Ok(FillerLevel::Off)
+            }
+            fn visit_unit<E: de::Error>(self) -> Result<FillerLevel, E> {
+                Ok(FillerLevel::Off)
+            }
+            fn visit_none<E: de::Error>(self) -> Result<FillerLevel, E> {
+                Ok(FillerLevel::Off)
+            }
+            fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<FillerLevel, D::Error> {
+                FillerLevel::deserialize(d)
+            }
+            fn visit_seq<A: de::SeqAccess<'de>>(self, mut a: A) -> Result<FillerLevel, A::Error> {
+                while a.next_element::<de::IgnoredAny>()?.is_some() {}
+                Ok(FillerLevel::Off)
+            }
+            fn visit_map<A: de::MapAccess<'de>>(self, mut a: A) -> Result<FillerLevel, A::Error> {
+                while a.next_entry::<de::IgnoredAny, de::IgnoredAny>()?.is_some() {}
+                Ok(FillerLevel::Off)
+            }
         }
-        d.deserialize_str(LevelVisitor)
+        d.deserialize_any(LevelVisitor)
     }
 }
 
@@ -366,7 +424,8 @@ impl Transform for Fillers {
 
 // ---------------------------------------------------------------- tokens
 
-/// Byte span of one word in the original text.
+/// A byte range of the original text — a word while tokenizing, a run of
+/// punctuation while repairing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Span {
     start: usize,
@@ -393,8 +452,12 @@ fn is_combining(c: char) -> bool {
         | '\u{FE20}'..='\u{FE2F}')
 }
 
+/// Characters that hold a word together when a word character sits on each
+/// side. The underscore is in here because this app's users dictate
+/// `snake_case` identifiers, and without it "um_var" tokenizes as "um" plus
+/// "var" and filler removal eats half of a name.
 fn is_connector(c: char) -> bool {
-    matches!(c, '\'' | '\u{2019}' | '-')
+    matches!(c, '\'' | '\u{2019}' | '-' | '_')
 }
 
 fn words(text: &str) -> Vec<Span> {
@@ -591,7 +654,7 @@ fn is_parenthetical(
         // A comma or semicolon opens an aside for any hedge. A full stop only
         // counts for the discourse markers, which may legitimately open the
         // next sentence.
-        Ctx::Punct(s) => s < 3 || h.start_ok,
+        Ctx::Punct(s) => s < TERMINAL || h.start_ok,
         Ctx::Other => false,
     };
     let closes = !matches!(right, Ctx::Other);
@@ -603,13 +666,13 @@ fn is_parenthetical(
         let next = next_surviving(words, del, last);
         // "subscribe, like, and comment" — a list, not an aside.
         if let (Ctx::Punct(s), Some(n)) = (right, next) {
-            if s < 3 && in_list(text, n, CONJUNCTIONS) {
+            if s < TERMINAL && in_list(text, n, CONJUNCTIONS) {
                 return false;
             }
         }
         // Sentence-initial: only a following clause opener rules out the
         // imperative reading ("Like, I don't know" yes, "Like, comment" no).
-        let sentence_initial = matches!(left, Ctx::Edge | Ctx::Punct(3));
+        let sentence_initial = matches!(left, Ctx::Edge | Ctx::Punct(TERMINAL));
         if sentence_initial && !next.is_some_and(|n| in_list(text, n, CLAUSE_STARTERS)) {
             return false;
         }
@@ -688,14 +751,29 @@ fn is_whitespace_only(s: &str) -> bool {
     s.chars().all(char::is_whitespace)
 }
 
+/// Punctuation strength. A filler sits in a pause, the pause is written as
+/// punctuation, and after the filler goes exactly one mark survives to stand
+/// for it: the strongest one adjacent to or inside the removed run.
+const DASH: u8 = 1;
+const COMMA: u8 = 2;
+const CLAUSE: u8 = 3;
+const TERMINAL: u8 = 4;
+
 /// Punctuation this transform is allowed to move or drop when it splices.
-/// Everything else — quotes, brackets, dashes, emoji — is left exactly where
-/// the user put it.
+/// Everything else — quotes, emoji, and **the ASCII hyphen** — is left exactly
+/// where the user put it.
+///
+/// The hyphen is the interesting exclusion. An em or en dash around a filler is
+/// the filler's own bracketing ("it was — um — complicated"), but `-` at the
+/// start of a line is a *list marker* that `spoken` (#45) synthesized from the
+/// user saying "bullet", and swallowing it destroys the list they just
+/// dictated.
 fn strength_of(c: char) -> u8 {
     match c {
-        ',' => 1,
-        ';' | ':' => 2,
-        '.' | '!' | '?' | '\u{2026}' => 3,
+        '\u{2013}' | '\u{2014}' => DASH,
+        ',' => COMMA,
+        ';' | ':' => CLAUSE,
+        '.' | '!' | '?' | '\u{2026}' => TERMINAL,
         _ => 0,
     }
 }
@@ -794,12 +872,16 @@ fn rebuild(text: &str, words: &[Span], del: &[bool]) -> String {
         out.push_str(&replacement);
         cursor = to;
         // Restore the capitalization the deletion destroyed — and only that.
-        // At the very start of the text there is no full stop to prove a
-        // sentence began, so the removed word's own case is the evidence:
-        // "Um, the build broke" was a sentence, "um and then I left" is a user
-        // dictating into the middle of one.
-        capitalize_next = at_sentence_start(&out)
-            && (!is_whitespace_only(&out) || starts_uppercase(word(text, words[first])));
+        // Where no full stop proves a sentence began (start of the text, of a
+        // line, or of a list item), the removed word's own case is the
+        // evidence: "Um, the build broke" was a sentence, "um and then I left"
+        // is a user dictating into the middle of one, and "- um, buy milk" is
+        // an item in a list that was already lowercase.
+        capitalize_next = match position(&out) {
+            Position::Fresh => starts_uppercase(word(text, words[first])),
+            Position::AfterTerminal => true,
+            Position::Mid => false,
+        };
     }
 
     push_chunk(&mut out, &text[cursor..], &mut capitalize_next);
@@ -816,9 +898,13 @@ fn is_separator(s: &str) -> bool {
 ///
 /// The region reaches out over whitespace, then over one run of punctuation,
 /// then over whitespace again — no further, so a quote or a word always stops
-/// it. What comes back is at most one punctuation run plus one stretch of
-/// whitespace.
+/// it — and over a bracket pair the removed run fills entirely. What comes back
+/// is at most one punctuation run plus one stretch of whitespace.
 fn splice(text: &str, del_start: usize, del_end: usize) -> (usize, usize, String) {
+    // "It was (um) complicated." — the brackets held nothing but the filler, so
+    // they go with it. Left in place they read as debris: "It was () ...".
+    let (del_start, del_end) = widen_over_brackets(text, del_start, del_end);
+
     let ws_l = skip_ws_left(text, del_start);
     let punct_l = punct_start_left(text, ws_l);
     let from = if punct_l < ws_l {
@@ -835,13 +921,22 @@ fn splice(text: &str, del_start: usize, del_end: usize) -> (usize, usize, String
         ws_r
     };
 
-    let left_punct = &text[punct_l..ws_l];
-    let right_punct = &text[ws_r..punct_r];
-    let at_start = from == 0 || is_open(prev_char(text, from));
+    let left_punct = Span {
+        start: punct_l,
+        end: ws_l,
+    };
+    let right_punct = Span {
+        start: ws_r,
+        end: punct_r,
+    };
+    // Punctuation attaches to a word. Not to the start of the text, not to an
+    // opening quote, not to an emoji, and not to the "- " a list marker leaves
+    // in front of an item — hanging a comma off any of those is debris.
+    let no_anchor = !prev_char(text, from).is_some_and(is_word_char);
     let at_end = to == text.len() || is_close(char_at(text, to));
 
     let region = &text[from..to];
-    let mut space = if at_start {
+    let mut space = if no_anchor {
         leading_ws(region)
     } else if at_end {
         trailing_ws(region)
@@ -849,35 +944,58 @@ fn splice(text: &str, del_start: usize, del_end: usize) -> (usize, usize, String
         merged_ws(region)
     };
 
-    let left = strength(left_punct);
+    // The strongest mark in or beside the removed run survives, and ties go to
+    // the leftmost. Deleting a comma the model wrote is not this transform's
+    // business: "However, um, we shipped" is "However, we shipped", never
+    // "However we shipped". The *inner* candidate is what keeps a sentence
+    // break inside the run — "I think so, um. Uh, what's next?" — from being
+    // outvoted by the commas on the outside and silently dropped.
+    let inner_punct = strongest_run(text, del_start, del_end);
     // Punctuation never migrates across a line break: the comma in
     // "first line\num, second line" belonged to the filler, and hanging it off
     // the end of the previous line is worse than dropping it.
-    let right = if space.contains('\n') {
-        0
-    } else {
-        strength(right_punct)
-    };
-
-    let mut keep = if at_start {
-        // Nothing precedes, so there is nothing for punctuation to attach to:
-        // "Um. Hello." is one sentence, not an empty one and then a sentence.
-        ""
-    } else if left == 1 && right == 1 {
-        // A matched pair of commas is the parenthetical's own bracketing, and
-        // it goes with the filler it was setting off. Keeping one leaves
-        // "it was, really cold" — punctuation the user never said, in a place
-        // it does not belong.
-        ""
-    } else if left >= right {
-        left_punct
+    let right_punct = if space.contains('\n') {
+        Span {
+            start: ws_r,
+            end: ws_r,
+        }
     } else {
         right_punct
     };
-    // A comma at the very end of the text has nothing left to separate.
-    if at_end && strength(keep) < 3 {
-        keep = "";
+    let nothing = Span {
+        start: from,
+        end: from,
+    };
+
+    let mut kept = if no_anchor {
+        // Nothing to attach to: "Um. Hello." is one sentence, not an empty one
+        // followed by a sentence.
+        nothing
+    } else {
+        [left_punct, inner_punct, right_punct]
+            .into_iter()
+            .fold(nothing, |best, next| {
+                if strength(word(text, next)) > strength(word(text, best)) {
+                    next
+                } else {
+                    best
+                }
+            })
+    };
+    // A mark at the very end of the text has nothing left to separate, unless
+    // it is the full stop that ends the sentence.
+    if at_end && strength(word(text, kept)) < TERMINAL {
+        kept = nothing;
     }
+    let keep = word(text, kept);
+    // A mark keeps the spacing it had: "it was — um — complicated" must not
+    // come back as "it was— complicated". Commas are written tight against the
+    // word before them and stay that way.
+    let pad = if !keep.is_empty() && prev_char(text, kept.start).is_some_and(char::is_whitespace) {
+        " "
+    } else {
+        ""
+    };
     // Never weld two words together ("hi,um,there" must not become "hithere").
     // Only when both survivors really are words: zero-width characters are not
     // whitespace, and inserting a space between two of them invents one the
@@ -891,7 +1009,57 @@ fn splice(text: &str, del_start: usize, del_end: usize) -> (usize, usize, String
         space = " ";
     }
 
-    (from, to, format!("{keep}{space}"))
+    (from, to, format!("{pad}{keep}{space}"))
+}
+
+/// Widens a deleted run over a bracket pair it fills entirely, so "(um)" leaves
+/// as one thing rather than leaving "()" behind. Repeats, so "((um))" goes too.
+///
+/// Quotes are not brackets here: `'` is an apostrophe more often than it is a
+/// quotation mark, and a quoted filler is more plausibly a quotation of someone
+/// than debris.
+fn widen_over_brackets(text: &str, mut start: usize, mut end: usize) -> (usize, usize) {
+    loop {
+        let l = skip_ws_left(text, start);
+        let r = skip_ws_right(text, end);
+        let (Some(open), Some(close)) = (prev_char(text, l), text[r..].chars().next()) else {
+            return (start, end);
+        };
+        let pair = matches!(
+            (open, close),
+            ('(', ')') | ('[', ']') | ('{', '}') | ('\u{00AB}', '\u{00BB}')
+        );
+        if !pair {
+            return (start, end);
+        }
+        start = l - open.len_utf8();
+        end = r + close.len_utf8();
+    }
+}
+
+/// The strongest run of droppable punctuation within `text[start..end)`; an
+/// empty span when there is none. Ties go to the leftmost run, so "um. uh!"
+/// keeps the full stop that actually ended the sentence.
+fn strongest_run(text: &str, start: usize, end: usize) -> Span {
+    let mut best = Span { start, end: start };
+    let mut idx = start;
+    while idx < end {
+        let c = char_at(text, idx);
+        if strength_of(c) == 0 {
+            idx += c.len_utf8();
+            continue;
+        }
+        let run_end = punct_end_right(text, idx).min(end);
+        let run = Span {
+            start: idx,
+            end: run_end,
+        };
+        if strength(word(text, run)) > strength(word(text, best)) {
+            best = run;
+        }
+        idx = run_end;
+    }
+    best
 }
 
 fn leading_ws(region: &str) -> &str {
@@ -930,22 +1098,55 @@ fn merged_ws(region: &str) -> &str {
     }
 }
 
-/// True when the text built so far ends a sentence, so the next word starts one.
+/// Where the text built so far leaves the word about to be copied.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Position {
+    /// The start of the text, of a line, or of a list item. Nothing here proves
+    /// a sentence began, so the removed word's own case decides.
+    Fresh,
+    /// Straight after a full stop: the next word starts a sentence.
+    AfterTerminal,
+    /// Inside a sentence.
+    Mid,
+}
+
+/// An ellipsis is not a full stop. "Wait... um, yes" is one sentence trailing
+/// off, and "Wait... Yes" reads as two.
 ///
-/// An ellipsis does not count. "Wait... um, yes" is one sentence trailing off,
-/// and "Wait... Yes" reads as two.
-fn at_sentence_start(out: &str) -> bool {
-    let mut it = out
-        .chars()
-        .rev()
-        .skip_while(|c| c.is_whitespace() || is_open(Some(*c)));
+/// A list marker is not a full stop either, even though "1." ends in one. That
+/// matters because `spoken` (#45) runs before this transform and synthesizes
+/// `- ` and `1. ` from dictated "bullet"/"number" — capitalizing off the back of
+/// a marker would be this transform inventing a style decision for a line it
+/// only passed through.
+fn position(out: &str) -> Position {
+    let line = match out.rfind('\n') {
+        Some(i) => &out[i + 1..],
+        None => out,
+    };
+    let head = line.trim();
+    if head.is_empty() || is_list_marker(head) {
+        return Position::Fresh;
+    }
+    let mut it = head.chars().rev().skip_while(|c| is_open(Some(*c)));
     let Some(last) = it.next() else {
-        return true; // nothing but whitespace so far: this is the start
+        return Position::Fresh;
     };
     if !matches!(last, '.' | '!' | '?') {
-        return false;
+        return Position::Mid;
     }
-    !matches!((last, it.next()), ('.', Some('.')))
+    if matches!((last, it.next()), ('.', Some('.'))) {
+        return Position::Mid; // "..."
+    }
+    Position::AfterTerminal
+}
+
+/// A bullet, or an ordered-list number — the shapes `spoken` (#45) emits.
+fn is_list_marker(s: &str) -> bool {
+    if matches!(s, "-" | "*" | "+" | "\u{2022}") {
+        return true;
+    }
+    let digits = s.trim_end_matches(['.', ')']);
+    !digits.is_empty() && digits.len() < s.len() && digits.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn starts_uppercase(w: &str) -> bool {
@@ -1201,9 +1402,11 @@ mod tests {
             ("um, hello there", "hello there"),
             (
                 "So, um, I think we should ship it",
-                "So I think we should ship it",
+                "So, I think we should ship it",
             ),
-            ("It was, uh, complicated.", "It was complicated."),
+            // the accepted cost of never deleting a comma the model wrote:
+            // this one reads better without it, and we keep it anyway
+            ("It was, uh, complicated.", "It was, complicated."),
             ("hello um", "hello"),
             ("Um. Hello.", "Hello."),
             ("Er, well, maybe", "Well, maybe"),
@@ -1217,6 +1420,138 @@ mod tests {
         for (input, want) in cases {
             assert_eq!(light(input), want, "on {input:?}");
         }
+    }
+
+    /// Regression, adversarial review of PR #72. The old rule threw away a
+    /// matched pair of commas on the theory that it was the filler's own
+    /// bracketing. It is not: a comma before a filler belongs to whatever came
+    /// before it just as often — a sentence adverbial, a vocative, a list item
+    /// — and deleting it is deleting something the user said.
+    #[test]
+    fn a_comma_the_model_wrote_is_never_deleted() {
+        let cases = [
+            ("However, um, we shipped.", "However, we shipped."),
+            ("Hello, um, John.", "Hello, John."),
+            ("First, um, second, and third.", "First, second, and third."),
+            ("Yes, um, I agree.", "Yes, I agree."),
+            ("Right, uh, moving on.", "Right, moving on."),
+            ("Anyway, um, we shipped it.", "Anyway, we shipped it."),
+        ];
+        for (input, want) in cases {
+            assert_eq!(light(input), want, "on {input:?}");
+        }
+    }
+
+    /// Regression, adversarial review of PR #72. `splice` used to compare only
+    /// the punctuation on the two *outer* edges of a deleted run, so a full
+    /// stop *between* two hesitations lost to the commas around them and two
+    /// sentences were welded into one. "hesitation, restart, hesitation" is
+    /// exactly how people rethink a sentence, so this fired constantly.
+    #[test]
+    fn a_sentence_break_inside_the_removed_run_survives() {
+        let cases = [
+            (
+                "I think so, um. Uh, what's next?",
+                "I think so. What's next?",
+            ),
+            ("Is it done, um? Uh, yes.", "Is it done? Yes."),
+            ("We shipped, um! Uh, yesterday.", "We shipped! Yesterday."),
+            ("Right, um... uh, later.", "Right... later."),
+            ("It works, um; uh, mostly.", "It works; mostly."),
+        ];
+        for (input, want) in cases {
+            assert_eq!(light(input), want, "on {input:?}");
+        }
+    }
+
+    /// Regression, adversarial review of PR #72. "Dashes and brackets bound the
+    /// repair" was true and still produced corrupt output, because bounding it
+    /// left the delimiters standing with nothing between them.
+    #[test]
+    fn dashes_and_brackets_do_not_leave_debris() {
+        let cases = [
+            (
+                "It was \u{2014} um \u{2014} complicated.",
+                "It was \u{2014} complicated.",
+            ),
+            ("It was (um) complicated.", "It was complicated."),
+            ("It was [um] complicated.", "It was complicated."),
+            ("It was ((um)) complicated.", "It was complicated."),
+            ("It was fine \u{2014} um.", "It was fine."),
+            ("It was fine \u{2014} um", "It was fine"),
+            ("It was \u{2013} uh \u{2013} fine.", "It was \u{2013} fine."),
+            // the brackets held more than the filler, so they stay
+            (
+                "It was (um yeah) complicated.",
+                "It was (yeah) complicated.",
+            ),
+        ];
+        for (input, want) in cases {
+            assert_eq!(light(input), want, "on {input:?}");
+        }
+    }
+
+    /// `spoken` (#45) runs two places earlier in the chain and synthesizes
+    /// `\n\n`, `- `, `1. ` and `.` from dictated words. By the time text
+    /// reaches this transform they are indistinguishable from model output, so
+    /// the repair has to leave every one of them intact.
+    #[test]
+    fn structure_synthesized_by_spoken_survives() {
+        // untouched: no filler anywhere in them
+        for input in [
+            "- buy milk\n- walk the dog",
+            "1. first item\n2. second item",
+            "first para\n\nsecond para",
+            "we shipped it.",
+            "- buy milk\n- buy milk",
+            "1. the first\n2. the second",
+        ] {
+            assert_eq!(&light(input), input, "on {input:?}");
+        }
+        // a filler inside the structure: the filler goes, the structure stays
+        let cases = [
+            ("- um, buy milk", "- buy milk"),
+            ("- Um, buy milk", "- Buy milk"),
+            ("1. um, first item", "1. first item"),
+            ("1. Um, first item", "1. First item"),
+            ("- buy um, milk", "- buy, milk"),
+            (
+                "- um, buy milk\n- uh, walk the dog",
+                "- buy milk\n- walk the dog",
+            ),
+            ("first para\n\num, second para", "first para\n\nsecond para"),
+            ("we shipped it. um", "we shipped it."),
+            ("um. we shipped it.", "we shipped it."),
+            ("we shipped, um, it.", "we shipped, it."),
+        ];
+        for (input, want) in cases {
+            assert_eq!(light(input), want, "on {input:?}");
+        }
+    }
+
+    /// The one case where this transform could plausibly have taken over
+    /// #45's deferred lowercase list items — and deliberately does not. A list
+    /// item's case is #45's decision to make; all this transform promises is
+    /// not to change it, in either direction, when it removes a filler from
+    /// the front of one.
+    #[test]
+    fn list_item_case_is_left_to_spoken() {
+        assert_eq!(light("- um, buy milk"), "- buy milk");
+        assert_eq!(light("- walk the dog"), "- walk the dog");
+        assert_eq!(light("1. um, first item"), "1. first item");
+        assert_eq!(light("* um, star bullet"), "* star bullet");
+    }
+
+    #[test]
+    fn snake_case_identifiers_are_one_word() {
+        assert_eq!(light("Um, foo_bar is broken."), "Foo_bar is broken.");
+        assert_eq!(light("the um_var is unset"), "the um_var is unset");
+        assert_eq!(light("call er_handler now"), "call er_handler now");
+        let got: Vec<&str> = words("um_var and foo_bar")
+            .into_iter()
+            .map(|s| word("um_var and foo_bar", s))
+            .collect();
+        assert_eq!(got, ["um_var", "and", "foo_bar"]);
     }
 
     #[test]
@@ -1248,45 +1583,65 @@ mod tests {
         }
     }
 
-    // ---- medium ------------------------------------------------------------
+    // ---- medium (gated; see FillerLevel::parse and #74) ---------------------
+    //
+    // These record what the gated level does today, not a shipping contract.
+    // They stay because `light` shares the machinery and because whoever picks
+    // #74 up needs to see both halves: the cases the design gets right, and
+    // `medium_still_has_the_false_positives_that_gate_it` next door.
 
     #[test]
     fn medium_removes_parenthetical_hedges() {
         let cases = [
-            ("It was, like, really cold.", "It was really cold."),
-            ("I think, you know, we should go.", "I think we should go."),
+            ("It was, like, really cold.", "It was, really cold."),
+            ("I think, you know, we should go.", "I think, we should go."),
             ("You know, the thing is broken.", "The thing is broken."),
             ("I mean, we could try again.", "We could try again."),
             ("Like, I do not know.", "I do not know."),
-            ("It is, sort of, done.", "It is done."),
-            ("We, basically, need more time.", "We need more time."),
-            ("It was, actually, quite good.", "It was quite good."),
+            ("It is, sort of, done.", "It is, done."),
+            ("We, basically, need more time.", "We, need more time."),
+            ("It was, actually, quite good.", "It was, quite good."),
             ("It was cold, like.", "It was cold."),
             ("It is fine, you know.", "It is fine."),
             ("Um, I mean, like, the thing", "The thing"),
-            ("So, like, it works", "So it works"),
+            ("So, like, it works", "So, it works"),
         ];
         for (input, want) in cases {
             assert_eq!(medium(input), want, "on {input:?}");
         }
     }
 
-    /// The collision with #48. "I mean" is both a hedge here and the marker
-    /// self-correction keys on, and the chain runs self-correction first —
-    /// but this transform has to be right whether or not that ran.
+    /// The collision with #48, and the reason the gate helps it too.
+    ///
+    /// `light` — the level that ships — cannot touch "I mean" in any form, so
+    /// with `self_correct` still a stub on `main` there is no way for filler
+    /// removal to eat a correction marker. At `medium` the comma-less marker
+    /// form is still left alone, but the comma-closed one
+    /// ("Tuesday, I mean, Wednesday") is not, and that is one of the false
+    /// positives holding the level back.
     #[test]
-    fn the_correction_marker_form_of_i_mean_is_left_for_48() {
-        // #48's shape: comma before, none after. Untouched at every level, so
-        // running fillers without self_correct never eats the correction.
+    fn light_cannot_touch_a_correction_marker_at_all() {
         for input in [
             "meet Tuesday, I mean Wednesday",
             "Send it to Bob, I mean Rob.",
             "It is on the 3rd, I mean the 4th.",
+            "Let's meet Tuesday, I mean, Wednesday.",
+            "I mean, we could try again.",
         ] {
-            assert_eq!(&medium(input), input, "took a #48 correction marker");
+            assert_eq!(&light(input), input, "light took a #48 correction marker");
         }
+        // at medium the comma-less form is still safe...
+        assert_eq!(
+            medium("meet Tuesday, I mean Wednesday"),
+            "meet Tuesday, I mean Wednesday"
+        );
+        // ...and the comma-closed one is not, which is #74's problem to solve
+        assert_eq!(
+            medium("Let's meet Tuesday, I mean, Wednesday."),
+            "Let's meet Tuesday, Wednesday."
+        );
         // What #48 leaves behind is already clean, and stays clean here.
-        assert_eq!(medium("meet Wednesday"), "meet Wednesday");
+        assert_eq!(light("meet Wednesday"), "meet Wednesday");
     }
 
     #[test]
@@ -1371,7 +1726,7 @@ mod tests {
     fn capitalization_is_repaired_only_where_a_filler_was_removed() {
         assert_eq!(light("Um, the thing broke"), "The thing broke");
         assert_eq!(light("Yes. Um, the thing broke"), "Yes. The thing broke");
-        assert_eq!(light("Yes, um, the thing broke"), "Yes the thing broke");
+        assert_eq!(light("Yes, um, the thing broke"), "Yes, the thing broke");
         assert_eq!(
             medium("You know, iPhone sales are up."),
             "iPhone sales are up."
@@ -1395,12 +1750,12 @@ mod tests {
             ("Wait... um, yes", "Wait... yes"),
             ("Really? um, yes", "Really? Yes"),
             ("one, um; two", "one; two"),
-            ("hi,um,there", "hi there"),
+            ("hi,um,there", "hi,there"),
             ("It is fine, um!", "It is fine!"),
             ("I agree. Um, uh. Let's go.", "I agree. Let's go."),
             ("done, um", "done"),
             ("done. um", "done."),
-            ("It was, uh, fine, um, honestly.", "It was fine honestly."),
+            ("It was, uh, fine, um, honestly.", "It was, fine, honestly."),
         ];
         for (input, want) in cases {
             assert_eq!(light(input), want, "on {input:?}");
@@ -1415,7 +1770,6 @@ mod tests {
                 r#"He said "hello, um" and left"#,
                 r#"He said "hello" and left"#,
             ),
-            ("(um) fine", "() fine"),
         ];
         for (input, want) in cases {
             assert_eq!(light(input), want, "on {input:?}");
@@ -1571,8 +1925,8 @@ mod tests {
     #[test]
     fn unicode_neighbours_are_left_where_they_are() {
         assert_eq!(medium("👩‍💻 um shipped it 🚀"), "👩‍💻 shipped it 🚀");
-        assert_eq!(light("shipped it, um, 🚀"), "shipped it 🚀");
-        assert_eq!(light("naïve café, um, résumé"), "naïve café résumé");
+        assert_eq!(light("shipped it, um, 🚀"), "shipped it, 🚀");
+        assert_eq!(light("naïve café, um, résumé"), "naïve café, résumé");
         assert_eq!(light("первое um второе"), "первое второе");
         assert_eq!(light("日本語 um です"), "日本語 です");
         // U+200B is not whitespace, so "um" stands alone between two invisible
@@ -1586,6 +1940,71 @@ mod tests {
         let first = medium(input);
         for _ in 0..100 {
             assert_eq!(medium(input), first);
+        }
+    }
+
+    // ---- the chain, with this transform actually doing something -----------
+
+    /// `lib.rs` proves the chain is idempotent and prefix-stable-free over the
+    /// torture corpus, but it builds its config with `testing::cfg_with`, which
+    /// only flips `enabled` — so for this transform every one of those tests
+    /// runs at `Off` and proves nothing. `testing.rs` is shared by six parallel
+    /// issues and must not grow a per-transform knob, so the level-aware half
+    /// of that coverage lives here instead.
+    fn chain_at(level: FillerLevel) -> crate::Polish {
+        let cfg = crate::PolishConfig {
+            fillers: FillersConfig {
+                enabled: true,
+                level,
+            },
+            ..Default::default()
+        };
+        let chain = crate::Polish::from_config(&cfg);
+        assert_eq!(chain.names(), ["fillers"]);
+        chain
+    }
+
+    #[test]
+    fn the_chain_is_idempotent_with_a_level_actually_set() {
+        for level in LEVELS {
+            let chain = chain_at(level);
+            for input in torture_inputs() {
+                let once = chain.apply(&input);
+                assert_eq!(
+                    chain.apply(&once),
+                    once,
+                    "{level} in a chain is not idempotent on {:?}",
+                    truncate(&input)
+                );
+            }
+        }
+    }
+
+    /// The streaming promise (#50), checked at a level that deletes: a chain
+    /// containing this transform must still type exactly what the model said.
+    #[test]
+    fn the_chain_runs_nothing_prefix_stable_at_any_level() {
+        for level in LEVELS {
+            let chain = chain_at(level);
+            assert!(chain.has_rewriting_transforms(), "{level} must warn #50");
+            for input in torture_inputs() {
+                assert_eq!(
+                    chain.apply_prefix_stable(&input),
+                    input,
+                    "{level} polished a streaming pass on {:?}",
+                    truncate(&input)
+                );
+            }
+        }
+    }
+
+    /// The seam's byte-identity promise, at the only level a default config can
+    /// reach: `off` through the real chain, not just through `apply`.
+    #[test]
+    fn the_chain_is_byte_identical_at_off() {
+        let chain = chain_at(FillerLevel::Off);
+        for input in torture_inputs() {
+            assert_eq!(chain.apply(&input), input, "on {:?}", truncate(&input));
         }
     }
 
@@ -1622,7 +2041,7 @@ mod tests {
             prefix_violation(&m, "it was, like, cold").expect("must violate");
         assert_eq!(
             (prefix.as_str(), got.as_str(), whole.as_str()),
-            ("it was,", "it was,", "it was cold")
+            ("it was, l", "it was, l", "it was, cold")
         );
 
         // off never does: it is the identity function
@@ -1636,7 +2055,7 @@ mod tests {
 
     #[test]
     fn level_round_trips_through_toml_and_json() {
-        for level in LEVELS {
+        for level in FillerLevel::SELECTABLE {
             let cfg = FillersConfig {
                 enabled: true,
                 level,
@@ -1649,6 +2068,55 @@ mod tests {
             let json = serde_json::to_string(&cfg).unwrap();
             let back: FillersConfig = serde_json::from_str(&json).unwrap();
             assert_eq!(back.level, level);
+        }
+    }
+
+    /// `medium` is held back until #74 answers whether the models emit the
+    /// commas its safety argument depends on. No config can select it, and the
+    /// serialized form still round-trips to `off` rather than failing, so a
+    /// config written by a build that ships it later still loads here.
+    #[test]
+    fn medium_cannot_be_selected_from_config() {
+        assert_eq!(FillerLevel::parse("medium"), None);
+        assert_eq!(FillerLevel::parse("Medium"), None);
+        assert!(!FillerLevel::SELECTABLE.contains(&FillerLevel::Medium));
+        for raw in [
+            "enabled = true\nlevel = \"medium\"\n",
+            "enabled = true\nlevel = \"MEDIUM\"\n",
+        ] {
+            let cfg: FillersConfig = toml::from_str(raw).unwrap();
+            assert_eq!(cfg.level, FillerLevel::Off, "on {raw:?}");
+            assert_eq!(
+                Fillers::new(cfg).apply("It was, like, cold."),
+                "It was, like, cold."
+            );
+        }
+        let json: FillersConfig =
+            serde_json::from_str(r#"{"enabled":true,"level":"medium"}"#).unwrap();
+        assert_eq!(json.level, FillerLevel::Off);
+    }
+
+    /// Why it is held back, in code. Every one of these is a load-bearing word
+    /// that `medium` deletes, and every one of them needs the commas to be
+    /// there — so the level is live exactly where its safety is unproven.
+    /// **When someone fixes these, this test fails, and that is the signal to
+    /// ungate the level** (see #74).
+    #[test]
+    fn medium_still_has_the_false_positives_that_gate_it() {
+        let known_bad = [
+            ("You know, don't you?", "Don't you?"),
+            ("Well, sort of, yes.", "Well, yes."),
+            ("Did he, actually, do it?", "Did he, do it?"),
+            ("Like, the video please.", "The video please."),
+            (
+                "Let's meet Tuesday, I mean, Wednesday.",
+                "Let's meet Tuesday, Wednesday.",
+            ),
+        ];
+        for (input, still_wrong) in known_bad {
+            assert_eq!(medium(input), still_wrong, "on {input:?}");
+            // and the level that ships is untouched by every one of them
+            assert_eq!(&light(input), input, "light must not touch {input:?}");
         }
     }
 
@@ -1674,8 +2142,36 @@ mod tests {
             );
         }
         assert_eq!(FillerLevel::parse("nope"), None);
-        let cfg: FillersConfig = toml::from_str("level = \"Medium\"\n").unwrap();
-        assert_eq!(cfg.level, FillerLevel::Medium);
+        for raw in ["off", "Off", "OFF", " off "] {
+            assert_eq!(
+                FillerLevel::parse(raw),
+                Some(FillerLevel::Off),
+                "on {raw:?}"
+            );
+        }
+        let cfg: FillersConfig = toml::from_str("level = \"LIGHT\"\n").unwrap();
+        assert_eq!(cfg.level, FillerLevel::Light);
+    }
+
+    /// The lenient landing is for *any* unusable value, not just a misspelled
+    /// string: `level = 3` reached `main` as a fatal config error before, which
+    /// is a daemon that will not start over one character in a file the user
+    /// hand-edited.
+    #[test]
+    fn a_level_of_the_wrong_type_lands_on_off_too() {
+        for raw in [
+            "level = 3\n",
+            "level = true\n",
+            "level = 1.5\n",
+            "level = [\"light\"]\n",
+            "level = { name = \"light\" }\n",
+        ] {
+            let cfg: FillersConfig =
+                toml::from_str(raw).unwrap_or_else(|e| panic!("{raw:?} failed to parse: {e}"));
+            assert_eq!(cfg.level, FillerLevel::Off, "on {raw:?}");
+        }
+        let json: FillersConfig = serde_json::from_str(r#"{"level":null}"#).unwrap();
+        assert_eq!(json.level, FillerLevel::Off);
     }
 
     #[test]
@@ -1774,13 +2270,18 @@ mod tests {
     fn cost_is_linear_enough_to_ignore() {
         let utterance = "So, um, I think, you know, we should, like, ship the the thing on \
                          Tuesday, I mean Wednesday, because the build is, basically, green.";
-        let start = std::time::Instant::now();
-        let runs = 200;
-        for _ in 0..runs {
-            std::hint::black_box(medium(utterance));
+        for level in [FillerLevel::Light, FillerLevel::Medium] {
+            for _ in 0..50 {
+                std::hint::black_box(at(level, utterance)); // warm up
+            }
+            let start = std::time::Instant::now();
+            let runs = 500;
+            for _ in 0..runs {
+                std::hint::black_box(at(level, utterance));
+            }
+            let each = start.elapsed() / runs;
+            println!("{level} on a {}-char utterance: {each:?}", utterance.len());
         }
-        let each = start.elapsed() / runs;
-        println!("medium on a {}-char utterance: {each:?}", utterance.len());
 
         let long = "the quick brown fox jumps over the lazy dog. ".repeat(45_000);
         let start = std::time::Instant::now();
