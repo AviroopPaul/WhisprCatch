@@ -81,11 +81,13 @@ jobs:
       # The repo has never been rustfmt-clean, so formatting is enforced only on
       # crates that are. Add crates here as they are brought up to standard.
       # wc-text arrives with the cleanup seam (#40); the guard lets this
-      # workflow merge before that PR does.
-      - name: Format (wc-text only)
+      # workflow merge before that PR does. wc-inject was brought clean by the
+      # injector replace work (#41).
+      - name: Format (clean crates only)
         run: |
           if [ -d crates/text ]; then
             cargo fmt -p wc-text -- --check
           else
             echo "crates/text not present yet, skipping"
           fi
+          cargo fmt -p wc-inject -- --check

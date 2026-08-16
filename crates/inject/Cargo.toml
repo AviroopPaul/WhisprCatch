@@ -8,6 +8,12 @@ license.workspace = true
 anyhow.workspace = true
 log.workspace = true
 enigo = "0.6"
+# Backspace deletes one grapheme cluster, not one char, so a replace has to
+# count clusters or it eats characters the user typed. Not a new dependency in
+# any sense that costs: the binary already links this exact version through
+# wc-tray -> tray-icon -> muda -> keyboard-types, and UAX #29 is not something
+# to approximate by hand.
+unicode-segmentation = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["xtest"] }
