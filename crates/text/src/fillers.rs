@@ -33,11 +33,19 @@
 //!   punctuation, and afterwards exactly one mark stands for it — the strongest
 //!   found beside *or inside* the removed run, leftmost on a tie. Inside
 //!   matters: "I think so, um. Uh, what's next?" keeps the full stop that ends
-//!   the sentence rather than letting the two commas outvote it. This transform
-//!   does not delete punctuation the model wrote: "However, um, we shipped"
-//!   becomes "However, we shipped", never "However we shipped". The accepted
-//!   cost of that is a comma the user can see and remove — "it was, uh,
-//!   complicated" becomes "it was, complicated".
+//!   the sentence rather than letting the two commas outvote it. A pause is
+//!   never silently dropped: "However, um, we shipped" becomes "However, we
+//!   shipped", never "However we shipped". It can be *rewritten*, though, when
+//!   a stronger mark stood on the other side — "it was — um, complicated"
+//!   comes back with the comma rather than the dash, since a dash ranks below
+//!   one. The accepted cost is a comma the user can see and remove: "it was,
+//!   uh, complicated" becomes "it was, complicated".
+//!
+//!   Known and deliberate: the ASCII hyphen is not punctuation here, so
+//!   "a - um - b" keeps both hyphens and comes back as "a - - b" where the em
+//!   dash version does not. That is the right side of the trade — the same rule
+//!   is what stops a dictated bullet from being eaten — but it is a real edge
+//!   with visible debris.
 //! - **Whitespace**: merged to a single space, or to the line break if either
 //!   side had one, because a paragraph is structure and not spacing.
 //! - **Capitalization**: a word left standing at the start of a sentence is
@@ -568,28 +576,62 @@ fn starts_a_pair(text: &str, words: &[Span], i: usize) -> bool {
 /// count: "No, no, I disagree" and "That, that is the question" have
 /// punctuation between them, which is the user (or the model) marking them as
 /// deliberate.
+///
+/// Words already marked for deletion are *looked through*, because removing a
+/// hesitation can leave a stutter that was not there before: "the the um the
+/// thing" has to come out as "the thing", not as "the the thing" with a visible
+/// stutter still in it. Repeating until nothing changes is what makes running
+/// this transform twice give the same answer as running it once.
 fn collapse_stutters(text: &str, words: &[Span], del: &mut [bool]) {
-    let mut i = 0;
-    while i < words.len() {
-        if in_list(text, words[i], STUTTER_WORDS) {
-            let head = word(text, words[i]);
-            let mut j = i + 1;
-            while j < words.len()
-                && is_whitespace_only(&text[words[j - 1].end..words[j].start])
-                && word(text, words[j]).eq_ignore_ascii_case(head)
-            {
-                j += 1;
-            }
-            if j > i + 1 {
-                for d in del.iter_mut().take(j).skip(i + 1) {
-                    *d = true;
+    loop {
+        let alive: Vec<usize> = (0..words.len()).filter(|i| !del[*i]).collect();
+        let mut changed = false;
+        let mut k = 0;
+        while k < alive.len() {
+            if in_list(text, words[alive[k]], STUTTER_WORDS) {
+                let head = word(text, words[alive[k]]);
+                let mut m = k + 1;
+                while m < alive.len()
+                    && only_whitespace_survives(text, words, del, alive[m - 1], alive[m])
+                    && word(text, words[alive[m]]).eq_ignore_ascii_case(head)
+                {
+                    m += 1;
                 }
-                i = j;
-                continue;
+                if m > k + 1 {
+                    for t in &alive[k + 1..m] {
+                        del[*t] = true;
+                    }
+                    changed = true;
+                    k = m;
+                    continue;
+                }
             }
+            k += 1;
         }
-        i += 1;
+        if !changed {
+            return;
+        }
     }
+}
+
+/// True when nothing but whitespace will stand between words `a` and `b` once
+/// the marked deletions have happened.
+///
+/// "Nothing" includes the brackets around a deleted word, since those leave
+/// with it — "a a (um) a" collapses exactly like "a a um a".
+fn only_whitespace_survives(text: &str, words: &[Span], del: &[bool], a: usize, b: usize) -> bool {
+    if !(a + 1..b).all(|i| del[i]) {
+        return false;
+    }
+    let mut pos = words[a].end;
+    for middle in words.iter().take(b).skip(a + 1) {
+        let cut = widen_over_brackets(text, *middle);
+        if !is_whitespace_only(&text[pos..cut.start.max(pos)]) {
+            return false;
+        }
+        pos = pos.max(cut.end);
+    }
+    is_whitespace_only(&text[pos.min(words[b].start)..words[b].start])
 }
 
 fn strip_hedges(text: &str, words: &[Span], del: &mut [bool]) {
@@ -844,29 +886,63 @@ fn punct_end_right(text: &str, mut at: usize) -> usize {
 
 // ---------------------------------------------------------------- rebuild
 
+/// One splice: the bytes to cut, and the first word it removes — whose own
+/// capitalization is the evidence used when the survivor lands somewhere no
+/// full stop proves a sentence began.
+struct Run {
+    span: Span,
+    first_word: usize,
+}
+
+/// Groups the deleted words into splices, **widening each one over the brackets
+/// it fills before deciding where the boundaries are.**
+///
+/// The order matters and used to be the other way round, which was a crash.
+/// Widening grows a run outward, so a run that swallows its brackets can reach
+/// back over ground the previous run already took — "a (um) uh b" is the
+/// smallest case. Two splices that overlap slice the same bytes twice, and
+/// `&text[cursor..from]` panics with `from < cursor`. Doing the widening here,
+/// before any boundary is fixed, means two runs that end up touching merge into
+/// one splice instead of fighting over the seam.
+fn runs(text: &str, words: &[Span], del: &[bool]) -> Vec<Run> {
+    let mut runs: Vec<Run> = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        if !del[i] {
+            continue;
+        }
+        let mut span = widen_over_brackets(text, *w);
+        let mut first_word = i;
+        // Absorb every run this one now touches, or that only separator text
+        // stands between. Each pass pops one, so this terminates.
+        while let Some(prev) = runs.last() {
+            if span.start > prev.span.end && !is_separator(&text[prev.span.end..span.start]) {
+                break;
+            }
+            let prev = runs.pop().expect("just inspected");
+            first_word = prev.first_word;
+            span = widen_over_brackets(
+                text,
+                Span {
+                    start: prev.span.start.min(span.start),
+                    end: prev.span.end.max(span.end),
+                },
+            );
+        }
+        runs.push(Run { span, first_word });
+    }
+    runs
+}
+
 fn rebuild(text: &str, words: &[Span], del: &[bool]) -> String {
     let mut out = String::with_capacity(text.len());
     let mut cursor = 0usize;
     let mut capitalize_next = false;
-    let mut i = 0;
 
-    while i < words.len() {
-        if !del[i] {
-            i += 1;
-            continue;
-        }
-        // One splice per run of deleted words, so "um, uh, hello" does not go
-        // through two rounds of punctuation repair.
-        let (first, mut last) = (i, i);
-        while last + 1 < words.len()
-            && del[last + 1]
-            && is_separator(&text[words[last].end..words[last + 1].start])
-        {
-            last += 1;
-        }
-        i = last + 1;
-
-        let (from, to, replacement) = splice(text, words[first].start, words[last].end);
+    for run in runs(text, words, del) {
+        let (from, to, replacement) = splice(text, run.span);
+        // Holds by construction: both ends of a splice stop at the first
+        // character that is neither whitespace nor droppable punctuation, and
+        // any two runs with only that between them were merged above.
         debug_assert!(cursor <= from, "splices overlap");
         push_chunk(&mut out, &text[cursor..from], &mut capitalize_next);
         out.push_str(&replacement);
@@ -878,7 +954,7 @@ fn rebuild(text: &str, words: &[Span], del: &[bool]) -> String {
         // is a user dictating into the middle of one, and "- um, buy milk" is
         // an item in a list that was already lowercase.
         capitalize_next = match position(&out) {
-            Position::Fresh => starts_uppercase(word(text, words[first])),
+            Position::Fresh => starts_uppercase(word(text, words[run.first_word])),
             Position::AfterTerminal => true,
             Position::Mid => false,
         };
@@ -900,10 +976,8 @@ fn is_separator(s: &str) -> bool {
 /// then over whitespace again — no further, so a quote or a word always stops
 /// it — and over a bracket pair the removed run fills entirely. What comes back
 /// is at most one punctuation run plus one stretch of whitespace.
-fn splice(text: &str, del_start: usize, del_end: usize) -> (usize, usize, String) {
-    // "It was (um) complicated." — the brackets held nothing but the filler, so
-    // they go with it. Left in place they read as debris: "It was () ...".
-    let (del_start, del_end) = widen_over_brackets(text, del_start, del_end);
+fn splice(text: &str, cut: Span) -> (usize, usize, String) {
+    let (del_start, del_end) = (cut.start, cut.end);
 
     let ws_l = skip_ws_left(text, del_start);
     let punct_l = punct_start_left(text, ws_l);
@@ -1012,28 +1086,32 @@ fn splice(text: &str, del_start: usize, del_end: usize) -> (usize, usize, String
     (from, to, format!("{pad}{keep}{space}"))
 }
 
-/// Widens a deleted run over a bracket pair it fills entirely, so "(um)" leaves
-/// as one thing rather than leaving "()" behind. Repeats, so "((um))" goes too.
+/// Widens a cut over a bracket pair it fills entirely, so "(um)" leaves as one
+/// thing rather than leaving "()" behind. Repeats, so "((um))" goes too.
+///
+/// Called from [`runs`], never from [`splice`] — see the note there.
 ///
 /// Quotes are not brackets here: `'` is an apostrophe more often than it is a
 /// quotation mark, and a quoted filler is more plausibly a quotation of someone
 /// than debris.
-fn widen_over_brackets(text: &str, mut start: usize, mut end: usize) -> (usize, usize) {
+fn widen_over_brackets(text: &str, mut cut: Span) -> Span {
     loop {
-        let l = skip_ws_left(text, start);
-        let r = skip_ws_right(text, end);
+        let l = skip_ws_left(text, cut.start);
+        let r = skip_ws_right(text, cut.end);
         let (Some(open), Some(close)) = (prev_char(text, l), text[r..].chars().next()) else {
-            return (start, end);
+            return cut;
         };
         let pair = matches!(
             (open, close),
             ('(', ')') | ('[', ']') | ('{', '}') | ('\u{00AB}', '\u{00BB}')
         );
         if !pair {
-            return (start, end);
+            return cut;
         }
-        start = l - open.len_utf8();
-        end = r + close.len_utf8();
+        cut = Span {
+            start: l - open.len_utf8(),
+            end: r + close.len_utf8(),
+        };
     }
 }
 
@@ -1485,10 +1563,92 @@ mod tests {
                 "It was (um yeah) complicated.",
                 "It was (yeah) complicated.",
             ),
+            // Known cost, recorded rather than fixed: the ASCII hyphen is not
+            // droppable punctuation, because that is exactly what keeps a
+            // dictated bullet from being eaten. An em dash in the same place
+            // comes out clean; a hyphen leaves debris.
+            ("a - um - b", "a - - b"),
         ];
         for (input, want) in cases {
             assert_eq!(light(input), want, "on {input:?}");
         }
+    }
+
+    /// Regression, adversarial review of PR #72 — and the worst kind of bug
+    /// this crate can have. `widen_over_brackets` grew a deleted run outward
+    /// over its brackets, but it ran inside `splice`, *after* the run
+    /// boundaries were fixed and the cursor had moved on. A widened run could
+    /// therefore start behind the previous splice's end, and `&text[cursor..
+    /// from]` panicked with an inverted range — in release too, where the
+    /// `debug_assert` that would have named it is compiled out.
+    ///
+    /// `apply` is called inline in the dictation loop with no `catch_unwind`
+    /// anywhere in the workspace, so this was not bad text: it was a lost
+    /// utterance and a panic out of the PTT loop, on the path CLAUDE.md calls
+    /// P0. The minimal trigger is one bracketed filler with any other filler
+    /// beside it, not two bracket pairs.
+    #[test]
+    fn a_bracketed_filler_beside_another_filler_does_not_panic() {
+        let cases = [
+            ("a (um) uh b", "a b"),
+            ("a um (uh) b", "a b"),
+            ("a (um) (uh) b", "a b"),
+            ("a [um] [uh] b", "a b"),
+            ("a \u{2014} um \u{2014} (uh) b", "a \u{2014} b"),
+            ("- (um) (uh) buy milk", "- buy milk"),
+            ("a (um)(uh) b", "a b"),
+            ("a ((um)) uh b", "a b"),
+            ("a (um) uh (er) b", "a b"),
+            ("a (um), uh. b", "a. B"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(light(input), want, "on {input:?}");
+        }
+    }
+
+    /// Every short arrangement of the pieces that broke it: brackets, dashes,
+    /// punctuation, fillers and real words. `apply` must not panic on any of
+    /// them, must be idempotent, and must never grow the text — and under
+    /// `cargo test` the `debug_assert!(cursor <= from)` in `rebuild` turns any
+    /// overlap back into a named failure instead of a slice panic.
+    #[test]
+    fn no_arrangement_of_brackets_and_fillers_overlaps() {
+        const PIECES: [&str; 12] = [
+            "a", "um", "uh", "(um)", "(uh)", "[um]", "\u{2014}", ",", ".", "-", "(", ")",
+        ];
+        let mut checked = 0usize;
+        for w in PIECES {
+            for x in PIECES {
+                for y in PIECES {
+                    for z in PIECES {
+                        for joiner in [" ", ""] {
+                            let input = [w, x, y, z].join(joiner);
+                            for level in LEVELS {
+                                // the call itself is the panic guard
+                                let out = at(level, &input);
+                                assert!(
+                                    out.len() <= input.len(),
+                                    "{level} grew {input:?} into {out:?}"
+                                );
+                                // Idempotence is only asserted for the levels
+                                // that ship. `medium` has a known asymmetry in
+                                // `ctx_right` that makes a second pass differ,
+                                // parked with the rest of the level under #74.
+                                if FillerLevel::SELECTABLE.contains(&level) {
+                                    assert_eq!(
+                                        at(level, &out),
+                                        out,
+                                        "{level} is not idempotent on {input:?}"
+                                    );
+                                }
+                            }
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, PIECES.len().pow(4) * 2);
     }
 
     /// `spoken` (#45) runs two places earlier in the chain and synthesizes
@@ -1529,16 +1689,26 @@ mod tests {
         }
     }
 
-    /// The one case where this transform could plausibly have taken over
-    /// #45's deferred lowercase list items — and deliberately does not. A list
-    /// item's case is #45's decision to make; all this transform promises is
-    /// not to change it, in either direction, when it removes a filler from
-    /// the front of one.
+    /// The one case where this transform could plausibly have taken over #45's
+    /// deferred lowercase list items — and deliberately does not. Deciding that
+    /// `- walk the dog` should be capitalized is a style call about a line this
+    /// transform only passed through, and it would have to fire on items with
+    /// no filler in them at all.
+    ///
+    /// What is promised instead is narrower: the start of a list item is a
+    /// [`Position::Fresh`], exactly like the start of the text, so a survivor
+    /// there inherits the case of the filler that was removed — lowercase
+    /// filler, lowercase survivor. The item's own style is never invented, only
+    /// carried over.
     #[test]
     fn list_item_case_is_left_to_spoken() {
-        assert_eq!(light("- um, buy milk"), "- buy milk");
+        // no filler: nothing happens, including no capitalization
         assert_eq!(light("- walk the dog"), "- walk the dog");
+        // filler removed: the survivor inherits the filler's case, both ways
+        assert_eq!(light("- um, buy milk"), "- buy milk");
+        assert_eq!(light("- Um, buy milk"), "- Buy milk");
         assert_eq!(light("1. um, first item"), "1. first item");
+        assert_eq!(light("1. Um, first item"), "1. First item");
         assert_eq!(light("* um, star bullet"), "* star bullet");
     }
 
@@ -2263,9 +2433,16 @@ mod tests {
 
     // ---- cost --------------------------------------------------------------
 
-    /// Not a benchmark, a guard: linear code finishes this instantly, and
-    /// anything quadratic hangs the release build the first time a user
-    /// dictates for ten minutes. `--nocapture` prints the real numbers.
+    /// Not a benchmark, a guard: anything quadratic hangs the release build the
+    /// first time a user dictates for ten minutes. `--nocapture` prints the
+    /// real numbers.
+    ///
+    /// The assertion compares the *shape* of the cost curve rather than a wall
+    /// clock, because the rest of this suite runs on the other cores and an
+    /// absolute deadline turns into a flaky failure on a loaded CI runner. Nine
+    /// times the input may cost up to four times as much per byte before this
+    /// calls it non-linear; genuinely quadratic code costs nine times as much
+    /// per byte and cannot squeak through.
     #[test]
     fn cost_is_linear_enough_to_ignore() {
         let utterance = "So, um, I think, you know, we should, like, ship the the thing on \
@@ -2283,11 +2460,24 @@ mod tests {
             println!("{level} on a {}-char utterance: {each:?}", utterance.len());
         }
 
-        let long = "the quick brown fox jumps over the lazy dog. ".repeat(45_000);
+        let sentence = "the quick brown fox jumps over the lazy dog. ";
+        let small = sentence.repeat(5_000);
+        let big = sentence.repeat(45_000);
+        std::hint::black_box(medium(&small)); // warm up
         let start = std::time::Instant::now();
-        std::hint::black_box(medium(&long));
-        let big = start.elapsed();
-        println!("medium on {} bytes: {big:?}", long.len());
-        assert!(big.as_secs() < 5, "2 MB took {big:?} — that is not linear");
+        std::hint::black_box(medium(&small));
+        let small_cost = start.elapsed();
+        let start = std::time::Instant::now();
+        std::hint::black_box(medium(&big));
+        let big_cost = start.elapsed();
+        println!(
+            "medium on {} bytes: {small_cost:?}; on {} bytes: {big_cost:?}",
+            small.len(),
+            big.len()
+        );
+        assert!(
+            big_cost < small_cost * 9 * 4,
+            "9x the input cost {big_cost:?} against {small_cost:?} — that is not linear"
+        );
     }
 }
