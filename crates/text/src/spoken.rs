@@ -932,7 +932,7 @@ fn quoted(text: &str, start: usize, end: usize) -> bool {
 /// the "a" that makes it one.
 fn determiner_within(text: &str, start: usize, depth: usize) -> bool {
     let mut at = start;
-    for _ in 0..depth {
+    for step in 0..depth {
         let Some(w) = prev_word(text, at) else {
             return false;
         };
@@ -940,7 +940,12 @@ fn determiner_within(text: &str, start: usize, depth: usize) -> bool {
             return false;
         }
         let word = &text[w.start..w.end];
-        if listed(word, STOP_BACKSCAN) {
+        // An auxiliary *immediately* in front is the verb this phrase is the
+        // object of — "The tool can bullet point." — not a predicate boundary,
+        // so it must not stop the walk before it reaches "The". Only from the
+        // second word back does a copula mean the determiner belongs to an
+        // earlier phrase, which is what keeps "that is all period" a command.
+        if step > 0 && listed(word, STOP_BACKSCAN) {
             return false;
         }
         if listed(word, DETERMINERS) {
@@ -1260,6 +1265,11 @@ mod tests {
         "please expand that important bullet point.",
         "I liked that big bullet point.",
         "we should drop that confusing numbered list.",
+        // …and an auxiliary in front is the verb the phrase is the object of,
+        // not a boundary the look-back may stop at
+        "The tool can bullet point.",
+        "Our editor will bullet point.",
+        "The app can numbered list.",
         // a hyphen welds a compound noun together and must strengthen the
         // block, not lift it
         "This is a brand-new paragraph.",
@@ -1289,15 +1299,11 @@ mod tests {
         }
     }
 
-    /// Does `text` contain `words` as a whole-word run, separated by nothing
-    /// but whitespace — the same test the matcher itself applies?
-    ///
-    /// Substring matching is not good enough here and quietly reported
-    /// coverage that did not exist: every single-word token that is a
-    /// substring of a longer phrase already in the corpus — "point" inside
-    /// "bullet point", "quote" inside "open quote", "stop", "mark", "list" —
-    /// would have passed both meta-tests with no case of its own.
-    fn contains_phrase(text: &str, words: &[&str]) -> bool {
+    /// Every whole-word occurrence of `words` in `text`, as byte ranges, using
+    /// the module's own lexer and its own "only whitespace between the words of
+    /// a phrase" rule.
+    fn phrase_spans(text: &str, words: &[&str]) -> Vec<(usize, usize)> {
+        let mut spans = Vec::new();
         let mut at = 0;
         while let Some(w) = next_word(text, at) {
             at = w.end;
@@ -1313,24 +1319,93 @@ mod tests {
                 _ => false,
             });
             if matched {
-                return true;
+                spans.push((w.start, end));
             }
         }
-        false
+        spans
+    }
+
+    /// Does `text` exercise `words` **as its own token** — a whole-word
+    /// occurrence that is not swallowed by a longer command phrase?
+    ///
+    /// Two holes had to be closed here, and only the first is obvious.
+    /// Substring matching let "bulletpoint" and "bullet, point" count. Fixing
+    /// that still left the one that matters: every single word inside an
+    /// existing two-word token — "point", "quote", "list", "line",
+    /// "paragraph", "stop", "mark" — is a *whole word* in a corpus case
+    /// written for the pair, which is exactly the set of likely future
+    /// additions. Adding "quote" as a token passed both meta-tests with zero
+    /// coverage of its own.
+    fn covers_token(text: &str, words: &[&str]) -> bool {
+        phrase_spans(text, words).iter().any(|&(s, e)| {
+            !COMMANDS.iter().any(|other| {
+                other.words != words
+                    && phrase_spans(text, other.words)
+                        .iter()
+                        .any(|&(s2, e2)| s2 <= s && e2 >= e && (s2 < s || e2 > e))
+            })
+        })
     }
 
     #[test]
-    fn the_meta_tests_match_whole_phrases_not_substrings() {
-        assert!(contains_phrase(
+    fn the_meta_tests_need_a_case_of_the_tokens_own() {
+        // whole words only
+        assert!(covers_token(
             "add a bullet point here",
             &["bullet", "point"]
         ));
-        assert!(contains_phrase("a POINT taken", &["point"]));
-        // the hole this replaced: "point" is not exercised by "bullet point"
-        assert!(!contains_phrase("add a bullet point here", &["quote"]));
-        assert!(!contains_phrase("bulletpoint", &["bullet", "point"]));
-        assert!(!contains_phrase("bullet, point", &["bullet", "point"]));
-        assert!(!contains_phrase("pointing at it", &["point"]));
+        assert!(!covers_token("bulletpoint", &["bullet", "point"]));
+        assert!(!covers_token("bullet, point", &["bullet", "point"]));
+        assert!(!covers_token("pointing at it", &["point"]));
+
+        // …and not swallowed by a longer token. This is the reviewer's exact
+        // demonstration: "quote" as a new token gets nothing from the two
+        // cases written for "open quote" and "close quote".
+        assert!(!covers_token(
+            "he said open quote ship it close quote yesterday",
+            &["quote"]
+        ));
+        assert!(!covers_token("add a bullet point here", &["point"]));
+        assert!(!covers_token(
+            "make a numbered list of the tasks",
+            &["list"]
+        ));
+        // an occurrence outside the longer phrase does count
+        assert!(covers_token("a POINT taken", &["point"]));
+        assert!(covers_token(
+            "quote me on that open quote thing",
+            &["quote"]
+        ));
+    }
+
+    /// The component words of the two-word tokens are the likeliest future
+    /// additions to [`COMMANDS`], and this pins exactly which of them the
+    /// corpus already exercises **on their own**.
+    ///
+    /// Five do, in prose written for something else ("bullet points are fine",
+    /// "numbered lists work well"). The other nine — "point", "paragraph",
+    /// "list", "quote", "full", "stop", "question", "open", "close" — appear
+    /// only inside the pairs they belong to, so adding any of them as a token
+    /// fails the two meta-tests below until someone writes it a case. Under the
+    /// substring rule this test replaced, all fourteen passed for free.
+    #[test]
+    fn a_single_word_token_inherits_nothing_from_the_phrase_it_sits_in() {
+        let cases = || {
+            COMMANDS_CORPUS
+                .iter()
+                .map(|(i, _)| *i)
+                .chain(PROSE_CORPUS.iter().copied())
+        };
+        let mut covered: Vec<&str> = COMMANDS
+            .iter()
+            .filter(|c| c.words.len() == 2)
+            .flat_map(|c| c.words)
+            .filter(|word| cases().any(|case| covers_token(case, &[word])))
+            .copied()
+            .collect();
+        covered.sort_unstable();
+        covered.dedup();
+        assert_eq!(covered, ["bullet", "line", "mark", "new", "numbered"]);
     }
 
     /// Every token appears in the command corpus, so adding one without
@@ -1341,7 +1416,7 @@ mod tests {
             assert!(
                 COMMANDS_CORPUS
                     .iter()
-                    .any(|(i, _)| contains_phrase(i, cmd.words)),
+                    .any(|(i, _)| covers_token(i, cmd.words)),
                 "{:?} never appears as a command in the corpus",
                 cmd.words
             );
@@ -1354,7 +1429,7 @@ mod tests {
     fn every_token_is_exercised_as_prose() {
         for cmd in COMMANDS {
             assert!(
-                PROSE_CORPUS.iter().any(|p| contains_phrase(p, cmd.words)),
+                PROSE_CORPUS.iter().any(|p| covers_token(p, cmd.words)),
                 "{:?} never appears as prose in the corpus",
                 cmd.words
             );
@@ -1770,9 +1845,13 @@ mod tests {
     ///
     /// Not a production bug — `Polish::apply` runs the chain once — but it is
     /// the executable proof that these verdicts depend on punctuation the model
-    /// may not have emitted. The rate bound is a regression guard, not a
-    /// target: if someone makes the punctuation set idempotent, the bound still
-    /// holds and only the pinned example above needs deleting.
+    /// may not have emitted.
+    ///
+    /// The rate below is a **smoke check, not a regression guard**, and the
+    /// distinction is measured rather than assumed: reverting the hyphen fix
+    /// moves the count from 79 to 79, and removing `STOP_BACKSCAN` moves it to
+    /// 80. Nothing short of the whole class widening will trip it. The pinned
+    /// example above is what actually catches a change in this behaviour.
     #[test]
     fn the_punctuation_set_can_change_its_mind_on_a_second_pass() {
         let s = all();
@@ -1789,9 +1868,10 @@ mod tests {
             }
         }
         assert!(
-            violations < 1_000,
-            "{violations} of 100 000 fuzz inputs are not idempotent — that is \
-             far past the punctuation-feedback class this test documents"
+            violations * 100 < 100_000,
+            "{violations} of 100 000 fuzz inputs are not idempotent — the \
+             punctuation-feedback class is worth about 80, so this is a \
+             different and much larger problem"
         );
     }
 
@@ -1949,41 +2029,73 @@ mod tests {
 
     // ---- cost -------------------------------------------------------------
 
-    /// The transform is one linear scan with a lookahead of at most two words,
-    /// so a 2 MB input is milliseconds, not minutes. The bound is orders of
-    /// magnitude above the measured cost on an M1: it exists to catch an
-    /// accidentally quadratic rewrite, not to police a few milliseconds on a
-    /// loaded CI runner.
+    /// Best of three, so one descheduled run cannot decide a ratio.
+    fn cost(s: &Spoken, input: &str) -> std::time::Duration {
+        (0..3)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                std::hint::black_box(s.apply(input));
+                start.elapsed()
+            })
+            .min()
+            .unwrap()
+    }
+
+    /// The transform is one linear scan with a lookahead of at most two words.
+    /// This asserts that shape by **doubling the input and comparing**, not by
+    /// naming a wall-clock number.
     ///
-    /// **All three inputs matter.** An earlier version of this test used only
-    /// the first — 2 MB with no command in it — which exercises nothing but
-    /// the bulk memcpy and cannot see a quadratic in the *editing* path. The
-    /// second and third are where that bug lived: an output that is one long
-    /// run of newlines, re-trimmed on every command, took 12.3 s for 2 MB.
+    /// A wall-clock bound cannot do this job, and the first version of this
+    /// test proved it: with the quadratic `trim_end_ws` restored, 64 000
+    /// commands took 1.00 s and sailed past a 5 s bound. Doubling is scale-free
+    /// — linear work doubles, quadratic work quadruples — so the same threshold
+    /// holds on a fast laptop and a loaded CI runner alike.
+    ///
+    /// **All three shapes matter.** An earlier version used only the first —
+    /// 2 MB with no command in it — which exercises nothing but the bulk
+    /// memcpy and cannot see a quadratic in the *editing* path at all. The
+    /// second is where that bug lived: an output that is one long run of
+    /// newlines, re-trimmed on every command, took 12.3 s for 2 MB and now
+    /// takes 155 ms.
     #[test]
     fn cost_is_linear_in_the_input() {
         let s = all();
-        for (label, input, expect_change) in [
+        for (label, unit, n, expect_change) in [
             (
                 "no commands",
-                "the quick brown fox jumps over the lazy dog. ".repeat(45_000),
+                "the quick brown fox jumps over the lazy dog. ",
+                20_000,
                 false,
             ),
-            ("all commands", "new line ".repeat(64_000), true),
+            ("all commands", "new line ", 16_000, true),
             (
                 "commands in prose",
-                "buy the milk bullet point walk the dog. ".repeat(45_000),
+                "buy the milk bullet point walk the dog. ",
+                16_000,
                 true,
             ),
         ] {
-            let start = std::time::Instant::now();
-            let out = s.apply(&input);
-            let elapsed = start.elapsed();
-            assert_eq!(out != input, expect_change, "{label} changed unexpectedly");
+            let small = unit.repeat(n);
+            let large = unit.repeat(n * 2);
+            assert_eq!(
+                s.apply(&small) != small,
+                expect_change,
+                "{label} changed unexpectedly"
+            );
+
+            let (t1, t2) = (cost(&s, &small), cost(&s, &large));
+            // Below a few hundred microseconds the clock is the measurement,
+            // not the code. If this ever fires, raise `n`.
             assert!(
-                elapsed < std::time::Duration::from_secs(5),
-                "{label} ({} bytes) took {elapsed:?} — this should be a linear scan",
-                input.len()
+                t1 >= std::time::Duration::from_micros(200),
+                "{label}: {} bytes took only {t1:?} — too small to draw a ratio from",
+                small.len()
+            );
+            let ratio = t2.as_secs_f64() / t1.as_secs_f64();
+            assert!(
+                ratio < 3.0,
+                "{label}: doubling the input multiplied the time by {ratio:.1} \
+                 ({t1:?} -> {t2:?}) — linear is ~2, quadratic is ~4"
             );
         }
     }
