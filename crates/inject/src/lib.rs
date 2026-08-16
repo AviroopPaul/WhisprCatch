@@ -26,8 +26,29 @@
 //! the characters themselves, so the injector keeps a bounded record of what it
 //! typed ([`plan::Typed`]) and resolves the count against that. One consequence
 //! is worth stating plainly: **a replace never sends more backspaces than the
-//! text it knows it typed**, so an over-large request stops at our own text
-//! instead of eating the user's.
+//! number of clusters it recorded**, so an over-large request is shortened to
+//! our own text rather than running on into the user's.
+//!
+//! ## What that guarantee is not
+//!
+//! It bounds the *count*. It does not promise that those presses only remove
+//! our characters, because where our text begins is a real cluster boundary
+//! only if the character in front of it does not join ours — and this crate
+//! cannot see that character. Three UAX #29 rules join across the seam and are
+//! not detected, each making the plan press one time too many:
+//!
+//! * **GB6 / GB7** — the user's text ends in a Hangul jamo L, ours starts with
+//!   a jamo V.
+//! * **GB11** — the user's text ends in emoji + ZWJ, ours starts with an emoji.
+//! * **GB12 / GB13** — the user's text ends in an odd run of regional
+//!   indicators, ours starts with one.
+//!
+//! Only the context-free joins (GB9 / GB9a: combining marks, ZWJ after
+//! anything) are handled, by `plan::joins_the_cluster_before`, and there only
+//! by declining to delete. None of the three is reachable from transcription
+//! output, but "not reachable today" is not a guarantee. The fix is to thread
+//! the preceding text into the planner, which deletes the special case instead
+//! of extending it: **#76**.
 //!
 //! ## No pasteboard path yet
 //!
@@ -60,10 +81,16 @@ use plan::{Capabilities, KeyboardSink, PlanOpts, Typed};
 
 pub use plan::{Action, Plan, PASTE_THRESHOLD, TYPED_MEMORY_CHARS};
 
-/// Largest string a single `CGEventKeyboardSetUnicodeString` is documented to
-/// carry, in UTF-16 code units. Units, not chars: one emoji is two.
+/// How much text one `CGEventKeyboardSetUnicodeString` carries, in UTF-16 code
+/// units. Units, not chars: one emoji is two.
+///
+/// The documented ceiling is 20. This sits under it for margin, and 16 in
+/// particular because that is what the old char-based chunker produced for
+/// ASCII — so for the text this app actually types, the event stream is
+/// byte-identical to what shipped, and the fix is confined to the input that
+/// was broken (16 emoji went out as one 32-unit event).
 #[cfg(target_os = "macos")]
-const MACOS_EVENT_UTF16_UNITS: usize = 20;
+const MACOS_EVENT_UTF16_UNITS: usize = 16;
 
 /// macOS virtual keycode for the Backspace key (`kVK_Delete`).
 #[cfg(target_os = "macos")]
@@ -245,19 +272,27 @@ impl Injector {
 
     /// Type `text` at the cursor.
     pub fn type_text(&mut self, text: &str) -> Result<()> {
-        match self.type_raw(text) {
-            Ok(()) => {
-                self.typed.record(text);
-                Ok(())
-            }
+        let opts = PlanOpts::from_capabilities(self.capabilities());
+        let plan = Plan::type_text(text, opts);
+        if let Err(e) = plan.run(self) {
             // A failed type may have landed in part. Anything we thought we
             // knew about the screen is a guess now, and guessing is how a later
             // replace deletes someone's paragraph.
-            Err(e) => {
-                self.typed.forget();
-                Err(e)
-            }
+            self.typed.forget();
+            return Err(e);
         }
+        // `Ok` is not evidence the text arrived. Under macOS Secure Input the
+        // OS drops synthetic keystrokes and every call still reports success,
+        // so recording here would leave the record describing text that is not
+        // on screen — and a later `replace_last`, run once Secure Input is off,
+        // would backspace over that fiction and into the user's own writing.
+        // Checked after the send, not before, because it can come on mid-call.
+        if secure_input_active() {
+            self.typed.forget();
+        } else {
+            self.typed.record(text);
+        }
+        Ok(())
     }
 
     /// Take back the last `n_chars` chars this injector typed, and put

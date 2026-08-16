@@ -149,12 +149,10 @@ impl Plan {
     /// change: without the common-prefix trim, a one-word correction would
     /// flash the whole sentence.
     ///
-    /// One case is deliberately under-deleted. If `old` begins with a character
-    /// that joins the cluster before it — a combining mark, a ZWJ — then on
-    /// screen it has merged with text we did not type, and no number of
-    /// Backspace presses removes ours without removing theirs. We leave that
-    /// first cluster alone: the result is a stray mark the user can see and
-    /// delete, rather than one of their own characters silently gone.
+    /// Some cases are deliberately under-deleted, and one class is not caught
+    /// at all — see [`joins_the_cluster_before`], which is where the limits of
+    /// planning without the *preceding* text are written down. #76 threads that
+    /// context in and removes both the special case and the gap.
     pub fn replace(old: &str, new: &str, opts: PlanOpts) -> Self {
         let shared = common_cluster_prefix(old, new);
         let doomed = &old[shared..];
@@ -174,16 +172,29 @@ impl Plan {
         if backspaces > 0 {
             actions.push(Action::Backspace(backspaces));
         }
-        if !fresh.is_empty() {
-            let paste = opts
-                .paste_threshold
-                .is_some_and(|limit| fresh.chars().count() > limit);
-            actions.push(if paste {
-                Action::Paste(fresh.to_string())
-            } else {
-                Action::Type(fresh.to_string())
-            });
-        }
+        push_insert(&mut actions, fresh, opts);
+        Self { actions }
+    }
+
+    /// The events that put `text` at the cursor with nothing to take back.
+    ///
+    /// This exists so there is exactly **one** place that decides how text gets
+    /// inserted. `type_text` is the path that carries essentially all traffic
+    /// today, and #68 will add a rule to that decision (paste, never type, when
+    /// the text contains a newline). With two decision sites the rule gets
+    /// written twice, and the second one gets forgotten.
+    ///
+    /// It emits no [`Action::LiftModifiers`], which is a deliberate difference
+    /// from [`Plan::replace`] rather than an oversight. A type run under a held
+    /// modifier loses keystrokes to shortcuts; a *backspace* run under one
+    /// deletes whole words. The typing path is also the hot one — a lift costs
+    /// two synchronous X round-trips, on every streaming pass — and its callers
+    /// already lift explicitly via `Injector::lift_key` at the point where they
+    /// know the push-to-talk key is still down. Changing that belongs with the
+    /// streaming work, not here.
+    pub fn type_text(text: &str, opts: PlanOpts) -> Self {
+        let mut actions = Vec::new();
+        push_insert(&mut actions, text, opts);
         Self { actions }
     }
 
@@ -236,6 +247,22 @@ impl Plan {
     }
 }
 
+/// Append the one action that inserts `text`, if there is any text. The single
+/// place the type-or-paste threshold is applied, for both entry points.
+fn push_insert(actions: &mut Vec<Action>, text: &str, opts: PlanOpts) {
+    if text.is_empty() {
+        return;
+    }
+    let paste = opts
+        .paste_threshold
+        .is_some_and(|limit| text.chars().count() > limit);
+    actions.push(if paste {
+        Action::Paste(text.to_string())
+    } else {
+        Action::Type(text.to_string())
+    });
+}
+
 /// The first `n` grapheme clusters of `s`.
 fn take_clusters(s: &str, n: usize) -> String {
     use unicode_segmentation::UnicodeSegmentation;
@@ -246,10 +273,29 @@ fn take_clusters(s: &str, n: usize) -> String {
 /// that on screen its first cluster is partly made of text we did not type.
 ///
 /// Probed rather than looked up: prepend a plain base letter and see whether
-/// the cluster count goes up. That covers combining marks, ZWJ and spacing
-/// marks — everything reachable from transcribed text. It does not detect a
-/// regional-indicator pairing (a flag half typed against another flag half),
-/// which needs a preceding regional indicator to occur at all.
+/// the cluster count goes up.
+///
+/// # What this does not catch
+///
+/// The probe only finds the **context-free** joins — UAX #29 GB9 and GB9a, a
+/// combining mark or a ZWJ after anything at all. Three rules join only when
+/// the *preceding* character is of a particular kind, and a plain `a` is not
+/// that kind, so the probe returns false and the plan counts one cluster too
+/// many. Each is the over-deletion direction, i.e. the one that removes text
+/// the user wrote:
+///
+/// | Rule | Preceding character | Our text starts with |
+/// |---|---|---|
+/// | GB6 / GB7 | Hangul jamo L | jamo V — `"ᄀ"` then `"ᅡ"` |
+/// | GB11 | emoji + ZWJ | an emoji — `"👍🏽\u{200D}"` then `"😀"` |
+/// | GB12 / GB13 | an odd number of regional indicators | a regional indicator — half a flag against half a flag |
+///
+/// This is not fixable from inside this function: it is a function of `s`
+/// alone, and the answer depends on text this crate cannot see. The fix is to
+/// thread the preceding characters into [`Typed::plan_replace`], which deletes
+/// this special case rather than extending it — **#76**. Until then the
+/// guarantee in the crate docs is a bound on the *count*, not a promise about
+/// whose characters those presses take.
 fn joins_the_cluster_before(s: &str) -> bool {
     !s.is_empty() && cluster_count(&format!("a{s}")) == cluster_count(s)
 }
@@ -260,9 +306,20 @@ fn joins_the_cluster_before(s: &str) -> bool {
 /// A char count on its own is not enough to plan a replace: cluster boundaries,
 /// the common prefix and the paste decision all need the characters themselves.
 /// The record is bounded ([`TYPED_MEMORY_CHARS`]) and never counts as consent —
-/// [`Typed::plan_replace`] will not emit more backspaces than there is recorded
-/// text, so a caller asking for more than we typed cannot reach text the user
-/// wrote themselves.
+/// [`Typed::plan_replace`] will not emit more backspaces than there are
+/// clusters in the recorded text, so a caller asking for more than we typed
+/// gets its request shortened rather than the user's text.
+///
+/// That bounds the count. It is *not* a promise that those presses only remove
+/// our characters: where our text begins is only a real cluster boundary if the
+/// character in front of it does not join ours, and three UAX #29 rules can
+/// join across a seam this crate cannot see. See [`joins_the_cluster_before`]
+/// for the exact list and #76 for the fix.
+///
+/// The record is also only as good as our knowledge that the text arrived.
+/// [`Typed::forget`] exists for the cases where it did not — a failed
+/// injection, or macOS Secure Input silently swallowing keystrokes that were
+/// reported as sent.
 #[derive(Debug, Clone)]
 pub struct Typed {
     buf: String,
@@ -371,6 +428,38 @@ mod tests {
             plan("hello world", "hello there"),
             [Action::LiftModifiers, Action::Backspace(5), typed("there")]
         );
+    }
+
+    #[test]
+    fn typing_is_planned_through_the_same_seam() {
+        // One decision site: whatever `replace` would do to insert text, this
+        // does too. #68 adds a rule here and must only add it once.
+        assert_eq!(
+            Plan::type_text("hello", typing()).actions(),
+            [typed("hello")]
+        );
+        assert!(Plan::type_text("", typing()).is_empty());
+        assert_eq!(Plan::type_text("hi", typing()).simulate("> "), "> hi");
+    }
+
+    #[test]
+    fn typing_obeys_the_same_paste_threshold_as_replacing() {
+        for len in [199, 200, 201] {
+            let text = "x".repeat(len);
+            let inserting = Plan::type_text(&text, pasting()).actions().to_vec();
+            let replacing = Plan::replace("", &text, pasting()).actions().to_vec();
+            // `replace` prepends the lift; the insert action itself must match.
+            assert_eq!(inserting.last(), replacing.last(), "{len} chars");
+        }
+    }
+
+    #[test]
+    fn typing_does_not_lift_modifiers() {
+        // Deliberate, and documented on `Plan::type_text`: this is the hot path
+        // and its callers lift explicitly. If that changes, change it here and
+        // let this test fail loudly rather than drifting.
+        let actions = Plan::type_text("hello", typing()).actions().to_vec();
+        assert!(!actions.contains(&Action::LiftModifiers));
     }
 
     #[test]
@@ -649,6 +738,31 @@ mod tests {
             plan.actions(),
             [Action::LiftModifiers, Action::Backspace(8)]
         );
+    }
+
+    #[test]
+    fn text_that_never_landed_must_not_be_recorded() {
+        // Why `Injector::type_text` forgets rather than records when macOS
+        // Secure Input is on. The OS swallows synthetic keystrokes and still
+        // reports success, so a record taken on trust describes a screen that
+        // does not exist — and the next replace backspaces through the
+        // difference, into text the user wrote.
+        let mut poisoned = Typed::new();
+        poisoned.record("SECRET"); // swallowed: never reached the screen
+        poisoned.record("hi"); // Secure Input off again; this one landed
+        let plan = poisoned.plan_replace(8, "bye", typing());
+        assert_eq!(
+            plan.simulate("user's own words hi"),
+            "user's own bye",
+            "six characters of the user's text destroyed — this is the bug"
+        );
+
+        // What the injector does instead: no record without evidence.
+        let mut sound = Typed::new();
+        sound.forget(); // the swallowed type
+        sound.record("hi");
+        let plan = sound.plan_replace(8, "bye", typing());
+        assert_eq!(plan.simulate("user's own words hi"), "user's own words bye");
     }
 
     #[test]
