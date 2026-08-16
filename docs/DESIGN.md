@@ -255,7 +255,7 @@ not just what's on screen.
 
 ## B7. Capturing screenshots
 
-The README and the website show real renders, not mockups. Three dev-only hooks
+The README and the website show real renders, not mockups. Five dev-only hooks
 produce them; none is reachable from normal use:
 
 - `WC_SHOT=<path>` (+ `WC_SHOT_FRAMES`, default 30) saves a PNG of the window after

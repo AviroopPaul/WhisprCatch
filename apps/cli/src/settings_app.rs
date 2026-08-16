@@ -1299,6 +1299,14 @@ impl App {
 
 // ------------------------------------------------------------ text cleanup
 
+/// Transforms that are wired into the chain but are still no-op stubs, named by
+/// `Transform::name()`. They are listed in the panel under "not available yet"
+/// so a `config.toml` that already enables one is visible — but they must never
+/// appear in the chain readout or gate the live-typing caveat, or the panel
+/// tells the user a cleanup is running that is not. Delete a name here when its
+/// transform lands: #48 -> self_correct, #46 -> numbers.
+const PENDING: [&str; 2] = ["self_correct", "numbers"];
+
 /// How many recent dictations the preview replays through the chain.
 const PREVIEW_SCAN: usize = 40;
 /// How many changed dictations it shows at once.
@@ -1477,7 +1485,16 @@ impl Cleanup {
 
         Self {
             fp: PolishFingerprint::of(cfg),
-            chain: polish.names(),
+            // Not `polish.names()`: that includes the transforms that are still
+            // no-op stubs, so a config with `[polish.numbers] enabled = true`
+            // rendered "RUNS NUMBERS …" and the live-typing caveat three lines
+            // under a row saying it does nothing. Naming a stub in the chain is
+            // the one way this panel can make a user believe a stub is working.
+            chain: polish
+                .names()
+                .into_iter()
+                .filter(|n| !PENDING.contains(n))
+                .collect(),
             faults,
             notes,
             dictionary: FileFacts::of(
@@ -2343,12 +2360,106 @@ mod tests {
                 "{name} does not reach the preview"
             );
         }
-        // fillers takes both its fields at once, since the panel never sets
-        // `enabled` without a level
+        // fillers needs its two fields moved *separately*. Comparing default
+        // against light() moves both at once, which passes even if the
+        // fingerprint ignores one of them — and `level` alone is exactly what
+        // #74 will move when Light -> Medium becomes selectable. A fingerprint
+        // blind to it would leave the preview showing a stale answer.
+        let on_off = FillersConfig {
+            enabled: true,
+            level: FillerLevel::Off,
+        };
+        let on_light = FillersConfig {
+            enabled: true,
+            level: FillerLevel::Light,
+        };
+        let off_light = FillersConfig {
+            enabled: false,
+            level: FillerLevel::Light,
+        };
+        let with = |f: &FillersConfig| PolishConfig {
+            fillers: f.clone(),
+            ..Default::default()
+        };
+        assert_ne!(
+            PolishFingerprint::of(&with(&on_off)),
+            PolishFingerprint::of(&with(&on_light)),
+            "fillers.level does not reach the preview"
+        );
+        assert_ne!(
+            PolishFingerprint::of(&with(&off_light)),
+            PolishFingerprint::of(&with(&on_light)),
+            "fillers.enabled does not reach the preview"
+        );
         assert_ne!(
             PolishFingerprint::of(&base),
             PolishFingerprint::of(&light()),
             "fillers does not reach the preview"
+        );
+    }
+
+    /// The chain readout and the live-typing caveat must never name a transform
+    /// that is still a no-op. A `config.toml` enabling one used to render
+    /// "RUNS NUMBERS ..." three lines under a row saying it does nothing.
+    #[test]
+    fn a_pending_transform_never_reaches_the_chain_readout() {
+        let cfg = PolishConfig {
+            self_correct: wc_text::SelfCorrectConfig { enabled: true },
+            numbers: wc_text::NumbersConfig { enabled: true },
+            ..Default::default()
+        };
+        let c = Cleanup::build(&cfg, &[entry(1, "twenty five people", None)]);
+        assert!(
+            c.chain.is_empty(),
+            "a stub reached the chain readout: {:?}",
+            c.chain
+        );
+        assert_eq!(c.changed, 0, "a stub cannot change a dictation");
+    }
+
+    /// The count says "would change", so an entry the chain leaves alone must
+    /// not be counted or shown. Nothing covered this: the other tests use an
+    /// empty chain or empty text, both of which short-circuit earlier.
+    #[test]
+    fn a_dictation_the_chain_leaves_alone_is_scanned_but_not_changed() {
+        let entries = [entry(1, "nothing here needs removing", None)];
+        let c = Cleanup::build(&light(), &entries);
+        assert!(!c.chain.is_empty(), "the chain must actually be running");
+        assert_eq!((c.scanned, c.changed), (1, 0));
+        assert!(c.samples.is_empty(), "an unchanged entry has nothing to show");
+    }
+
+    /// A very long dictation is still counted, but diffing it would flood the
+    /// panel — so it is bounded on both sides.
+    #[test]
+    fn a_very_long_dictation_is_counted_but_not_diffed() {
+        let long = std::iter::repeat("um word")
+            .take(PREVIEW_MAX_WORDS)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let c = Cleanup::build(&light(), &[entry(1, &long, None)]);
+        assert_eq!(c.changed, 1, "it still counts");
+        assert!(c.samples.is_empty(), "but it is too long to diff");
+    }
+
+    /// The picker must read `wc-text`'s list, not its own copy — `Medium` is
+    /// deliberately unreachable pending #74, and a literal here would resurrect
+    /// it silently. Asserting on `SELECTABLE` alone cannot catch that, since
+    /// `wc-text` already tests its own constant.
+    #[test]
+    fn the_level_picker_offers_exactly_what_wc_text_allows() {
+        let offered = FillerLevel::SELECTABLE.to_vec();
+        assert_eq!(offered, vec![FillerLevel::Off, FillerLevel::Light]);
+        assert!(
+            !offered.contains(&FillerLevel::Medium),
+            "Medium is gated behind #74"
+        );
+        // The picker iterates SELECTABLE directly; if it ever grows its own
+        // list this count is the thing that will disagree.
+        assert_eq!(
+            offered.len(),
+            FillerLevel::SELECTABLE.len(),
+            "the picker and wc-text must offer the same levels"
         );
     }
 
