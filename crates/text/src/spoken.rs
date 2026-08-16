@@ -24,8 +24,10 @@
 //!    `he wrote "new paragraph" in the margin`.
 //! 2. **The word before.** A determiner, possessive, quantifier or preposition
 //!    immediately in front makes the phrase a noun: "a period", "the new line",
-//!    "of dash". Punctuation in the gap lifts this one — "…John's. New
-//!    paragraph." is a command, not a genitive.
+//!    "of dash". Punctuation that ends a unit of sense lifts this one —
+//!    "…John's. New paragraph." is a command, not a genitive — but a **hyphen
+//!    does the opposite** and blocks outright, because it welds two words into
+//!    one noun: "a brand-new paragraph", "the Oxford-comma debate".
 //! 3. **A genitive before.** "the article's period" is prose.
 //! 4. **The word after.** A preposition, copula, auxiliary, relative or
 //!    conjunction right after means the phrase was the subject of a clause:
@@ -34,9 +36,12 @@
 //!    papercut, firing costs prose.
 //! 5. **A determiner within three words, and the phrase ends a clause.** Catches
 //!    the noun-phrase-at-a-clause-boundary shape that guard 2 misses: "I added
-//!    an important bullet point." The clause-end half is what keeps real lists
-//!    working — "buy **the** milk bullet point walk the dog" still fires,
-//!    because content follows the command rather than a full stop.
+//!    an important bullet point.", "please expand that important bullet point."
+//!    The look-back stops at a unit boundary or at a copula, which is what
+//!    tells determiner-"that" from pronoun-"that" — "that is all period" is a
+//!    command. The clause-end half is what keeps real lists working: "buy
+//!    **the** milk bullet point walk the dog" still fires, because content
+//!    follows the command rather than a full stop.
 //!
 //! Per-command word lists carry the compound nouns the generic lists cannot
 //! know about: "grace period", "Oxford comma", "colon cancer", "line manager",
@@ -497,13 +502,24 @@ const AFTER: &[&str] = &[
 /// The subset of [`BEFORE`] that opens a noun phrase, used by the three-word
 /// look-back. Adjectives and prepositions are left out on purpose: they are
 /// too common in ordinary dictation to search backwards for.
-///
-/// So are the demonstratives, which are pronouns just as often as they are
-/// determiners — "**that** is all period" is a command, and searching three
-/// words back for "that" would have blocked it.
 const DETERMINERS: &[&str] = &[
-    "a", "an", "the", "my", "your", "his", "her", "its", "our", "their", "no", "any", "some",
-    "each", "every", "another", "other", "such",
+    "a", "an", "the", "this", "that", "these", "those", "my", "your", "his", "her", "its", "our",
+    "their", "no", "any", "some", "each", "every", "another", "other", "such",
+];
+
+/// Words that end the look-back before it can reach a determiner.
+///
+/// This is what separates determiner-"that" from pronoun-"that" without
+/// dropping the demonstratives from [`DETERMINERS`] — an earlier version did
+/// drop them, and one adjective was then enough to defeat guard 5: "please
+/// expand that important bullet point." deleted two words and left a marker.
+/// A copula or auxiliary in between means the determiner belongs to an earlier
+/// phrase, so "**that** is all period" is still a command.
+#[rustfmt::skip]
+const STOP_BACKSCAN: &[&str] = &[
+    "is", "was", "are", "were", "be", "been", "being", "am",
+    "has", "have", "had", "will", "would", "shall", "should",
+    "can", "could", "may", "might", "must", "do", "does", "did",
 ];
 
 /// How far back to look for a determiner (guard 5).
@@ -601,6 +617,7 @@ impl Transform for Spoken {
                     // set the spoken command off from the sentence.
                     _ => &[','],
                 },
+                protected,
             );
 
             let mut space_after = false;
@@ -652,8 +669,12 @@ impl Transform for Spoken {
                 end,
                 match cmd.kind {
                     Kind::Tight(_) => &[',', '.', ';', ':', '!', '?'],
+                    // A colon or a dash is the most natural thing for a
+                    // punctuating model to put after a dictated list header:
+                    // "Bullet point: buy milk" must not strand the colon as
+                    // the first character of the item.
                     Kind::Paragraph | Kind::Line | Kind::Bullet | Kind::Numbered => {
-                        &[',', '.', ';']
+                        &[',', '.', ';', ':', '-', '\u{2013}', '\u{2014}']
                     }
                     _ => &[','],
                 },
@@ -697,12 +718,60 @@ impl Transform for Spoken {
 
 // ----------------------------------------------------------------- lexicon --
 
-/// A word and whether break punctuation sits in the gap between it and the
-/// position it was found from.
+/// A word, plus what sits in the gap between it and the position it was found
+/// from. The three flags answer three different questions and must not be
+/// collapsed back into one:
+///
+/// * `punct_gap` — any break punctuation at all. Only the phrase matcher uses
+///   it: "new, paragraph" and "new-paragraph" are not the phrase "new
+///   paragraph".
+/// * `separated` — punctuation that ends a unit of sense, which is what lifts
+///   the word-before guard and stops the look-back. A comma qualifies; a
+///   hyphen emphatically does not.
+/// * `joined` — a hyphen, underscore or slash, which welds two words into one
+///   noun and so *strengthens* the block instead of lifting it.
+///
+/// Conflating the last two shipped in the first cut of this module and turned
+/// "This is a brand-new paragraph." into "This is a brand-\n\n": the hyphen
+/// lifted the very guard whose `before` list contains "brand".
 struct Word {
     start: usize,
     end: usize,
     punct_gap: bool,
+    separated: bool,
+    joined: bool,
+}
+
+/// Characters that weld two words into a single compound noun.
+fn is_joiner(c: char) -> bool {
+    matches!(
+        c,
+        '-' | '_'
+            | '/'
+            | '\u{2010}'
+            | '\u{2011}'
+            | '\u{2012}'
+            | '\u{2013}'
+            | '\u{2014}'
+            | '\u{2015}'
+    )
+}
+
+/// Classify one character of a gap between two words.
+fn note_gap(c: char, punct_gap: &mut bool, separated: &mut bool, joined: &mut bool) {
+    if c.is_whitespace() {
+        // A line break is a unit boundary even though it is not punctuation.
+        if matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}') {
+            *separated = true;
+        }
+        return;
+    }
+    *punct_gap = true;
+    if is_joiner(c) {
+        *joined = true;
+    } else {
+        *separated = true;
+    }
 }
 
 /// Punctuation that ends a word. `'` and `’` are excluded so "don't" and
@@ -742,16 +811,14 @@ fn is_word_char(c: char) -> bool {
 
 /// The first word at or after `from`.
 fn next_word(text: &str, from: usize) -> Option<Word> {
-    let mut punct_gap = false;
+    let (mut punct_gap, mut separated, mut joined) = (false, false, false);
     let mut start = None;
     for (off, c) in text[from..].char_indices() {
         if is_word_char(c) {
             start = Some(from + off);
             break;
         }
-        if !c.is_whitespace() {
-            punct_gap = true;
-        }
+        note_gap(c, &mut punct_gap, &mut separated, &mut joined);
     }
     let start = start?;
     let mut end = text.len();
@@ -765,21 +832,21 @@ fn next_word(text: &str, from: usize) -> Option<Word> {
         start,
         end,
         punct_gap,
+        separated,
+        joined,
     })
 }
 
 /// The last word before `at`.
 fn prev_word(text: &str, at: usize) -> Option<Word> {
-    let mut punct_gap = false;
+    let (mut punct_gap, mut separated, mut joined) = (false, false, false);
     let mut end = None;
     for (off, c) in text[..at].char_indices().rev() {
         if is_word_char(c) {
             end = Some(off + c.len_utf8());
             break;
         }
-        if !c.is_whitespace() {
-            punct_gap = true;
-        }
+        note_gap(c, &mut punct_gap, &mut separated, &mut joined);
     }
     let end = end?;
     let mut start = 0;
@@ -793,6 +860,8 @@ fn prev_word(text: &str, at: usize) -> Option<Word> {
         start,
         end,
         punct_gap,
+        separated,
+        joined,
     })
 }
 
@@ -806,7 +875,12 @@ fn is_command(text: &str, start: usize, end: usize, cmd: &Command) -> bool {
     // 2 and 3. the word in front makes it a noun
     if let Some(p) = prev_word(text, start) {
         let w = &text[p.start..p.end];
-        if !p.punct_gap && (listed(w, BEFORE) || listed(w, cmd.before) || genitive(w)) {
+        // A hyphen welds the two into one noun: "a brand-new paragraph",
+        // "a silver-bullet point", "the Oxford-comma debate".
+        if p.joined {
+            return false;
+        }
+        if !p.separated && (listed(w, BEFORE) || listed(w, cmd.before) || genitive(w)) {
             return false;
         }
     }
@@ -850,17 +924,26 @@ fn quoted(text: &str, start: usize, end: usize) -> bool {
     opens && closes
 }
 
-/// Is a determiner within `depth` words in front, without crossing punctuation?
+/// Is a determiner within `depth` words in front, without crossing a unit
+/// boundary or a verb?
+///
+/// A hyphen is deliberately *not* a boundary here: "he offered a well-argued
+/// bullet point." is one noun phrase, and stopping at the hyphen would hide
+/// the "a" that makes it one.
 fn determiner_within(text: &str, start: usize, depth: usize) -> bool {
     let mut at = start;
     for _ in 0..depth {
         let Some(w) = prev_word(text, at) else {
             return false;
         };
-        if w.punct_gap {
+        if w.separated {
             return false;
         }
-        if listed(&text[w.start..w.end], DETERMINERS) {
+        let word = &text[w.start..w.end];
+        if listed(word, STOP_BACKSCAN) {
+            return false;
+        }
+        if listed(word, DETERMINERS) {
             return true;
         }
         at = w.start;
@@ -892,17 +975,28 @@ fn ends_clause(text: &str, at: usize) -> bool {
 
 // -------------------------------------------------------------- edit helpers --
 
-/// Trim trailing whitespace, but never past `protected` — text this transform
+/// Trim trailing whitespace, but never past `floor` — text this transform
 /// emitted itself is not the model's spacing to clean up.
-fn trim_end_ws(out: &mut String, protected: usize) {
-    let keep = out.trim_end().len().max(protected.min(out.len()));
+///
+/// The scan starts *at* the floor rather than trimming the whole buffer and
+/// clamping afterwards. Clamping afterwards is quadratic: an utterance of
+/// nothing but "new line" makes the output one long run of newlines, every
+/// one of which `trim_end` would walk on every command. Measured before this
+/// line changed: 64 000 commands took 1.0 s, 2 MB took 12.3 s.
+fn trim_end_ws(out: &mut String, floor: usize) {
+    let p = floor.min(out.len());
+    let keep = p + out[p..].trim_end().len();
     out.truncate(keep);
 }
 
 /// Drop one trailing character if it is in `set`, then re-trim whitespace.
 /// This is how "buy milk, bullet point" loses the comma the model added to set
 /// the spoken command off from the sentence.
-fn cut_one(out: &mut String, set: &[char]) {
+///
+/// The punctuation cut itself may reach into protected text — deduplicating
+/// what the model already emitted is the point — but the whitespace trim that
+/// follows is floored, for the reason in [`trim_end_ws`].
+fn cut_one(out: &mut String, set: &[char], floor: usize) {
     let Some(c) = out.chars().next_back() else {
         return;
     };
@@ -911,8 +1005,7 @@ fn cut_one(out: &mut String, set: &[char]) {
     }
     let keep = out.len() - c.len_utf8();
     out.truncate(keep);
-    let keep = out.trim_end().len();
-    out.truncate(keep);
+    trim_end_ws(out, floor);
 }
 
 /// Skip whitespace after a command, plus at most one punctuation character the
@@ -1161,6 +1254,20 @@ mod tests {
         // the phrase ends a clause after a determiner (guard 5)
         "I added an important bullet point.",
         "that was a really long period.",
+        // …including through a demonstrative, which needs both the
+        // demonstratives in DETERMINERS and STOP_BACKSCAN to stop the
+        // look-back at a copula
+        "please expand that important bullet point.",
+        "I liked that big bullet point.",
+        "we should drop that confusing numbered list.",
+        // a hyphen welds a compound noun together and must strengthen the
+        // block, not lift it
+        "This is a brand-new paragraph.",
+        "a silver-bullet point never existed",
+        "he offered a well-argued bullet point.",
+        "a grace-period applies to new accounts",
+        "the Oxford-comma debate never ends",
+        "the em-dash and the en-dash differ",
         // plurals never match at all
         "bullet points are fine",
         "commas and periods",
@@ -1182,17 +1289,61 @@ mod tests {
         }
     }
 
+    /// Does `text` contain `words` as a whole-word run, separated by nothing
+    /// but whitespace — the same test the matcher itself applies?
+    ///
+    /// Substring matching is not good enough here and quietly reported
+    /// coverage that did not exist: every single-word token that is a
+    /// substring of a longer phrase already in the corpus — "point" inside
+    /// "bullet point", "quote" inside "open quote", "stop", "mark", "list" —
+    /// would have passed both meta-tests with no case of its own.
+    fn contains_phrase(text: &str, words: &[&str]) -> bool {
+        let mut at = 0;
+        while let Some(w) = next_word(text, at) {
+            at = w.end;
+            if !text[w.start..w.end].eq_ignore_ascii_case(words[0]) {
+                continue;
+            }
+            let mut end = w.end;
+            let matched = words[1..].iter().all(|want| match next_word(text, end) {
+                Some(n) if !n.punct_gap && text[n.start..n.end].eq_ignore_ascii_case(want) => {
+                    end = n.end;
+                    true
+                }
+                _ => false,
+            });
+            if matched {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn the_meta_tests_match_whole_phrases_not_substrings() {
+        assert!(contains_phrase(
+            "add a bullet point here",
+            &["bullet", "point"]
+        ));
+        assert!(contains_phrase("a POINT taken", &["point"]));
+        // the hole this replaced: "point" is not exercised by "bullet point"
+        assert!(!contains_phrase("add a bullet point here", &["quote"]));
+        assert!(!contains_phrase("bulletpoint", &["bullet", "point"]));
+        assert!(!contains_phrase("bullet, point", &["bullet", "point"]));
+        assert!(!contains_phrase("pointing at it", &["point"]));
+    }
+
     /// Every token appears in the command corpus, so adding one without
     /// showing it firing is a test failure rather than an oversight.
     #[test]
     fn every_token_is_exercised_as_a_command() {
         for cmd in COMMANDS {
-            let phrase = cmd.words.join(" ");
             assert!(
                 COMMANDS_CORPUS
                     .iter()
-                    .any(|(i, _)| i.to_lowercase().contains(&phrase)),
-                "{phrase:?} never appears as a command in the corpus"
+                    .any(|(i, _)| contains_phrase(i, cmd.words)),
+                "{:?} never appears as a command in the corpus",
+                cmd.words
             );
         }
     }
@@ -1202,12 +1353,10 @@ mod tests {
     #[test]
     fn every_token_is_exercised_as_prose() {
         for cmd in COMMANDS {
-            let phrase = cmd.words.join(" ");
             assert!(
-                PROSE_CORPUS
-                    .iter()
-                    .any(|p| p.to_lowercase().contains(&phrase)),
-                "{phrase:?} never appears as prose in the corpus"
+                PROSE_CORPUS.iter().any(|p| contains_phrase(p, cmd.words)),
+                "{:?} never appears as prose in the corpus",
+                cmd.words
             );
         }
     }
@@ -1356,6 +1505,22 @@ mod tests {
         );
     }
 
+    /// A model that punctuates a dictated list header leaves a colon or a dash
+    /// behind the command. Neither may be stranded as the first character of
+    /// the item.
+    #[test]
+    fn a_colon_or_dash_after_a_list_header_is_absorbed() {
+        let s = shipped_default();
+        for input in [
+            "Bullet point: buy milk",
+            "Bullet point - buy milk",
+            "Bullet point — buy milk",
+        ] {
+            assert_eq!(apply(&s, input), "- buy milk", "{input:?}");
+        }
+        assert_eq!(apply(&s, "New paragraph: then we ship"), "\n\nthen we ship");
+    }
+
     /// Only whitespace may separate the words of a phrase.
     #[test]
     fn punctuation_inside_a_phrase_is_not_a_phrase() {
@@ -1502,12 +1667,19 @@ mod tests {
         );
     }
 
-    /// Leading and trailing whitespace around a command is the model's, not
-    /// the user's, and goes with the command.
+    /// The rule is "whitespace *adjacent to a command* belongs to the
+    /// command", not "trim the utterance". Reading only the first case below
+    /// makes it look asymmetric — leading spaces gone, trailing spaces kept —
+    /// but that is only because the command is at the start there. The second
+    /// case shows both edges surviving when neither touches a command.
     #[test]
-    fn whitespace_around_a_command_is_absorbed() {
+    fn whitespace_touching_a_command_is_absorbed_and_the_rest_is_not() {
         let s = all();
         assert_eq!(apply(&s, "   bullet point   milk   "), "- milk   ");
+        assert_eq!(
+            apply(&s, "  hello bullet point milk  "),
+            "  hello\n- milk  "
+        );
         assert_eq!(apply(&s, "alpha    new line    beta"), "alpha\nbeta");
     }
 
@@ -1524,6 +1696,104 @@ mod tests {
     }
 
     // ---- idempotence -----------------------------------------------------
+
+    /// A deterministic pseudo-random utterance built from the words that
+    /// matter: every command word, the function words the guards read, a
+    /// little prose, and the punctuation a model sprinkles around a spoken
+    /// command. No `rand` dependency — an LCG is enough and keeps a failure
+    /// reproducible from its index alone.
+    fn fuzz_input(seed: u64) -> String {
+        #[rustfmt::skip]
+        const ATOMS: &[&str] = &[
+            // command words, including the halves that only mean something
+            // in a pair
+            "new", "paragraph", "line", "bullet", "point", "numbered", "list",
+            "comma", "period", "full", "stop", "question", "mark", "colon",
+            "open", "close", "quote", "dash",
+            // the function words the guards branch on
+            "the", "a", "an", "that", "this", "my", "is", "was", "of", "and",
+            "all", "important", "brand", "silver", "grace",
+            // prose
+            "buy", "milk", "walk", "dog", "hello", "world", "ship", "it",
+            // punctuation the model emits around commands
+            ",", ".", ":", ";", "-", "?", "\"",
+        ];
+        let mut state = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) as usize
+        };
+        let words = 2 + next() % 10;
+        let mut out = String::new();
+        for _ in 0..words {
+            let atom = ATOMS[next() % ATOMS.len()];
+            // punctuation hugs the word before it, like a model's output does
+            if !out.is_empty() && !atom.chars().all(is_break_punct) {
+                out.push(' ');
+            }
+            out.push_str(atom);
+        }
+        out
+    }
+
+    /// The property that actually matters, over 100 000 generated utterances:
+    /// **the shipping default is idempotent.** Structural commands emit `\n`,
+    /// `- ` and `N. `, none of which any guard reads as evidence, so a second
+    /// pass reaches every one of the same verdicts. 0 violations in 100 000.
+    #[test]
+    fn the_shipping_default_is_idempotent_across_a_fuzz_corpus() {
+        let s = shipped_default();
+        for seed in 0..100_000u64 {
+            let input = fuzz_input(seed);
+            let once = s.apply(&input);
+            assert_eq!(
+                s.apply(&once),
+                once,
+                "seed {seed} is not idempotent: {input:?} -> {once:?}"
+            );
+        }
+    }
+
+    /// The punctuation set is **not** idempotent, and this pins why rather than
+    /// pretending otherwise.
+    ///
+    /// This transform both reads punctuation (to tell a command from prose) and
+    /// writes it, so a second pass can see a boundary the first pass invented
+    /// and change its mind. Here the emitted comma separates "new" from
+    /// "period", which lifts the word-before guard that had blocked it:
+    ///
+    /// ```text
+    /// "this new comma period" -> "this new, period" -> "this new."
+    /// ```
+    ///
+    /// Not a production bug — `Polish::apply` runs the chain once — but it is
+    /// the executable proof that these verdicts depend on punctuation the model
+    /// may not have emitted. The rate bound is a regression guard, not a
+    /// target: if someone makes the punctuation set idempotent, the bound still
+    /// holds and only the pinned example above needs deleting.
+    #[test]
+    fn the_punctuation_set_can_change_its_mind_on_a_second_pass() {
+        let s = all();
+        let once = s.apply("this new comma period");
+        assert_eq!(once, "this new, period");
+        assert_eq!(s.apply(&once), "this new.");
+
+        let mut violations = 0usize;
+        for seed in 0..100_000u64 {
+            let input = fuzz_input(seed);
+            let first = s.apply(&input);
+            if s.apply(&first) != first {
+                violations += 1;
+            }
+        }
+        assert!(
+            violations < 1_000,
+            "{violations} of 100 000 fuzz inputs are not idempotent — that is \
+             far past the punctuation-feedback class this test documents"
+        );
+    }
 
     /// `apply(apply(x)) == apply(x)`. The trap: once "new line" is a `\n`, the
     /// second pass sees different neighbours — a command may now sit at the
@@ -1680,20 +1950,41 @@ mod tests {
     // ---- cost -------------------------------------------------------------
 
     /// The transform is one linear scan with a lookahead of at most two words,
-    /// so a 2 MB input is milliseconds, not minutes. The bound is 200x the
-    /// measured cost on an M1: it exists to catch an accidentally quadratic
-    /// rewrite, not to police a few milliseconds on a loaded CI runner.
+    /// so a 2 MB input is milliseconds, not minutes. The bound is orders of
+    /// magnitude above the measured cost on an M1: it exists to catch an
+    /// accidentally quadratic rewrite, not to police a few milliseconds on a
+    /// loaded CI runner.
+    ///
+    /// **All three inputs matter.** An earlier version of this test used only
+    /// the first — 2 MB with no command in it — which exercises nothing but
+    /// the bulk memcpy and cannot see a quadratic in the *editing* path. The
+    /// second and third are where that bug lived: an output that is one long
+    /// run of newlines, re-trimmed on every command, took 12.3 s for 2 MB.
     #[test]
     fn cost_is_linear_in_the_input() {
         let s = all();
-        let big = "the quick brown fox jumps over the lazy dog. ".repeat(45_000);
-        let start = std::time::Instant::now();
-        let out = s.apply(&big);
-        let elapsed = start.elapsed();
-        assert_eq!(out, big);
-        assert!(
-            elapsed < std::time::Duration::from_secs(2),
-            "2 MB took {elapsed:?} — this should be a linear scan"
-        );
+        for (label, input, expect_change) in [
+            (
+                "no commands",
+                "the quick brown fox jumps over the lazy dog. ".repeat(45_000),
+                false,
+            ),
+            ("all commands", "new line ".repeat(64_000), true),
+            (
+                "commands in prose",
+                "buy the milk bullet point walk the dog. ".repeat(45_000),
+                true,
+            ),
+        ] {
+            let start = std::time::Instant::now();
+            let out = s.apply(&input);
+            let elapsed = start.elapsed();
+            assert_eq!(out != input, expect_change, "{label} changed unexpectedly");
+            assert!(
+                elapsed < std::time::Duration::from_secs(5),
+                "{label} ({} bytes) took {elapsed:?} — this should be a linear scan",
+                input.len()
+            );
+        }
     }
 }
