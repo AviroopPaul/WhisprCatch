@@ -247,6 +247,29 @@ impl Plan {
     }
 }
 
+/// Whether a finished send may be added to the record of what is on screen.
+///
+/// `Ok(())` is not evidence that anything arrived. macOS Secure Input drops
+/// synthetic keystrokes and every call still reports success, so a record taken
+/// on trust describes a screen that does not exist — and the next replace
+/// backspaces through the difference, into text the user wrote.
+///
+/// Secure Input is sampled **twice**, before the send and after, because
+/// another process can switch it on or off while we are mid-call. One sample
+/// alone leaves a hole at each end:
+///
+/// | before | after | one sample (after) | both samples |
+/// |---|---|---|---|
+/// | off | on  | forget ✓ | forget ✓ |
+/// | on  | off | record ✗ — the events were dropped | forget ✓ |
+///
+/// Either being true is enough to refuse. The costs are not symmetric:
+/// forgetting wrongly means a later replace types instead of replacing, and
+/// recording wrongly means it deletes the user's writing.
+pub fn should_record(sent_ok: bool, secure_before: bool, secure_after: bool) -> bool {
+    sent_ok && !secure_before && !secure_after
+}
+
 /// Append the one action that inserts `text`, if there is any text. The single
 /// place the type-or-paste threshold is applied, for both entry points.
 fn push_insert(actions: &mut Vec<Action>, text: &str, opts: PlanOpts) {
@@ -277,25 +300,26 @@ fn take_clusters(s: &str, n: usize) -> String {
 ///
 /// # What this does not catch
 ///
-/// The probe only finds the **context-free** joins — UAX #29 GB9 and GB9a, a
-/// combining mark or a ZWJ after anything at all. Three rules join only when
-/// the *preceding* character is of a particular kind, and a plain `a` is not
-/// that kind, so the probe returns false and the plan counts one cluster too
-/// many. Each is the over-deletion direction, i.e. the one that removes text
-/// the user wrote:
+/// The probe prepends `'a'`, so it rules out only the **context-free** joins:
+/// UAX #29 GB9 and GB9a, a combining mark or a ZWJ after anything at all. Any
+/// rule whose left context is not a plain base character — Hangul jamo (GB6 /
+/// GB7), emoji-ZWJ (GB11), regional indicators (GB12 / GB13), CR (GB3), Indic
+/// conjuncts (GB9c), Prepend (GB9b) — fuses across the seam undetected, and the
+/// plan then counts one cluster too many. That is the over-deletion direction:
+/// the press takes text the user wrote.
 ///
-/// | Rule | Preceding character | Our text starts with |
-/// |---|---|---|
-/// | GB6 / GB7 | Hangul jamo L | jamo V — `"ᄀ"` then `"ᅡ"` |
-/// | GB11 | emoji + ZWJ | an emoji — `"👍🏽\u{200D}"` then `"😀"` |
-/// | GB12 / GB13 | an odd number of regional indicators | a regional indicator — half a flag against half a flag |
+/// **Treat that list as examples, not as the set.** GB9b in particular puts no
+/// constraint on our side at all — a Prepend character fuses with whatever
+/// follows it — so enumerating what our text may start with cannot make this
+/// probe correct. Nor is any of it hypothetical: our half of GB3 is a newline,
+/// which the snippets transform (#67) injects today.
 ///
-/// This is not fixable from inside this function: it is a function of `s`
-/// alone, and the answer depends on text this crate cannot see. The fix is to
-/// thread the preceding characters into [`Typed::plan_replace`], which deletes
-/// this special case rather than extending it — **#76**. Until then the
-/// guarantee in the crate docs is a bound on the *count*, not a promise about
-/// whose characters those presses take.
+/// This is not fixable from inside this function, which sees `s` alone while
+/// the answer depends on text this crate never gets. The fix is to thread the
+/// preceding characters into [`Typed::plan_replace`], which deletes this
+/// special case rather than extending it — **#76**. Until then the guarantee in
+/// the crate docs is a bound on the *count*, not a promise about whose
+/// characters those presses take.
 fn joins_the_cluster_before(s: &str) -> bool {
     !s.is_empty() && cluster_count(&format!("a{s}")) == cluster_count(s)
 }
@@ -741,7 +765,44 @@ mod tests {
     }
 
     #[test]
+    fn a_send_is_only_recorded_when_nothing_could_have_swallowed_it() {
+        // The whole truth table, because three of its four Secure Input rows
+        // were wrong at some point in this PR's history. Row `(true, true,
+        // false)` is the original bug: the events were dropped while Secure
+        // Input was on, it went off mid-call, and a check placed only after the
+        // send reads false and records text that never arrived.
+        assert!(should_record(true, false, false), "the ordinary case");
+        assert!(!should_record(false, false, false), "the send failed");
+        assert!(!should_record(true, true, true), "swallowed throughout");
+        assert!(!should_record(true, false, true), "came on mid-send");
+        assert!(!should_record(true, true, false), "went off mid-send");
+        assert!(!should_record(false, true, false), "failed and unsure");
+
+        // Stated as the rule, so a future edit cannot satisfy the rows above by
+        // accident: recording needs a successful send and no Secure Input at
+        // either end.
+        for sent_ok in [true, false] {
+            for before in [true, false] {
+                for after in [true, false] {
+                    assert_eq!(
+                        should_record(sent_ok, before, after),
+                        sent_ok && !before && !after,
+                        "({sent_ok}, {before}, {after})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn text_that_never_landed_must_not_be_recorded() {
+        // NB: this is a *specification* of the hazard, not a regression guard
+        // for the fix. It exercises `Typed`, which was never the broken part,
+        // and it passes against the code before the fix landed. The guard is
+        // `a_send_is_only_recorded_when_nothing_could_have_swallowed_it`
+        // above; what neither can reach is the wiring in `Injector::type_text`,
+        // which needs a Mac and a password prompt (manual step 11).
+        //
         // Why `Injector::type_text` forgets rather than records when macOS
         // Secure Input is on. The OS swallows synthetic keystrokes and still
         // reports success, so a record taken on trust describes a screen that

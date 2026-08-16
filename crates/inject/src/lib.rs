@@ -34,21 +34,18 @@
 //! It bounds the *count*. It does not promise that those presses only remove
 //! our characters, because where our text begins is a real cluster boundary
 //! only if the character in front of it does not join ours — and this crate
-//! cannot see that character. Three UAX #29 rules join across the seam and are
-//! not detected, each making the plan press one time too many:
+//! cannot see that character.
 //!
-//! * **GB6 / GB7** — the user's text ends in a Hangul jamo L, ours starts with
-//!   a jamo V.
-//! * **GB11** — the user's text ends in emoji + ZWJ, ours starts with an emoji.
-//! * **GB12 / GB13** — the user's text ends in an odd run of regional
-//!   indicators, ours starts with one.
+//! `plan::joins_the_cluster_before` probes by prepending `'a'`, so it rules out
+//! only the context-free joins (GB9 / GB9a). **Any** UAX #29 rule whose left
+//! context is not a plain base character — Hangul jamo, emoji-ZWJ, regional
+//! indicators, CR, Indic conjuncts, Prepend — fuses across a seam this crate
+//! cannot see, and the plan then presses one time too many, into text the user
+//! wrote. The list is not closed, and it is not hypothetical: our half of GB3
+//! is a newline, which the snippets transform (#67) injects today.
 //!
-//! Only the context-free joins (GB9 / GB9a: combining marks, ZWJ after
-//! anything) are handled, by `plan::joins_the_cluster_before`, and there only
-//! by declining to delete. None of the three is reachable from transcription
-//! output, but "not reachable today" is not a guarantee. The fix is to thread
-//! the preceding text into the planner, which deletes the special case instead
-//! of extending it: **#76**.
+//! The fix is to thread the preceding text into the planner, which deletes the
+//! special case instead of extending it: **#76**.
 //!
 //! ## No pasteboard path yet
 //!
@@ -77,7 +74,7 @@ use enigo::{Enigo, Settings};
 #[cfg(not(target_os = "macos"))]
 use enigo::Keyboard;
 
-use plan::{Capabilities, KeyboardSink, PlanOpts, Typed};
+use plan::{should_record, Capabilities, KeyboardSink, PlanOpts, Typed};
 
 pub use plan::{Action, Plan, PASTE_THRESHOLD, TYPED_MEMORY_CHARS};
 
@@ -271,28 +268,26 @@ impl Injector {
     }
 
     /// Type `text` at the cursor.
+    ///
+    /// Whether this ends up in the record of what is on screen is decided by
+    /// [`plan::should_record`], which is where the reasoning and its truth
+    /// table live. A partly-landed type and a silently-swallowed one are the
+    /// same problem: the record would describe a screen that does not exist,
+    /// and a later `replace_last` would backspace through the difference and
+    /// into the user's own writing.
     pub fn type_text(&mut self, text: &str) -> Result<()> {
         let opts = PlanOpts::from_capabilities(self.capabilities());
         let plan = Plan::type_text(text, opts);
-        if let Err(e) = plan.run(self) {
-            // A failed type may have landed in part. Anything we thought we
-            // knew about the screen is a guess now, and guessing is how a later
-            // replace deletes someone's paragraph.
-            self.typed.forget();
-            return Err(e);
-        }
-        // `Ok` is not evidence the text arrived. Under macOS Secure Input the
-        // OS drops synthetic keystrokes and every call still reports success,
-        // so recording here would leave the record describing text that is not
-        // on screen — and a later `replace_last`, run once Secure Input is off,
-        // would backspace over that fiction and into the user's own writing.
-        // Checked after the send, not before, because it can come on mid-call.
-        if secure_input_active() {
-            self.typed.forget();
-        } else {
+        // Sampled either side of the send: another process can turn Secure
+        // Input on or off while we are mid-call, and both directions lose text.
+        let secure_before = secure_input_active();
+        let sent = plan.run(self);
+        if should_record(sent.is_ok(), secure_before, secure_input_active()) {
             self.typed.record(text);
+        } else {
+            self.typed.forget();
         }
-        Ok(())
+        sent
     }
 
     /// Take back the last `n_chars` chars this injector typed, and put
