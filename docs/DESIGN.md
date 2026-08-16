@@ -200,7 +200,26 @@ control** (History | Settings) · mono stats readout right ("163 WORDS · 9 UTT 
   **ENGINE PARAMETERS** (model picker, mono RAM/download readout, green READY LED or
   green progress bar), **HOTKEY** (key picker + amber key chip preview), **OUTPUT
   BEHAVIOR** (green toggles: live typing, recording indicator, keep history, start on
-  login), **ABOUT** (version, links, config path in mono). One primary Save button.
+  login), **TEXT CLEANUP**, **PROBLEMS**, **CLEANUP PREVIEW**, **ABOUT** (version,
+  links, config path in mono). One primary Save button.
+  - **TEXT CLEANUP** (#49): one row per transform, in chain order. Green toggle, or a
+    segmented level picker where the transform is graded; sub-options indent 16px under
+    their parent. Under a row that reads a rule file, the effective path and its rule
+    count in 9.5px mono, home written as `~`. A transform that is merged but still a
+    no-op is listed under a hairline and a mono `NOT AVAILABLE YET`, with `NOT YET`
+    where its control would be: a toggle that silently does nothing is worse than
+    either showing it or hiding it. Card footer = mono chain readout and the restart
+    caveat, plus an amber line when live typing is on, because words already typed
+    cannot be taken back.
+  - **PROBLEMS**: present only when `PolishConfig::validate()` returns something. Red
+    header + red bullets for entries that are switched off, amber for `note:`
+    advisories that still work. Messages in 10.5px mono, wrapped inside the column.
+  - **CLEANUP PREVIEW**: the user's own recent dictations replayed through the current
+    settings. Mono count header ("2 OF YOUR LAST 6 DICTATIONS WOULD CHANGE") + ghost
+    Recheck, then each changed dictation in Newsreader 15 with removed words struck
+    through in `RED`, added words in `MINT` and a muted `…` where unchanged text was
+    dropped. Never a canned example. Empty states say which of "nothing enabled",
+    "nothing dictated" and "nothing would change" is true.
 
 ### Pill overlay (`overlay.rs`)
 232×40, bottom-center, dark translucent (zinc-950 @ ~92%) with a subtle white ring,
@@ -236,7 +255,7 @@ not just what's on screen.
 
 ## B7. Capturing screenshots
 
-The README and the website show real renders, not mockups. Three dev-only hooks
+The README and the website show real renders, not mockups. Five dev-only hooks
 produce them; none is reachable from normal use:
 
 - `WC_SHOT=<path>` (+ `WC_SHOT_FRAMES`, default 30) saves a PNG of the window after
@@ -246,7 +265,17 @@ produce them; none is reachable from normal use:
   never fetches anything.
 - `WC_DEMO_HISTORY=1` swaps the transcript log for a fixed sample set. **Always capture
   with this on** — the history pane otherwise shows whatever the person running the
-  capture actually dictated.
+  capture actually dictated. Two of the sample rows carry a `raw`, so the cleanup
+  preview has something real to replay; `every_demo_row_polishes_to_the_text_beside_it`
+  keeps them honest.
+- `WC_WINDOW=1440x900` opens the main window at that size instead of 1000×680, and
+  `WC_SCROLL=<points>` opens the Settings tab already scrolled. Between them a capture
+  can show any section at any width, which nothing else can: the window deliberately
+  does not remember a size, and no size on a laptop display holds every section at once.
+
+Captures should run against a throwaway `HOME` (config, history and rule files all hang
+off it), with the models directory symlinked in so the engine card reads READY. That is
+what keeps the operator's own dictionary and dictations out of a published PNG.
 
 `whisper-catch wizard` is a hidden subcommand that runs the wizard on its own.
 Published files live in `docs/screenshots/` (full size, for the README) and
