@@ -1305,9 +1305,11 @@ const PREVIEW_SCAN: usize = 40;
 const PREVIEW_SHOW: usize = 3;
 /// Unchanged words kept either side of a change in a shown diff.
 const PREVIEW_CONTEXT: usize = 8;
-/// Longest utterance the preview will diff. The diff is quadratic in words, and
-/// something this long is not a readable preview anyway. It still counts toward
-/// "would change", which only needs `apply`.
+/// Longest utterance the preview will diff, counted on *both* sides. The diff
+/// is quadratic in words, and while an utterance is bounded by how long a
+/// person can hold a key, what a snippet expands it into is bounded by nothing
+/// at all. Something this long is not a readable preview anyway; it still
+/// counts toward "would change", which only needs `apply`.
 const PREVIEW_MAX_WORDS: usize = 400;
 
 /// What happened to one word between the raw transcript and the polished one.
@@ -1464,6 +1466,7 @@ impl Cleanup {
             changed += 1;
             if samples.len() < PREVIEW_SHOW
                 && before.split_whitespace().count() <= PREVIEW_MAX_WORDS
+                && after.split_whitespace().count() <= PREVIEW_MAX_WORDS
             {
                 samples.push(Sample {
                     ts: e.ts,
