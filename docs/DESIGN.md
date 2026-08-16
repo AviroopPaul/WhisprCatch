@@ -270,8 +270,8 @@ produce them; none is reachable from normal use:
   keeps them honest.
 - `WC_WINDOW=1440x900` opens the main window at that size instead of 1000×680, and
   `WC_SCROLL=<points>` opens the Settings tab already scrolled. Between them a capture
-  can show any section at any width; the window is deliberately neither resizable-by-
-  memory nor tall enough to hold every section on a laptop display.
+  can show any section at any width, which nothing else can: the window deliberately
+  does not remember a size, and no size on a laptop display holds every section at once.
 
 Captures should run against a throwaway `HOME` (config, history and rule files all hang
 off it), with the models directory symlinked in so the engine card reads READY. That is
