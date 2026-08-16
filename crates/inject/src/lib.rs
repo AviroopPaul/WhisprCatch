@@ -47,12 +47,34 @@
 //! The fix is to thread the preceding text into the planner, which deletes the
 //! special case instead of extending it: **#76**.
 //!
+//! ## Where a replace is not possible at all
+//!
+//! Lifting the modifier the user is still holding is what makes a backspace run
+//! safe, and on Wayland it cannot be done: there is no XTEST connection, so
+//! `lift_modifiers` reports success having lifted nothing and the presses go out
+//! under a held Ctrl, where Backspace is delete-*word* (#77).
+//!
+//! So the planner is told. [`plan::Capabilities::can_lift_modifiers`] is honest
+//! per backend, and [`plan::Plan::replace`] **declines** — sends nothing at all
+//! — rather than emitting a run it cannot make safe. Callers ask
+//! [`Injector::can_replace`] up front when they have a non-destructive
+//! alternative, and get an error out of [`Injector::replace_last`] when they do
+//! not. Typing is untouched: a type run under a held modifier loses keystrokes
+//! to shortcuts, which is bad, while a backspace run under one deletes the
+//! user's words, which is unrecoverable.
+//!
 //! ## No pasteboard path yet
 //!
 //! [`plan`] knows the 200-char paste threshold and is tested at its boundary,
-//! but every backend here reports [`plan::Capabilities::TYPING_ONLY`], so no
+//! but no backend here sets [`plan::Capabilities::paste`], so no
 //! [`plan::Action::Paste`] is ever emitted. Nothing in this crate has ever
-//! touched the clipboard. Adding it means setting the user's clipboard aside,
+//! touched the clipboard.
+//!
+//! That is not only a missing feature: it is what keeps the streaming replace
+//! (#50) switched off. A wipe-and-retype of a whole utterance is hundreds of
+//! synthesised keystrokes, which the threshold above already calls more than
+//! apps reliably accept, so the caller gates itself on `paste` until this
+//! lands. Adding it means setting the user's clipboard aside,
 //! synthesising ⌘V/Ctrl+V — a modifier chord, i.e. the exact bug class this
 //! crate exists to dodge — and getting it wrong in terminals, where paste is
 //! Ctrl+Shift+V. That is its own change with its own manual testing (#68), not
@@ -74,9 +96,9 @@ use enigo::{Enigo, Settings};
 #[cfg(not(target_os = "macos"))]
 use enigo::Keyboard;
 
-use plan::{should_record, Capabilities, KeyboardSink, PlanOpts, Typed};
+use plan::{should_record, KeyboardSink, PlanOpts, Typed};
 
-pub use plan::{Action, Plan, PASTE_THRESHOLD, TYPED_MEMORY_CHARS};
+pub use plan::{capabilities_for, Action, Capabilities, Plan, PASTE_THRESHOLD, TYPED_MEMORY_CHARS};
 
 /// How much text one `CGEventKeyboardSetUnicodeString` carries, in UTF-16 code
 /// units. Units, not chars: one emoji is two.
@@ -224,10 +246,11 @@ impl Injector {
     /// deletes a whole word, so a five-press correction can take out a
     /// sentence. Lifting first is what stops that.
     ///
-    /// Best-effort by design. On Wayland there is no XTEST connection and no
-    /// way to fake a release, so this reports success having done nothing —
-    /// failing here would make `replace_last` unusable on Wayland, which is
-    /// worse than the risk it guards against.
+    /// Best-effort by design, and the planner is told which. On Wayland there
+    /// is no XTEST connection and no way to fake a release, so this reports
+    /// success having done nothing — but [`Injector::capabilities`] reports
+    /// `can_lift_modifiers: false` there, so [`plan::Plan::replace`] never
+    /// emits the backspace run this was supposed to protect (#77).
     #[cfg(target_os = "linux")]
     fn lift_held_modifiers(&mut self) -> Result<()> {
         use x11rb::connection::Connection as _;
@@ -307,33 +330,46 @@ impl Injector {
     /// [`secure_input_active`]. On any failure the record is dropped, so a
     /// later replace cannot be counted against a screen we are unsure of.
     pub fn replace_last(&mut self, n_chars: usize, new_text: &str) -> Result<()> {
-        if secure_input_active() {
-            // Dropping the record here is not just caution about this call.
-            // Secure Input drops synthetic keystrokes silently, so any earlier
-            // `type_text` may have reported success while nothing reached the
-            // screen — the record could already be describing text that does
-            // not exist, and backspacing against it would eat the user's.
-            self.typed.forget();
-            anyhow::bail!(
-                "secure input is enabled (a password field has focus); \
-                 refusing to replace text"
-            );
-        }
-        let opts = PlanOpts::from_capabilities(self.capabilities());
-        let plan = self.typed.plan_replace(n_chars, new_text, opts);
-        if plan.is_empty() {
-            return Ok(());
-        }
-        if let Err(e) = plan.run(self) {
-            self.typed.forget();
-            return Err(e).context("replacing typed text");
-        }
-        Ok(())
+        // Every decision is in `plan::replace_recorded`, which is testable
+        // without a display server. Splitting the record out of `self` is what
+        // lets it borrow both halves at once.
+        let mut typed = std::mem::take(&mut self.typed);
+        let secure = secure_input_active();
+        let res = plan::replace_recorded(self, &mut typed, n_chars, new_text, secure);
+        self.typed = typed;
+        res
     }
 
     /// How many chars [`Injector::replace_last`] can still reach back over.
     pub fn replaceable_chars(&self) -> usize {
         self.typed.known_chars()
+    }
+
+    /// Whether [`Injector::replace_last`] can take text back on this session at
+    /// all, or whether it will refuse every deletion.
+    ///
+    /// False on Wayland, where there is no XTEST connection and therefore no
+    /// way to release the push-to-talk modifier the user is still holding —
+    /// Backspace would arrive as delete-word (#77). Callers that have a
+    /// non-destructive alternative should ask *before* they get themselves into
+    /// a state that needs a replace, which is what the streaming loop does
+    /// (#50): it stops typing live rather than typing text it could not
+    /// afterwards correct.
+    ///
+    /// Cheap and constant for the life of the injector; it reads no keyboard
+    /// state. [`can_replace_typed_text`] answers the same question for a
+    /// process that has no `Injector`, such as the Settings window.
+    pub fn can_replace(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            // The connection is necessary and not sufficient: see
+            // `x11_lift_is_trustworthy` for the XWayland trap.
+            self.x11.is_some() && x11_lift_is_trustworthy(&EnvSession::current())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            can_replace_typed_text()
+        }
     }
 
     /// Forget what we typed, so the next replace types instead of deleting.
@@ -368,6 +404,96 @@ impl Injector {
     pub fn lift_key(&mut self, _evdev_code: u16) {}
 }
 
+/// Whether text this app types could later be taken back on this session, for
+/// a process that has no [`Injector`] of its own — the Settings window, which
+/// has to tell the user what live typing will do before the daemon is running.
+///
+/// Same question and same answer as [`Injector::can_replace`], reached without
+/// touching enigo (and so without prompting for Accessibility on macOS). On
+/// Linux that means opening and dropping an X11 connection, which is the honest
+/// test: no connection, no way to release a held modifier, no backspace run
+/// (#77). Call it once and keep the answer — it does not change while the
+/// session lives, and it is not free enough to call per frame.
+pub fn can_replace_typed_text() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        x11_lift_is_trustworthy(&EnvSession::current()) && x11rb::connect(None).is_ok()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Nothing to lift: every event we post is built from a private source
+        // and carries `CGEventFlagNull`, so it never inherits the held key.
+        true
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        // No backend here has been shown to release a held modifier, and the
+        // wrong guess destroys text. Losing `replace_last` is the safe half.
+        false
+    }
+}
+
+/// The three environment variables that say what kind of Linux session this is.
+/// Read through a struct so the decision below is a pure function and can be
+/// tested for every combination without a display server — which is the only
+/// way the case that matters (Wayland) is testable at all from CI or from a
+/// developer's Mac.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnvSession {
+    pub has_display: bool,
+    pub has_wayland_display: bool,
+    /// `XDG_SESSION_TYPE`, lowercased, if set.
+    pub session_type: Option<&'static str>,
+}
+
+impl EnvSession {
+    /// Read the real environment. `session_type` is normalised to the two
+    /// values that matter, so the pure function below cannot be fed a string
+    /// it has to parse.
+    pub fn current() -> Self {
+        let session_type = std::env::var("XDG_SESSION_TYPE")
+            .ok()
+            .map(|s| s.to_ascii_lowercase());
+        Self {
+            has_display: std::env::var_os("DISPLAY").is_some(),
+            has_wayland_display: std::env::var_os("WAYLAND_DISPLAY").is_some(),
+            session_type: match session_type.as_deref() {
+                Some("wayland") => Some("wayland"),
+                Some("x11") => Some("x11"),
+                Some(_) => Some("other"),
+                None => None,
+            },
+        }
+    }
+}
+
+/// Whether an X11 connection is evidence that we can actually release a
+/// modifier the user is holding.
+///
+/// **An X server answering is not that evidence, and assuming it was is how
+/// this nearly shipped a text-destroying bug.** GNOME and KDE start XWayland at
+/// session start and export `DISPLAY`, so `x11rb::connect` succeeds on the
+/// default Ubuntu and Fedora *Wayland* desktops. There, `query_keymap` is
+/// answered by XWayland, which only sees keys while an X11 client has focus —
+/// with a native Wayland client focused it reports nothing held and the lift
+/// silently does nothing, exactly as #77 describes. Mutter and KWin then
+/// forward XTEST into the compositor's own virtual input device (this is why
+/// `xdotool` works under GNOME Wayland), so the Backspace run *does* reach the
+/// focused app, under the still-held Ctrl, where it is delete-word.
+///
+/// So a Wayland session disqualifies the connection however healthy it looks.
+/// The cost of being wrong is not symmetric: a false negative loses live typing
+/// while cleanup is on, and a false positive deletes hundreds of the user's
+/// words. `XDG_SESSION_TYPE=x11` is *not* treated as an override, because
+/// `WAYLAND_DISPLAY` being set is the stronger signal — a Wayland compositor is
+/// there to talk to whatever the session claims to be.
+pub fn x11_lift_is_trustworthy(env: &EnvSession) -> bool {
+    if env.has_wayland_display || env.session_type == Some("wayland") {
+        return false;
+    }
+    env.has_display
+}
+
 /// True when macOS Secure Event Input is on: a password field has focus, or an
 /// app left it enabled. The OS drops synthetic keystrokes while it is, so a
 /// replace would half-land at best — SCOPE.md §3 flags detecting it.
@@ -399,8 +525,11 @@ pub fn secure_input_active() -> bool {
 impl KeyboardSink for Injector {
     /// Keystrokes only, on every platform: there is no clipboard path in this
     /// crate, so the planner must never choose one. See the crate docs.
+    ///
+    /// Whether a *backspace* run is reachable is not a constant, though — it is
+    /// [`Injector::can_replace`], which is false on Wayland.
     fn capabilities(&self) -> Capabilities {
-        Capabilities::TYPING_ONLY
+        plan::capabilities_for(self.can_replace())
     }
 
     fn lift_modifiers(&mut self) -> Result<()> {
@@ -423,6 +552,63 @@ mod tests {
     /// Calling the function is what forces the `IsSecureEventInputEnabled`
     /// symbol to be linked, so a wrong framework name fails the macOS test run
     /// instead of some user's build.
+    use super::{x11_lift_is_trustworthy, EnvSession};
+
+    fn env(display: bool, wayland: bool, session: Option<&'static str>) -> EnvSession {
+        EnvSession {
+            has_display: display,
+            has_wayland_display: wayland,
+            session_type: session,
+        }
+    }
+
+    /// The bug this nearly shipped with: an X server answering is not evidence
+    /// that we can release a held modifier.
+    #[test]
+    fn xwayland_is_not_evidence_that_a_modifier_can_be_lifted() {
+        // Default GNOME and KDE: Wayland session, XWayland running, DISPLAY
+        // exported. `x11rb::connect` succeeds here — and the lift does nothing
+        // while a native Wayland client has focus, so the backspaces would go
+        // out under the held key as delete-word.
+        assert!(!x11_lift_is_trustworthy(&env(true, true, Some("wayland"))));
+        // WAYLAND_DISPLAY alone is enough; so is XDG_SESSION_TYPE alone.
+        assert!(!x11_lift_is_trustworthy(&env(true, true, None)));
+        assert!(!x11_lift_is_trustworthy(&env(true, false, Some("wayland"))));
+        // A session claiming x11 while a Wayland compositor is reachable is
+        // still not trusted: the compositor is there to talk to regardless.
+        assert!(!x11_lift_is_trustworthy(&env(true, true, Some("x11"))));
+    }
+
+    #[test]
+    fn a_real_x11_session_can_lift() {
+        assert!(x11_lift_is_trustworthy(&env(true, false, Some("x11"))));
+        assert!(x11_lift_is_trustworthy(&env(true, false, None)));
+        assert!(x11_lift_is_trustworthy(&env(true, false, Some("tty"))));
+    }
+
+    #[test]
+    fn no_display_at_all_can_never_lift() {
+        for wayland in [true, false] {
+            for session in [None, Some("x11"), Some("wayland")] {
+                assert!(
+                    !x11_lift_is_trustworthy(&env(false, wayland, session)),
+                    "claimed a lift with no X connection: {wayland} {session:?}"
+                );
+            }
+        }
+    }
+
+    /// Reading the environment must produce one of the shapes the decision
+    /// above was tested against, rather than a string it has to parse.
+    #[test]
+    fn the_session_is_read_into_a_shape_the_decision_understands() {
+        let seen = EnvSession::current();
+        assert!(matches!(
+            seen.session_type,
+            None | Some("wayland") | Some("x11") | Some("other")
+        ));
+    }
+
     #[test]
     fn secure_input_can_be_queried() {
         let active = super::secure_input_active();

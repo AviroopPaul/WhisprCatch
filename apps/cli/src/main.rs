@@ -21,7 +21,28 @@ use wc_core::state::AppState;
 use wc_hotkey::{PttEvent, PttKey};
 use wc_inject::Injector;
 
-use crate::stream::{join_delta, resume_at, split_words, Stream};
+use crate::stream::{
+    begin_utterance, finish_utterance, join_delta, plan_release, split_words, stream_delta,
+    Release, ReleaseInput, Stream, TextSink,
+};
+
+/// The dictation loop's view of the injector. The trait is ours, so this is the
+/// one place the daemon touches `wc_inject` directly and the sequencing around
+/// it can be tested against a fake (`stream.rs`).
+impl TextSink for Injector {
+    fn type_text(&mut self, text: &str) -> Result<()> {
+        Injector::type_text(self, text)
+    }
+    fn replace_last(&mut self, n_chars: usize, text: &str) -> Result<()> {
+        Injector::replace_last(self, n_chars, text)
+    }
+    fn forget_typed(&mut self) {
+        Injector::forget_typed(self)
+    }
+    fn replaceable_chars(&self) -> usize {
+        Injector::replaceable_chars(self)
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "whisper-catch", version, about = "Local push-to-talk dictation")]
@@ -310,6 +331,77 @@ fn finish(polish: &wc_text::Polish, raw: String) -> (String, Option<String>) {
     (text, Some(raw))
 }
 
+/// Whether the release pass may take back what live typing put on screen.
+///
+/// Two independent conditions, both required:
+///
+/// * **The sink can release the held push-to-talk modifier** (#77). Where it
+///   cannot, Backspace arrives as Ctrl+Backspace, which is delete-*word*.
+/// * **The sink has a pasteboard** (#68). This is a cost gate, not a
+///   correctness one, and it is why the replace path is off for everyone in
+///   v0.5. A realistic 60-second dictation with filler removal and an early
+///   "um" is 731 backspaces plus 710 retyped characters: 1462 unpaced CGEvents
+///   on macOS, 731 XTEST round trips on Linux, nothing confirming any of them
+///   landed, and a single dropped backspace splices the new text into the
+///   middle of the old. `PASTE_THRESHOLD` in `wc_inject` already says a few
+///   hundred synthesised keystrokes is more than apps reliably take — that
+///   judgement applies to a wipe-and-retype at least as much as to a long
+///   type. With filler removal shipped, an early "um" is the *modal* case, not
+///   the rare one.
+///
+/// No backend sets `paste` yet, so this is false everywhere today and the
+/// streaming/cleanup combination resolves by not typing live at all. When #68
+/// lands the replace path switches on with no change here.
+fn replace_available(caps: wc_inject::Capabilities) -> bool {
+    caps.can_lift_modifiers && caps.paste
+}
+
+/// Whether to type words live while the key is held.
+///
+/// Live typing puts the model's raw words on screen as they settle, and the
+/// release pass then replaces them with the cleaned-up transcript
+/// (`stream::plan_release`). That only works where the text can be taken back
+/// again — see [`replace_available`].
+///
+/// So when cleanup can rewrite words and they could not be corrected
+/// afterwards, we do not type them in the first place. The broken combination
+/// is made *unreachable* rather than warned about: with no live typing there is
+/// nothing on screen for the cleanup pass to disagree with, and the finished
+/// text is typed once on release exactly as with streaming off.
+fn live_typing_enabled(streaming: bool, rewriting: bool, can_replace: bool) -> bool {
+    streaming && (!rewriting || can_replace)
+}
+
+/// Whether the cleanup chain can rewrite words that live typing already typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CleanupRewrites(pub bool);
+
+/// Whether the release pass could take those words back again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplaceAvailable(pub bool);
+
+/// What the Settings "Live typing" row says under the toggle.
+///
+/// #50's done-when is that the chosen behaviour is documented where the user
+/// can see it, so this is a decision and not a decoration — hence a function
+/// with its own test rather than a `match` inlined into a paint call.
+///
+/// The two arguments are newtypes and not bools on purpose. A unit test can
+/// pin what each combination *says*, but nothing in this workspace can reach
+/// the call site inside an egui render to catch the arguments being passed the
+/// wrong way round — so the types make that a compile error instead of
+/// something a test might have caught.
+pub fn live_typing_description(
+    rewrites: CleanupRewrites,
+    replace: ReplaceAvailable,
+) -> &'static str {
+    match (rewrites.0, replace.0) {
+        (false, _) => "Words appear while you speak",
+        (true, true) => "Words appear while you speak, then text cleanup corrects them when you release",
+        (true, false) => "Paused while text cleanup is on: cleaned-up words can differ from what you said",
+    }
+}
+
 /// No terminal attached — launched from the app menu / autostart.
 fn gui_session() -> bool {
     use std::io::IsTerminal;
@@ -426,26 +518,42 @@ fn run_ptt(
         log::debug!("text polish: nothing enabled");
     } else {
         log::info!("text polish: {}", polish.names().join(" -> "));
-        if cfg.streaming && polish.has_rewriting_transforms() {
-            // Streaming types words as they settle; polish only runs on the
-            // final transcript. None of the six transforms is prefix-stable —
-            // not even the substituting ones, whose trigger phrases straddle
-            // the streaming boundary — so anything enabled here can disagree
-            // with what is already on screen. Live output therefore stays raw
-            // until injector replace (#41) and reconciliation (#50) land.
-            log::warn!(
-                "streaming is on and the polish chain can rewrite words already typed — \
-                 live output stays unpolished until #50 lands"
-            );
-        }
     }
 
-    let events = wc_hotkey::listen(key)?;
+    let listener = wc_hotkey::listen(key)?;
+    let events = &listener.events;
     let mut injector = if print_only {
         None
     } else {
         Some(Injector::new()?)
     };
+
+    // Streaming types the model's raw words as they settle; the cleanup chain
+    // only runs on the finished transcript, and none of its six transforms is
+    // prefix-stable — even a substitution rewrites text already on screen when
+    // its trigger phrase straddles the streaming boundary. The release pass
+    // reconciles the two by replacing what was streamed (`plan_release`), which
+    // needs an injector that can take text back.
+    let can_replace = injector
+        .as_ref()
+        .is_some_and(|i| replace_available(wc_inject::capabilities_for(i.can_replace())));
+    let live_typing = injector.is_some()
+        && live_typing_enabled(cfg.streaming, polish.has_rewriting_transforms(), can_replace);
+    if cfg.streaming && injector.is_some() {
+        if live_typing && polish.has_rewriting_transforms() {
+            log::info!(
+                "live typing shows the model's own words; text cleanup replaces them \
+                 when you release the key"
+            );
+        } else if !live_typing {
+            log::warn!(
+                "live typing is off this session: text cleanup can rewrite words that \
+                 have already been typed, and this session cannot take them back \
+                 safely. The finished text is typed once on release instead."
+            );
+        }
+    }
+
     eprintln!("ready. Hold {key:?} and speak, release to type. Ctrl-C to quit.");
     if gui_session() {
         notify(
@@ -464,6 +572,10 @@ fn run_ptt(
     // rolling-transcription state for the current utterance
     let mut stream = Stream::new();
     let mut modifier_lifted = false;
+    // Other keys pressed as of the last press, so the release can tell whether
+    // the user typed something of their own while holding the hotkey. Always 0
+    // on macOS with a modifier hotkey — see `Listener::other_key_presses`.
+    let mut keys_at_press = 0u64;
     let mut last_pass = std::time::Instant::now();
 
     // test hooks: SIGUSR1 = simulated press, SIGUSR2 = simulated release
@@ -497,7 +609,11 @@ fn run_ptt(
                 let cap = capture.as_ref().unwrap();
                 cap.begin();
                 armed = true;
-                stream.reset();
+                match injector.as_mut() {
+                    Some(inj) => begin_utterance(inj, &mut stream),
+                    None => stream.reset(),
+                }
+                keys_at_press = listener.other_key_presses();
                 modifier_lifted = false;
                 last_pass = std::time::Instant::now();
                 log::info!("recording...");
@@ -566,6 +682,11 @@ fn run_ptt(
                         // here, on the finished transcript, before history and
                         // before a single character is typed.
                         let (text, polished_from) = finish(&polish, raw);
+                        // Whether cleanup rewrote the model's words, which is
+                        // what decides between appending to the streamed text
+                        // and replacing it. Taken before `polished_from` is
+                        // moved into the history entry.
+                        let rewritten = polished_from.is_some();
                         state.record_utterance(text.split_whitespace().count(), dur);
                         if cfg.history {
                             let entry = wc_core::history::Entry {
@@ -584,28 +705,49 @@ fn run_ptt(
                         }
                         refresh(&tray);
 
-                        let final_words = split_words(&text);
-                        // words already typed by rolling passes stay put; type
-                        // only what's left, aligned on the text rather than on a
-                        // word count that the final pass may have shifted
-                        let start = resume_at(stream.committed(), &final_words);
-                        log::debug!(
-                            "final: {} words, {} committed, resuming at {}",
-                            final_words.len(),
-                            stream.committed().len(),
-                            start
-                        );
                         if let Some(inj) = injector.as_mut() {
+                            // Somebody else's key went down while the hotkey
+                            // was held, so the cursor is not where we left it.
+                            let user_typed = listener.other_key_presses() != keys_at_press;
+                            if user_typed {
+                                log::debug!(
+                                    "a key of the user's own went down while the hotkey \
+                                     was held; the release will not take text back"
+                                );
+                            }
                             // let the user finish releasing the modifier so
-                            // injected keys don't combine with it
+                            // injected keys don't combine with it. This matters
+                            // more for a replace than for a type: Ctrl+
+                            // Backspace is delete-word.
                             std::thread::sleep(Duration::from_millis(150));
-                            if start < final_words.len() {
-                                let delta =
-                                    join_delta(&final_words[start..], stream.nothing_typed());
-                                if let Err(e) = inj.type_text(&delta) {
-                                    log::error!("injection failed: {e:#}");
-                                    println!("{text}");
+                            // Reconcile what the streaming passes typed with
+                            // the finished transcript (#50). Every decision is
+                            // in `plan_release`; this only carries it out.
+                            let (release, sent) = finish_utterance(
+                                inj,
+                                &stream,
+                                &text,
+                                rewritten,
+                                can_replace,
+                                user_typed,
+                            );
+                            log::debug!(
+                                "release: {} streamed chars, {} committed words -> {}",
+                                stream.typed().chars().count(),
+                                stream.committed().len(),
+                                match &release {
+                                    Release::Nothing => "nothing".to_string(),
+                                    Release::Append(t) =>
+                                        format!("append {} chars", t.chars().count()),
+                                    Release::Replace { take_back, text } => format!(
+                                        "replace {take_back} chars with {} chars",
+                                        text.chars().count()
+                                    ),
                                 }
+                            );
+                            if let Err(e) = sent {
+                                log::error!("injection failed: {e:#}");
+                                println!("{text}");
                             }
                         } else {
                             println!("{text}");
@@ -617,11 +759,7 @@ fn run_ptt(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 // rolling transcription while the key is held
-                if armed
-                    && cfg.streaming
-                    && injector.is_some()
-                    && last_pass.elapsed() >= STREAM_INTERVAL
-                {
+                if armed && live_typing && last_pass.elapsed() >= STREAM_INTERVAL {
                     last_pass = std::time::Instant::now();
                     if let Some(cap) = capture.as_ref() {
                         // A pass only ever transcribes a bounded window (see
@@ -662,15 +800,14 @@ fn run_ptt(
                                             inj.lift_key(key.evdev_code());
                                             modifier_lifted = true;
                                         }
-                                        let text = join_delta(&delta, stream.nothing_typed());
-                                        if let Err(e) = inj.type_text(&text) {
-                                            log::error!("streaming injection failed: {e:#}");
-                                        } else {
+                                        // Types it and notes it only if it
+                                        // landed — see `stream_delta`.
+                                        let sent = stream_delta(inj, &mut stream, &delta);
+                                        if !sent.is_empty() {
                                             // debug, not info: this is the user's
                                             // speech — it should not reach logs
                                             // by default.
-                                            log::debug!("streamed {text:?}");
-                                            stream.mark_first_typed();
+                                            log::debug!("streamed {sent:?}");
                                         }
                                     }
                                 }
@@ -711,7 +848,6 @@ fn simulate_stream(engine: &mut Engine, wav: &std::path::Path, window: f32) -> R
     } else {
         Stream::with_window(f32::MAX, crate::stream::KEEP_TAIL_SECS)
     };
-    let mut typed = String::new();
     let mut audio_pos = 0usize; // samples "captured" so far
     let mut passes = 0u32;
     let mut pass_secs: Vec<f32> = Vec::new();
@@ -741,18 +877,32 @@ fn simulate_stream(engine: &mut Engine, wav: &std::path::Path, window: f32) -> R
 
         let delta = stream.advance(split_words(&text));
         if !delta.is_empty() {
-            typed.push_str(&join_delta(&delta, stream.nothing_typed()));
-            stream.mark_first_typed();
+            stream.mark_typed(&join_delta(&delta, stream.nothing_typed()));
         }
     }
 
-    // the release path: full (chunked) transcription, spliced onto what streamed
+    // The release path, through the same planner the daemon uses. No polish
+    // chain here — the harness measures the streaming machinery, so `rewritten`
+    // is false and the plan is the append the loop has always produced.
     let reference = engine.transcribe(&samples)?;
-    let final_words = split_words(&reference);
-    let start = resume_at(stream.committed(), &final_words);
-    if start < final_words.len() {
-        typed.push_str(&join_delta(&final_words[start..], stream.nothing_typed()));
+    let mut typed = stream.typed().to_string();
+    match plan_release(ReleaseInput {
+        streamed: stream.typed(),
+        committed: stream.committed(),
+        final_text: &reference,
+        rewritten: false,
+        replaceable_chars: stream.typed().chars().count(),
+        can_replace: true,
+        user_typed: false,
+    }) {
+        Release::Nothing => {}
+        Release::Append(t) => typed.push_str(&t),
+        Release::Replace { take_back, text } => {
+            let keep = typed.chars().count().saturating_sub(take_back);
+            typed = typed.chars().take(keep).chain(text.chars()).collect();
+        }
     }
+    let final_words = split_words(&reference);
 
     let mean = pass_secs.iter().sum::<f32>() / pass_secs.len().max(1) as f32;
     let worst = pass_secs.iter().cloned().fold(0.0f32, f32::max);
@@ -881,15 +1031,250 @@ mod tests {
         assert_eq!(text.split_whitespace().count(), 3);
     }
 
-    /// The words already typed by streaming passes are spliced against the
-    /// final transcript. Polish runs before that splice, so an append-safe
-    /// chain must still leave `resume_at` able to find its place.
+    /// The words already typed by streaming passes are reconciled against the
+    /// final transcript. With nothing enabled, that is still the append it
+    /// always was.
     #[test]
     fn polished_text_still_splices_onto_what_streaming_typed() {
         let polish = Polish::from_config(&PolishConfig::default());
-        let (text, _) = finish(&polish, "the whole emotional spectrum drama".to_string());
-        let final_words = split_words(&text);
-        let committed = split_words("the whole emotional spectrum");
-        assert_eq!(resume_at(&committed, &final_words), 4);
+        let raw = "the whole emotional spectrum drama".to_string();
+        let (text, from) = finish(&polish, raw);
+        let streamed = "the whole emotional spectrum";
+        assert_eq!(
+            plan_release(ReleaseInput {
+                streamed,
+                committed: &split_words(streamed),
+                final_text: &text,
+                rewritten: from.is_some(),
+                replaceable_chars: streamed.chars().count(),
+                can_replace: true,
+                user_typed: false,
+            }),
+            Release::Append(" drama".into())
+        );
+    }
+
+    // ---- the seam and the screen, end to end (#50) --------------------------
+
+    /// The **real** filler-removal chain, configured the way the manual
+    /// verification steps say to configure it.
+    ///
+    /// Deliberately not a hand-written stand-in. The first version of this test
+    /// used one, and the recipe in the PR body (`enabled = true` alone) turned
+    /// out to be a no-op against the shipped transform — `enabled` and `level`
+    /// are two decisions there, so nothing was ever rewritten and the whole
+    /// destructive path went unexercised. Driving the real transform is what
+    /// keeps the documented recipe honest.
+    fn filler_removal() -> Polish {
+        Polish::from_config(&PolishConfig {
+            fillers: wc_text::FillersConfig {
+                enabled: true,
+                level: wc_text::fillers::FillerLevel::Light,
+            },
+            ..PolishConfig::default()
+        })
+    }
+
+    /// The screen a `Release` leaves behind, through the **real** injector
+    /// planner rather than a model of it. See `stream.rs`'s copy for why that
+    /// distinction cost a blocking review finding.
+    fn screen_after(before: &str, release: &Release) -> String {
+        use wc_inject::plan::{PlanOpts, Typed};
+        match release {
+            Release::Nothing => before.to_string(),
+            Release::Append(t) => format!("{before}{t}"),
+            Release::Replace { take_back, text } => {
+                let mut record = Typed::new();
+                record.record(before);
+                record
+                    .plan_replace(*take_back, text, PlanOpts::typing_only())
+                    .simulate(before)
+            }
+        }
+    }
+
+    /// Drive one utterance through the real seam: the streaming passes type the
+    /// model's raw words, the release pass polishes and reconciles. Returns
+    /// what the user is left looking at.
+    fn dictate(polish: &Polish, streamed: &str, heard: &str) -> String {
+        let (text, from) = finish(polish, heard.to_string());
+        let release = plan_release(ReleaseInput {
+            streamed,
+            committed: &split_words(streamed),
+            final_text: &text,
+            rewritten: from.is_some(),
+            replaceable_chars: streamed.chars().count(),
+            can_replace: true,
+            user_typed: false,
+        });
+        screen_after(streamed, &release)
+    }
+
+    /// **The bug in #50, at the seam that has it**, driven by the shipping
+    /// filler-removal transform. Streaming typed the fillers because that is
+    /// what the model said; the finished transcript has them removed. What the
+    /// user ends up with must be the finished transcript, not the fillers plus
+    /// a tail.
+    #[test]
+    fn filler_removal_under_live_typing_leaves_the_polished_text_on_screen() {
+        let polish = filler_removal();
+        let heard = "So um I think uh we should ship it";
+        // the streaming passes run two words behind, as the guard makes them
+        let streamed = "So um I think uh we should";
+
+        // The transform really does rewrite this, so `rewritten` is really true
+        // — the check the old stand-in could not make.
+        let (finished, from) = finish(&polish, heard.to_string());
+        assert!(from.is_some(), "the recipe did not rewrite anything");
+        assert_eq!(finished, "So I think we should ship it");
+
+        assert_eq!(dictate(&polish, streamed, heard), finished);
+
+        // The same utterance with cleanup off is untouched, fillers and all —
+        // so the assertion above is about the cleanup pass and not about some
+        // change to streaming itself.
+        let off = Polish::from_config(&PolishConfig::default());
+        assert_eq!(dictate(&off, streamed, heard), heard);
+    }
+
+    /// `enabled` alone is not the recipe: filler removal takes two decisions,
+    /// and a config with only the first changes nothing at all. This is the
+    /// mistake the PR's manual steps shipped with.
+    #[test]
+    fn enabling_filler_removal_without_a_level_rewrites_nothing() {
+        let half_on = Polish::from_config(&PolishConfig {
+            fillers: wc_text::FillersConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            ..PolishConfig::default()
+        });
+        let heard = "So um I think uh we should ship it";
+        let (text, from) = finish(&half_on, heard.to_string());
+        assert_eq!(text, heard);
+        assert!(
+            from.is_none(),
+            "a level-less config must not reach the replace path"
+        );
+    }
+
+    #[test]
+    fn a_default_chain_leaves_the_release_path_byte_identical() {
+        let polish = Polish::from_config(&PolishConfig::default());
+        for (streamed, heard) in [
+            ("", "hello world"),
+            ("hello", "hello world"),
+            ("the quick brown", "the quick brown fox jumps"),
+            ("all of it", "all of it"),
+        ] {
+            assert_eq!(
+                dictate(&polish, streamed, heard),
+                heard,
+                "streamed {streamed:?}"
+            );
+        }
+    }
+
+    /// The v0.5 shipping answer: no backend can paste, so the replace path is
+    /// off for everyone and the streaming/cleanup combination resolves by not
+    /// typing live at all.
+    #[test]
+    fn the_replace_path_is_off_until_a_pasteboard_exists() {
+        for can_lift in [true, false] {
+            assert!(
+                !replace_available(wc_inject::capabilities_for(can_lift)),
+                "the wipe-and-retype is not affordable without #68 (can_lift={can_lift})"
+            );
+        }
+        // Both halves are required, and the paste half is the one missing.
+        assert!(!replace_available(wc_inject::Capabilities {
+            paste: true,
+            can_lift_modifiers: false
+        }));
+        assert!(replace_available(wc_inject::Capabilities {
+            paste: true,
+            can_lift_modifiers: true
+        }));
+    }
+
+    /// The description under the Settings toggle is #50's other done-when, so
+    /// it is chosen by a function rather than assembled inline where the arms
+    /// could be swapped unnoticed.
+    #[test]
+    fn settings_says_what_live_typing_will_actually_do() {
+        let desc = |cleanup, replace| {
+            live_typing_description(CleanupRewrites(cleanup), ReplaceAvailable(replace))
+        };
+        // Cleanup off: unchanged, and the display server is irrelevant.
+        for replace in [true, false] {
+            assert_eq!(desc(false, replace), "Words appear while you speak");
+        }
+        // Cleanup on and correctable: say that it will be corrected.
+        assert!(desc(true, true).contains("cleanup corrects them"));
+        // Cleanup on and not correctable — the v0.5 state: say it is paused.
+        assert!(desc(true, false).starts_with("Paused"));
+        // The three arms say different things, so a mix-up cannot hide behind
+        // two of them reading the same.
+        let mut all = [desc(false, false), desc(true, true), desc(true, false)];
+        all.sort_unstable();
+        all.windows(2)
+            .for_each(|p| assert_ne!(p[0], p[1], "two arms give the same text"));
+
+        // And what Settings shows matches what the daemon will do. This is the
+        // half that matters: a description that disagrees with the behaviour is
+        // worse than no description.
+        for cleanup in [true, false] {
+            for replace in [true, false] {
+                assert_eq!(
+                    desc(cleanup, replace).starts_with("Paused"),
+                    !live_typing_enabled(true, cleanup, replace),
+                    "Settings and the daemon disagree at ({cleanup}, {replace})"
+                );
+            }
+        }
+    }
+
+    /// Passing the two facts the wrong way round is a **compile** error, not a
+    /// test failure, because no test in this workspace can reach the call site
+    /// inside an egui paint. Kept as a documented compile-fail rather than a
+    /// `#[test]`: there is no stable way to assert non-compilation without a
+    /// `trybuild`-style dependency, and this milestone does not add one.
+    ///
+    /// ```compile_fail
+    /// # use whisper_catch::{live_typing_description, CleanupRewrites, ReplaceAvailable};
+    /// live_typing_description(ReplaceAvailable(true), CleanupRewrites(true));
+    /// ```
+    #[allow(dead_code)]
+    fn the_description_arguments_cannot_be_swapped() {}
+
+    /// Live typing is only offered where the release pass could correct it. The
+    /// combination the issue calls unreachable is unreachable here, rather than
+    /// warned about and left switched on.
+    #[test]
+    fn live_typing_is_refused_where_the_text_could_not_be_taken_back() {
+        // streaming off: never live, whatever else is true
+        assert!(!live_typing_enabled(false, false, true));
+        assert!(!live_typing_enabled(false, true, true));
+
+        // nothing rewrites: live typing is unaffected by the display server,
+        // because there is never anything to take back
+        assert!(live_typing_enabled(true, false, true));
+        assert!(live_typing_enabled(true, false, false));
+
+        // cleanup can rewrite: live typing only where a replace is possible
+        assert!(live_typing_enabled(true, true, true));
+        assert!(
+            !live_typing_enabled(true, true, false),
+            "streamed raw words that could never be corrected — this is the #50 bug"
+        );
+    }
+
+    /// The gate is driven by `has_rewriting_transforms`, and every enabled
+    /// transform answers true — including a chain of one. A user who turns on
+    /// nothing but a custom dictionary is covered.
+    #[test]
+    fn any_single_enabled_transform_engages_the_gate() {
+        assert!(filler_removal().has_rewriting_transforms());
+        assert!(!Polish::from_config(&PolishConfig::default()).has_rewriting_transforms());
     }
 }

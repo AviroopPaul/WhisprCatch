@@ -24,7 +24,7 @@
 //! );
 //! ```
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::unicode::{
     char_index_from_end, cluster_count, common_cluster_prefix, snap_to_cluster, trim_to_last_chars,
@@ -66,17 +66,54 @@ pub enum Action {
 
 /// What a backend can actually do. The planner asks before it decides, so a
 /// backend without a pasteboard never receives a [`Action::Paste`] it would
-/// have to fail on.
+/// have to fail on, and a backend that cannot release a held modifier never
+/// receives a [`Action::Backspace`] it could not make safe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Capabilities {
     /// The backend can put text on the clipboard and paste it.
     pub paste: bool,
+    /// [`KeyboardSink::lift_modifiers`] genuinely releases a modifier the user
+    /// is holding, rather than reporting success having done nothing.
+    ///
+    /// This is the whole of #77. On Wayland there is no XTEST connection, so
+    /// the lift is a silent no-op and the Backspace that follows it arrives
+    /// with the user's push-to-talk Ctrl still physically down — where it is
+    /// delete-*word*, not delete-character. Five presses take out a sentence.
+    ///
+    /// The flag is honoured by [`Plan::replace`], not by callers: a planner
+    /// that refuses to emit an unsafe action cannot be forgotten, whereas a
+    /// bool that three future callers each have to remember to check can.
+    pub can_lift_modifiers: bool,
 }
 
 impl Capabilities {
-    /// Keystrokes only. This is what every backend in the tree reports today;
-    /// see the crate docs for why there is no pasteboard path yet.
-    pub const TYPING_ONLY: Self = Self { paste: false };
+    /// Keystrokes only, and a held modifier really can be released first. X11
+    /// and macOS. See the crate docs for why there is no pasteboard path yet.
+    pub const TYPING_ONLY: Self = Self {
+        paste: false,
+        can_lift_modifiers: true,
+    };
+
+    /// Keystrokes only, with no way to release a held modifier: Wayland. A
+    /// [`Plan::replace`] for a sink like this declines rather than backspacing
+    /// into the user's push-to-talk key.
+    pub const NO_LIFT: Self = Self {
+        paste: false,
+        can_lift_modifiers: false,
+    };
+}
+
+/// What a backend in *this* crate reports, given whether its lift works.
+///
+/// The one place the mapping lives, so that "the injector answers honestly
+/// about Wayland" is a claim a test can make without a display server — the
+/// method on `Injector` is then a single call with nothing left to get wrong.
+/// `paste` is false here and everywhere until #68 lands.
+pub const fn capabilities_for(can_lift_modifiers: bool) -> Capabilities {
+    Capabilities {
+        paste: false,
+        can_lift_modifiers,
+    }
 }
 
 /// Planner knobs, derived from a backend's [`Capabilities`].
@@ -84,19 +121,33 @@ impl Capabilities {
 pub struct PlanOpts {
     /// Type runs longer than this are pasted instead. `None` always types.
     pub paste_threshold: Option<usize>,
+    /// Whether [`Action::Backspace`] may be emitted at all. False when the sink
+    /// cannot lift a held modifier — see [`Capabilities::can_lift_modifiers`].
+    pub can_backspace: bool,
 }
 
 impl PlanOpts {
-    /// Never paste.
+    /// Never paste; backspaces are allowed.
     pub fn typing_only() -> Self {
         Self {
             paste_threshold: None,
+            can_backspace: true,
+        }
+    }
+
+    /// A sink that can neither paste nor lift a held modifier, so no backspace
+    /// run may be planned for it at all.
+    pub fn no_backspace() -> Self {
+        Self {
+            paste_threshold: None,
+            can_backspace: false,
         }
     }
 
     pub fn from_capabilities(caps: Capabilities) -> Self {
         Self {
             paste_threshold: caps.paste.then_some(PASTE_THRESHOLD),
+            can_backspace: caps.can_lift_modifiers,
         }
     }
 }
@@ -110,9 +161,14 @@ impl Default for PlanOpts {
 /// Everything a [`Plan`] needs from a keyboard. Implemented by
 /// [`crate::Injector`] per platform, and by fakes in tests.
 pub trait KeyboardSink {
-    /// What this backend can do. The default is keystrokes only.
+    /// What this backend can do.
+    ///
+    /// The default is deliberately the *most* restricted answer: no pasteboard
+    /// and no working lift. A backend that forgets to override it loses
+    /// `replace_last`, which surfaces as a loud error; the opposite default
+    /// would lose the user's text silently.
     fn capabilities(&self) -> Capabilities {
-        Capabilities::TYPING_ONLY
+        Capabilities::NO_LIFT
     }
 
     /// Release modifiers the user is still holding. Best effort: on backends
@@ -137,6 +193,11 @@ pub trait KeyboardSink {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Plan {
     actions: Vec<Action>,
+    /// Set when the replace was *refused* rather than found to be unnecessary.
+    /// Both are empty plans, and the difference matters: nothing to do is a
+    /// success, and "this sink cannot do it safely" is something the caller has
+    /// to hear about. See [`Plan::is_declined`].
+    declined: bool,
 }
 
 impl Plan {
@@ -153,6 +214,17 @@ impl Plan {
     /// at all — see [`joins_the_cluster_before`], which is where the limits of
     /// planning without the *preceding* text are written down. #76 threads that
     /// context in and removes both the special case and the gap.
+    ///
+    /// # Refusing
+    ///
+    /// When the plan would need a Backspace run and
+    /// [`PlanOpts::can_backspace`] is false, this returns
+    /// [`Plan::declined`] — no actions at all, not a half-plan that types the
+    /// new text on top of the old. The sink cannot release the push-to-talk
+    /// modifier the user is still holding, so every press would arrive as
+    /// Ctrl/⌥+Backspace, i.e. delete-word (#77). Deciding that here rather than
+    /// in each caller is the point: a planner that will not emit an unsafe
+    /// action cannot be forgotten by a future caller.
     pub fn replace(old: &str, new: &str, opts: PlanOpts) -> Self {
         let shared = common_cluster_prefix(old, new);
         let doomed = &old[shared..];
@@ -166,14 +238,39 @@ impl Plan {
         }
         let mut actions = Vec::new();
         if backspaces == 0 && fresh.is_empty() {
-            return Self { actions };
+            return Self {
+                actions,
+                declined: false,
+            };
+        }
+        if backspaces > 0 && !opts.can_backspace {
+            return Self::declined();
         }
         actions.push(Action::LiftModifiers);
         if backspaces > 0 {
             actions.push(Action::Backspace(backspaces));
         }
         push_insert(&mut actions, fresh, opts);
-        Self { actions }
+        Self {
+            actions,
+            declined: false,
+        }
+    }
+
+    /// The refusal: a plan that sends nothing because it could not be made
+    /// safe. Distinct from an empty plan, which means there was nothing to do.
+    fn declined() -> Self {
+        Self {
+            actions: Vec::new(),
+            declined: true,
+        }
+    }
+
+    /// True when this plan sends nothing *because it refused to*. A caller that
+    /// only checks [`Plan::is_empty`] would mistake a refusal for success and
+    /// carry on as if the screen had been corrected.
+    pub fn is_declined(&self) -> bool {
+        self.declined
     }
 
     /// The events that put `text` at the cursor with nothing to take back.
@@ -190,12 +287,22 @@ impl Plan {
     /// deletes whole words. The typing path is also the hot one — a lift costs
     /// two synchronous X round-trips, on every streaming pass — and its callers
     /// already lift explicitly via `Injector::lift_key` at the point where they
-    /// know the push-to-talk key is still down. Changing that belongs with the
-    /// streaming work, not here.
+    /// know the push-to-talk key is still down.
+    ///
+    /// It also never declines. #50 asked whether the append path carries the
+    /// same Wayland exposure as the replace path, and the answer is: the same
+    /// *hazard*, a different *cost*. A type run under a held modifier turns
+    /// characters into shortcuts and loses them; a backspace run under one
+    /// deletes words the user wrote. Refusing to type would take live
+    /// streaming away from every Wayland user to avoid a failure they already
+    /// live with, so the refusal is confined to the destructive path.
     pub fn type_text(text: &str, opts: PlanOpts) -> Self {
         let mut actions = Vec::new();
         push_insert(&mut actions, text, opts);
-        Self { actions }
+        Self {
+            actions,
+            declined: false,
+        }
     }
 
     pub fn actions(&self) -> &[Action] {
@@ -206,18 +313,60 @@ impl Plan {
         self.actions.is_empty()
     }
 
-    /// Send the plan. Stops at the first failure: a half-applied replace is
-    /// bad, but carrying on after the backspaces failed would be worse.
+    /// Send the plan. Stops at the first failure: carrying on after the
+    /// backspaces failed would be worse than stopping.
+    ///
+    /// # Putting text back
+    ///
+    /// Stopping is right for a failure *before* anything was deleted, and
+    /// wrong for one after. If the Backspace run lands and the insert then
+    /// fails, the user is looking at a hole where their sentence was, and the
+    /// error alone does not tell the caller that — so this makes one attempt to
+    /// type the text back before returning the original error.
+    ///
+    /// The retry is `send_text`, never `send_paste`, because the most likely
+    /// way an insert fails is the clipboard being unavailable, and re-trying
+    /// the thing that just failed is not a recovery. Its own result is
+    /// deliberately discarded: it is a best effort at limiting damage, and the
+    /// caller still has to hear about the failure that started it.
+    ///
+    /// Nothing is deleted on the pre-#50 paths, so this whole case is new with
+    /// the streaming replace.
     pub fn run(&self, keyboard: &mut dyn KeyboardSink) -> Result<()> {
+        let mut deleted = false;
         for action in &self.actions {
-            match action {
-                Action::LiftModifiers => keyboard.lift_modifiers()?,
-                Action::Backspace(n) => keyboard.send_backspaces(*n)?,
-                Action::Type(text) => keyboard.send_text(text)?,
-                Action::Paste(text) => keyboard.send_paste(text)?,
+            let sent = match action {
+                Action::LiftModifiers => keyboard.lift_modifiers(),
+                Action::Backspace(n) => keyboard.send_backspaces(*n),
+                Action::Type(text) => keyboard.send_text(text),
+                Action::Paste(text) => keyboard.send_paste(text),
+            };
+            if let Err(e) = sent {
+                if deleted {
+                    if let Some(text) = self.inserted_text() {
+                        log::warn!(
+                            "an insert failed after {} chars had been deleted; \
+                             typing them back",
+                            text.chars().count()
+                        );
+                        let _ = keyboard.send_text(text);
+                    }
+                }
+                return Err(e);
+            }
+            if matches!(action, Action::Backspace(_)) {
+                deleted = true;
             }
         }
         Ok(())
+    }
+
+    /// The text this plan inserts, if any. One action at most ever inserts.
+    fn inserted_text(&self) -> Option<&str> {
+        self.actions.iter().find_map(|a| match a {
+            Action::Type(t) | Action::Paste(t) => Some(t.as_str()),
+            _ => None,
+        })
     }
 
     /// Replay the plan against a model text field: one Backspace removes one
@@ -268,6 +417,57 @@ impl Plan {
 /// recording wrongly means it deletes the user's writing.
 pub fn should_record(sent_ok: bool, secure_before: bool, secure_after: bool) -> bool {
     sent_ok && !secure_before && !secure_after
+}
+
+/// The whole of `Injector::replace_last`, for any sink and any record.
+///
+/// Lives here rather than in the platform layer because every branch of it is a
+/// decision, and decisions in this crate are testable ones: `Injector` needs a
+/// display server to construct, so a refusal written there could only ever be
+/// checked by reading it. Three of the four branches below — the Secure Input
+/// refusal, the decline, and dropping the record after a failed send — are
+/// exactly the kind of guard that survives a mutation run when it is stranded
+/// on an untestable type.
+///
+/// `secure` is [`crate::secure_input_active`] sampled by the caller.
+pub fn replace_recorded(
+    keyboard: &mut dyn KeyboardSink,
+    typed: &mut Typed,
+    n_chars: usize,
+    new_text: &str,
+    secure: bool,
+) -> Result<()> {
+    if secure {
+        // Dropping the record here is not just caution about this call. Secure
+        // Input drops synthetic keystrokes silently, so any earlier send may
+        // have reported success while nothing reached the screen — the record
+        // could already describe text that does not exist, and backspacing
+        // against it would eat the user's.
+        typed.forget();
+        anyhow::bail!(
+            "secure input is enabled (a password field has focus); \
+             refusing to replace text"
+        );
+    }
+    let opts = PlanOpts::from_capabilities(keyboard.capabilities());
+    let plan = typed.plan_replace(n_chars, new_text, opts);
+    if plan.is_declined() {
+        // Not a failure to send: a refusal to plan. The record still describes
+        // the screen, so leave it alone and let the caller pick a path that
+        // does not delete.
+        anyhow::bail!(
+            "cannot take back typed text on this display server: a modifier you are \
+             still holding cannot be released, so Backspace would delete whole words"
+        );
+    }
+    if plan.is_empty() {
+        return Ok(());
+    }
+    if let Err(e) = plan.run(keyboard) {
+        typed.forget();
+        return Err(e).context("replacing typed text");
+    }
+    Ok(())
 }
 
 /// Append the one action that inserts `text`, if there is any text. The single
@@ -398,6 +598,11 @@ impl Typed {
     /// the swept-in characters are retyped ahead of `new_text` — the keyboard
     /// has no way to delete half a cluster, so the only honest options are to
     /// widen or to refuse, and widening keeps the visible result exact.
+    ///
+    /// A plan the sink refused ([`Plan::is_declined`]) leaves the record
+    /// untouched, which falls out of replaying it rather than being a special
+    /// case: a plan with no actions changes no text, so the screen still reads
+    /// what it read before.
     pub fn plan_replace(&mut self, n_chars: usize, new_text: &str, opts: PlanOpts) -> Plan {
         // One clamp, not two: `char_index_from_end` saturates at the start of
         // the record, which is the only thing standing between an over-large
@@ -433,7 +638,24 @@ mod tests {
     }
 
     fn pasting() -> PlanOpts {
-        PlanOpts::from_capabilities(Capabilities { paste: true })
+        PlanOpts::from_capabilities(Capabilities {
+            paste: true,
+            can_lift_modifiers: true,
+        })
+    }
+
+    /// A sink that cannot release a held modifier: Wayland.
+    fn no_lift() -> PlanOpts {
+        PlanOpts::from_capabilities(Capabilities::NO_LIFT)
+    }
+
+    /// Build a plan out of raw actions, for the few tests that need to assert
+    /// what `run` does with events the planner would not have emitted.
+    fn raw(actions: Vec<Action>) -> Plan {
+        Plan {
+            actions,
+            declined: false,
+        }
     }
 
     fn plan(old: &str, new: &str) -> Vec<Action> {
@@ -664,9 +886,229 @@ mod tests {
             None
         );
         assert_eq!(
-            PlanOpts::from_capabilities(Capabilities { paste: true }).paste_threshold,
+            PlanOpts::from_capabilities(Capabilities {
+                paste: true,
+                can_lift_modifiers: true
+            })
+            .paste_threshold,
             Some(PASTE_THRESHOLD)
         );
+    }
+
+    // --- refusing to backspace into a held modifier (#77) --------------------
+
+    #[test]
+    fn capabilities_decide_whether_a_backspace_run_is_reachable() {
+        assert!(PlanOpts::from_capabilities(Capabilities::TYPING_ONLY).can_backspace);
+        assert!(!PlanOpts::from_capabilities(Capabilities::NO_LIFT).can_backspace);
+        // The trait default is the restricted one: a backend that never says
+        // what it can do loses `replace_last`, rather than losing the user's
+        // text. Asserted through a sink that overrides nothing.
+        struct Silent;
+        impl KeyboardSink for Silent {
+            fn lift_modifiers(&mut self) -> Result<()> {
+                Ok(())
+            }
+            fn send_backspaces(&mut self, _: usize) -> Result<()> {
+                Ok(())
+            }
+            fn send_text(&mut self, _: &str) -> Result<()> {
+                Ok(())
+            }
+        }
+        assert!(!Silent.capabilities().can_lift_modifiers);
+    }
+
+    #[test]
+    fn a_sink_that_cannot_lift_gets_no_backspace_run() {
+        // The #77 hazard in one line: on Wayland `lift_modifiers` reports
+        // success having lifted nothing, so these five presses would arrive as
+        // Ctrl+Backspace — delete-word — into the user's own sentence.
+        let plan = Plan::replace("hello world", "hello there", no_lift());
+        assert_eq!(plan.actions(), []);
+        assert!(plan.is_declined());
+        // And it declines outright rather than typing the new text on top of
+        // the old, which would read "hello worldthere".
+        assert_eq!(plan.simulate("hello world"), "hello world");
+    }
+
+    #[test]
+    fn a_sink_that_cannot_lift_still_appends() {
+        // Only the destructive half is refused. Pure appends are the streaming
+        // hot path and carry a different, lesser hazard — see `type_text`.
+        let plan = Plan::replace("hello", "hello world", no_lift());
+        assert_eq!(plan.actions(), [Action::LiftModifiers, typed(" world")]);
+        assert!(!plan.is_declined());
+        assert_eq!(plan.simulate("hello"), "hello world");
+
+        // Typing never declines, whatever the sink can do.
+        assert!(!Plan::type_text("hello", no_lift()).is_declined());
+        assert_eq!(
+            Plan::type_text("hello", no_lift()).actions(),
+            [typed("hello")]
+        );
+    }
+
+    #[test]
+    fn nothing_to_do_is_not_a_refusal() {
+        // Two empty plans that mean opposite things. `replace_last` reports one
+        // as success and the other as an error, so they must stay tellable
+        // apart.
+        let nothing = Plan::replace("same", "same", no_lift());
+        assert!(nothing.is_empty() && !nothing.is_declined());
+        let refused = Plan::replace("same", "different", no_lift());
+        assert!(refused.is_empty() && refused.is_declined());
+    }
+
+    #[test]
+    fn no_pair_at_all_can_produce_a_backspace_without_a_lift() {
+        // The guarantee stated over the whole torture corpus rather than over
+        // the handful of pairs above: there is no old/new that slips a
+        // Backspace past a sink that cannot lift.
+        let mut rng = Rng(0x5EED_1234_ABCD_0003);
+        let mut refusals = 0;
+        for i in 0..4_000 {
+            let old = rng.text(8);
+            let new = rng.text(8);
+            let plan = Plan::replace(&old, &new, no_lift());
+            assert!(
+                !plan
+                    .actions()
+                    .iter()
+                    .any(|a| matches!(a, Action::Backspace(_))),
+                "iteration {i}: backspace planned for a sink that cannot lift. \
+                 old={old:?} new={new:?} plan={:?}",
+                plan.actions()
+            );
+            // A refusal must send nothing at all, not a partial replace.
+            if plan.is_declined() {
+                refusals += 1;
+                assert_eq!(plan.actions(), [], "iteration {i}: half a replace");
+            } else {
+                // Anything it *did* plan has to be the honest answer, i.e. the
+                // same one a lifting sink would have got.
+                assert_eq!(
+                    plan.simulate(&old),
+                    Plan::replace(&old, &new, typing()).simulate(&old),
+                    "iteration {i}: appended a different result. old={old:?} new={new:?}"
+                );
+            }
+        }
+        assert!(refusals > 0, "the generator stopped producing deletions");
+    }
+
+    #[test]
+    fn a_backend_reports_exactly_what_its_lift_can_do() {
+        // #77's Done-when is "`can_lift_modifiers` exists and is honest per
+        // backend". `Injector` needs a display server, so the honesty lives in
+        // this mapping and the method is one call with nothing left to get
+        // wrong. Reverting it to a constant has to delete this test too.
+        assert!(capabilities_for(true).can_lift_modifiers);
+        assert!(!capabilities_for(false).can_lift_modifiers);
+        assert_eq!(capabilities_for(true), Capabilities::TYPING_ONLY);
+        assert_eq!(capabilities_for(false), Capabilities::NO_LIFT);
+        // No backend in the tree can paste, whatever else it can do (#68).
+        for can_lift in [true, false] {
+            assert!(!capabilities_for(can_lift).paste);
+        }
+        // And the mapping is what drives the planner, end to end.
+        assert!(!PlanOpts::from_capabilities(capabilities_for(false)).can_backspace);
+        assert!(Plan::replace(
+            "hello world",
+            "hello there",
+            PlanOpts::from_capabilities(capabilities_for(false))
+        )
+        .is_declined());
+    }
+
+    // --- the policy `replace_last` applies -----------------------------------
+
+    #[test]
+    fn a_replace_refuses_outright_under_secure_input() {
+        let mut keyboard = FakeKeyboard::default();
+        let mut record = Typed::new();
+        record.record("hello world");
+        let err = replace_recorded(&mut keyboard, &mut record, 5, "there", true).unwrap_err();
+        assert!(err.to_string().contains("secure input"));
+        assert_eq!(keyboard.log, Vec::<String>::new(), "sent something anyway");
+        // The record is dropped, not kept: under Secure Input an *earlier* send
+        // may have reported success while nothing reached the screen.
+        assert_eq!(record.known(), "");
+    }
+
+    #[test]
+    fn a_replace_reports_a_refusal_rather_than_silently_doing_nothing() {
+        // Without this the caller cannot tell "corrected" from "declined", and
+        // #50 would believe the screen had been fixed when it had not.
+        let mut keyboard = FakeKeyboard {
+            caps: Capabilities::NO_LIFT,
+            ..FakeKeyboard::default()
+        };
+        let mut record = Typed::new();
+        record.record("hello world");
+        let err = replace_recorded(&mut keyboard, &mut record, 5, "there", false).unwrap_err();
+        assert!(err.to_string().contains("cannot take back typed text"));
+        assert_eq!(keyboard.log, Vec::<String>::new());
+        assert_eq!(record.known(), "hello world", "the screen did not change");
+    }
+
+    #[test]
+    fn a_replace_that_has_nothing_to_do_is_a_success() {
+        let mut keyboard = FakeKeyboard {
+            caps: Capabilities::NO_LIFT,
+            ..FakeKeyboard::default()
+        };
+        let mut record = Typed::new();
+        record.record("same");
+        assert!(replace_recorded(&mut keyboard, &mut record, 4, "same", false).is_ok());
+        assert_eq!(keyboard.log, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_replace_sends_and_records_when_everything_works() {
+        let mut keyboard = FakeKeyboard {
+            caps: Capabilities::TYPING_ONLY,
+            screen: "hello world".into(),
+            ..FakeKeyboard::default()
+        };
+        let mut record = Typed::new();
+        record.record("hello world");
+        replace_recorded(&mut keyboard, &mut record, 5, "there", false).unwrap();
+        assert_eq!(keyboard.screen, "hello there");
+        assert_eq!(record.known(), "hello there");
+    }
+
+    #[test]
+    fn a_failed_replace_drops_the_record() {
+        // The screen is now unknown, so the next replace must type rather than
+        // delete. Keeping the record would count presses against a fiction.
+        let mut keyboard = FakeKeyboard {
+            caps: Capabilities::TYPING_ONLY,
+            fail_text: true,
+            screen: "hello world".into(),
+            ..FakeKeyboard::default()
+        };
+        let mut record = Typed::new();
+        record.record("hello world");
+        assert!(replace_recorded(&mut keyboard, &mut record, 5, "there", false).is_err());
+        assert_eq!(record.known(), "");
+    }
+
+    #[test]
+    fn a_refused_replace_leaves_the_record_describing_the_screen() {
+        // Nothing was sent, so the record must still say what is on screen. If
+        // it were updated to the text we wanted, the *next* replace would be
+        // counted against a screen that never existed.
+        let mut typed_record = Typed::new();
+        typed_record.record("hello world");
+        let plan = typed_record.plan_replace(5, "there", no_lift());
+        assert!(plan.is_declined());
+        assert_eq!(typed_record.known(), "hello world");
+
+        // And an append through the same record still works and is recorded.
+        let plan = typed_record.plan_replace(0, "!", no_lift());
+        assert!(!plan.is_declined());
+        assert_eq!(typed_record.known(), "hello world!");
     }
 
     // --- resolving a char count against what we typed ------------------------
@@ -847,6 +1289,10 @@ mod tests {
         screen: String,
         caps: Capabilities,
         fail_paste: bool,
+        fail_text: bool,
+        /// Counts `send_text` calls including the recovery one, so a test can
+        /// tell "typed the text back" from "never tried".
+        text_attempts: usize,
         log: Vec<String>,
     }
 
@@ -893,6 +1339,10 @@ mod tests {
                 "text sent with {:?} still held",
                 self.latched
             );
+            self.text_attempts += 1;
+            if self.fail_text {
+                anyhow::bail!("keyboard gone");
+            }
             self.screen.push_str(text);
             self.log.push(format!("type {text}"));
             Ok(())
@@ -930,9 +1380,7 @@ mod tests {
         // Same events with the lift removed: the fake keyboard must object, or
         // the test above proves nothing.
         let mut keyboard = FakeKeyboard::holding(&["ctrl"]);
-        let bare = Plan {
-            actions: vec![Action::Backspace(1)],
-        };
+        let bare = raw(vec![Action::Backspace(1)]);
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             bare.run(&mut keyboard).unwrap();
         }))
@@ -942,7 +1390,10 @@ mod tests {
     #[test]
     fn every_plan_lifts_before_it_sends_anything() {
         let mut keyboard = FakeKeyboard::holding(&["shift"]);
-        keyboard.caps = Capabilities { paste: true };
+        keyboard.caps = Capabilities {
+            paste: true,
+            can_lift_modifiers: true,
+        };
         keyboard.screen = "a".repeat(300);
         Plan::replace(&"a".repeat(300), &"b".repeat(300), pasting())
             .run(&mut keyboard)
@@ -969,9 +1420,7 @@ mod tests {
                 Ok(())
             }
         }
-        let plan = Plan {
-            actions: vec![Action::Paste("x".into())],
-        };
+        let plan = raw(vec![Action::Paste("x".into())]);
         let err = plan.run(&mut Bare).unwrap_err();
         assert!(err.to_string().contains("pasteboard"));
     }
@@ -979,19 +1428,67 @@ mod tests {
     #[test]
     fn a_backend_failure_stops_the_plan() {
         let mut keyboard = FakeKeyboard {
-            caps: Capabilities { paste: true },
+            caps: Capabilities {
+                paste: true,
+                can_lift_modifiers: true,
+            },
             fail_paste: true,
             ..FakeKeyboard::default()
         };
         keyboard.screen = "old".into();
-        let err = Plan::replace("old", &"n".repeat(300), pasting())
+        let new = "n".repeat(300);
+        let err = Plan::replace("old", &new, pasting())
             .run(&mut keyboard)
             .unwrap_err();
         assert!(err.to_string().contains("clipboard unavailable"));
-        // The backspaces landed and the paste did not: the caller has to treat
-        // the screen as unknown, which is why `Injector::replace_last` clears
-        // its record on any error.
-        assert_eq!(keyboard.screen, "");
+        // The backspaces landed and the paste did not. Leaving it there would
+        // hand the user a hole where their sentence was, so the text is typed
+        // back — the caller still gets the error and still drops its record.
+        assert_eq!(keyboard.screen, new, "deleted text was not put back");
+        assert_eq!(keyboard.log.first().map(String::as_str), Some("lift"));
+        assert_eq!(keyboard.log[1], "bs 3");
+        assert!(
+            keyboard.log.last().unwrap().starts_with("type"),
+            "the recovery should type, never re-try the paste that just failed: {:?}",
+            keyboard.log
+        );
+    }
+
+    #[test]
+    fn a_failed_insert_after_a_deletion_types_the_text_back() {
+        // The new failure class this PR introduces: before #50 nothing was ever
+        // deleted, so an injection failure could only ever lose text that was
+        // never on screen. Now it can leave a hole.
+        let mut keyboard = FakeKeyboard {
+            fail_text: true,
+            screen: "hello world".into(),
+            ..FakeKeyboard::default()
+        };
+        let err = Plan::replace("hello world", "hello there", typing())
+            .run(&mut keyboard)
+            .unwrap_err();
+        assert!(err.to_string().contains("keyboard gone"));
+        // Two send_text attempts: the plan's, and the recovery.
+        assert_eq!(keyboard.text_attempts, 2);
+    }
+
+    #[test]
+    fn nothing_is_typed_back_when_nothing_was_deleted() {
+        // A pure append that fails must not retry — there is no hole, and a
+        // blind retry would risk typing the text twice.
+        let mut keyboard = FakeKeyboard {
+            fail_text: true,
+            screen: "hello".into(),
+            ..FakeKeyboard::default()
+        };
+        let err = Plan::replace("hello", "hello world", typing())
+            .run(&mut keyboard)
+            .unwrap_err();
+        assert!(err.to_string().contains("keyboard gone"));
+        assert_eq!(
+            keyboard.text_attempts, 1,
+            "retried a plan that deleted nothing"
+        );
     }
 
     // --- the round trip ------------------------------------------------------
