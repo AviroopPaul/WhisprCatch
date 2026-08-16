@@ -65,9 +65,12 @@ code.
 
 Captures for the README and the landing page are produced by the app itself, never
 mocked up: `WC_SHOT=<path>` saves the window to PNG, `WC_WIZARD_STEP=<step>` opens the
-wizard on a given step, and **`WC_DEMO_HISTORY=1` must be set** so the history pane
-shows sample transcripts instead of whatever the person capturing has dictated. Full
-detail in `docs/DESIGN.md` §B7. Published to `docs/screenshots/` and `site/assets/`.
+wizard on a given step, `WC_WINDOW=<w>x<h>` / `WC_SCROLL=<points>` frame a section that
+is off screen at the default size, and **`WC_DEMO_HISTORY=1` must be set** so the
+history pane shows sample transcripts instead of whatever the person capturing has
+dictated. Run captures against a throwaway `HOME` so no real config, history or rule
+file can end up in a published PNG. Full detail in `docs/DESIGN.md` §B7. Published to
+`docs/screenshots/` and `site/assets/`.
 
 ## Deploy & release
 
