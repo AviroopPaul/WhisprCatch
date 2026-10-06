@@ -14,6 +14,7 @@ ksni = { version = "0.3", default-features = false, features = ["blocking", "asy
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = "0.24"
+image = { version = "0.25", default-features = false, features = ["png"] }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder", "NSRunningApplication"] }
 objc2-foundation = "0.3"

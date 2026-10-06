@@ -21,12 +21,29 @@ WhisprCatch needs three macOS privacy grants, all requested on first run:
 | **Input Monitoring** | see the push-to-talk key globally | Privacy › Input Monitoring |
 | **Microphone** | capture speech while the key is held | Privacy › Microphone |
 
-The first-run wizard opens these panes and shows the system Accessibility prompt.
-It never blocks on them: macOS caches a TCC grant **per process**, so a
-permission the user just granted still reads as denied until the app restarts.
-Gating setup on that check traps the user in the wizard forever — hence the
-"Continue — I'll grant these later" escape and the Settings › Permissions card.
-`whisper-catch doctor` prints the live status of each grant.
+The first-run checklist (`apps/cli/src/permissions.rs`, also Settings ›
+Permissions) asks for the Microphone directly, and for Accessibility and Input
+Monitoring registers the app with the system, opens the pane and floats a drag
+helper under System Settings: drag the icon into the list and it is added and
+switched on. When the hotkey is fn it also offers "Press fn key to: Do Nothing".
+
+It never blocks on these checks: macOS caches a TCC grant **per process**, so a
+permission the user just granted can read as denied until the app restarts.
+Gating setup on that check traps the user in the wizard forever. Instead the
+wizard relaunches the app when it finishes, and Settings › Permissions has a
+Restart button. `whisper-catch doctor` prints the live status of each grant.
+
+## Local builds
+
+```sh
+packaging/macos/build-local-app.sh      # → dist-local/WhisprCatch Local.app
+```
+
+A side-by-side build with its own bundle id (`com.whisprcatch.app.local`), so its
+grants never collide with an installed release. It is signed with the release
+certificate when `SIGN_P12_PASSWORD` is set, and otherwise with a local-only
+certificate made once at `~/.whisprcatch/signing/local-dev.p12`. Never ad-hoc
+(unless `ADHOC=1`): an ad-hoc local build loses all three grants on every rebuild.
 
 ## Signing
 

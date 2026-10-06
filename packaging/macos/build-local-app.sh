@@ -15,8 +15,12 @@
 #   * RUST_LOG baked in via LSEnvironment, so a GUI launch still logs
 #   * lives in dist-local/, never packaged into a dmg
 #
-# It IS signed with the same certificate as the release, so its permission
-# grants survive rebuilds the same way (see make-signing-cert.sh).
+# It is signed with a certificate, never ad-hoc, so its permission grants
+# survive rebuilds (see make-signing-cert.sh): the release certificate when
+# SIGN_P12_PASSWORD is set, otherwise a local-only one created on first run in
+# ~/.whisprcatch/signing/local-dev.p12. ADHOC=1 forces the old behaviour.
+#
+# Install it like any app:  ditto "dist-local/WhisprCatch Local.app" "/Applications/WhisprCatch Local.app"
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -42,9 +46,19 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/whisper-catch"
 chmod +x "$APP/Contents/MacOS/whisper-catch"
 
-if [ -f dist/AppIcon.icns ]; then
-  cp dist/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-fi
+# Render the icon from the PNG in the repo, like build-dmg.sh, rather than
+# reusing whatever dist/ holds from an older dmg build (or nothing, on a fresh
+# checkout, which left the local app with a generic icon).
+echo "==> Rendering AppIcon.icns"
+ICONSET="$(mktemp -d)/AppIcon.iconset"
+mkdir -p "$ICONSET"
+gen() { sips -z "$1" "$1" assets/icon-512.png --out "$ICONSET/$2" >/dev/null; }
+gen 16 icon_16x16.png;    gen 32 icon_16x16@2x.png
+gen 32 icon_32x32.png;    gen 64 icon_32x32@2x.png
+gen 128 icon_128x128.png; gen 256 icon_128x128@2x.png
+gen 256 icon_256x256.png; gen 512 icon_256x256@2x.png
+gen 512 icon_512x512.png; cp assets/icon-512.png "$ICONSET/icon_512x512@2x.png"
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -84,8 +98,40 @@ cleanup_keychain() {
 }
 trap cleanup_keychain EXIT
 
+# Without the release password, sign with a local-only certificate instead of
+# ad-hoc. Ad-hoc pins the designated requirement to the cdhash, so every
+# rebuild looked like a new app to macOS and silently dropped all three
+# permission grants; that is what made local testing feel buggy. The local cert
+# is made once, lives beside the release one, and never ships anywhere.
+LOCAL_P12="$HOME/.whisprcatch/signing/local-dev.p12"
+LOCAL_PW_FILE="$HOME/.whisprcatch/signing/local-dev.password"
+if [ -z "${SIGN_P12_PASSWORD:-}" ] && [ -z "${ADHOC:-}" ]; then
+  if [ ! -f "$LOCAL_P12" ]; then
+    echo "==> Creating a local-only signing certificate (once): $LOCAL_P12"
+    mkdir -p "$(dirname "$LOCAL_P12")"; chmod 700 "$(dirname "$LOCAL_P12")"
+    T="$(mktemp -d)"
+    openssl rand -hex 24 > "$LOCAL_PW_FILE"; chmod 600 "$LOCAL_PW_FILE"
+    # /usr/bin/openssl (LibreSSL) writes a .p12 `security import` accepts;
+    # OpenSSL 3+ defaults to a format it rejects.
+    /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes \
+      -keyout "$T/key.pem" -out "$T/cert.pem" -days 3650 \
+      -subj "/CN=WhisprCatch Local Dev/O=WhisprCatch" \
+      -addext "basicConstraints=critical,CA:false" \
+      -addext "keyUsage=critical,digitalSignature" \
+      -addext "extendedKeyUsage=critical,codeSigning" 2>/dev/null
+    /usr/bin/openssl pkcs12 -export -out "$LOCAL_P12" -inkey "$T/key.pem" \
+      -in "$T/cert.pem" -passout "pass:$(cat "$LOCAL_PW_FILE")" \
+      -name "WhisprCatch Local Dev" 2>/dev/null
+    chmod 600 "$LOCAL_P12"
+    rm -rf "$T"
+  fi
+  SIGN_P12="$LOCAL_P12"
+  SIGN_P12_PASSWORD="$(cat "$LOCAL_PW_FILE")"
+  SIGN_LABEL="the local dev certificate"
+fi
+
 if [ -f "$SIGN_P12" ] && [ -n "${SIGN_P12_PASSWORD:-}" ]; then
-  echo "==> Signing with the release certificate"
+  echo "==> Signing with ${SIGN_LABEL:-the release certificate}"
   KEYCHAIN_DIR="$(mktemp -d)"
   KEYCHAIN="$KEYCHAIN_DIR/whisprcatch-local.keychain-db"
   KC_PASS="$(openssl rand -hex 24)"
@@ -106,7 +152,7 @@ if [ -f "$SIGN_P12" ] && [ -n "${SIGN_P12_PASSWORD:-}" ]; then
   codesign --force --options runtime --entitlements "$ENTITLEMENTS" \
     --keychain "$KEYCHAIN" --sign "$SIGN_ID" "$APP"
 else
-  echo "==> Signing ad-hoc (set SIGN_P12_PASSWORD to use the release cert)"
+  echo "==> Signing ad-hoc (ADHOC=1)"
   echo "    note: ad-hoc means macOS will drop this app's permissions on every rebuild"
   codesign --force --entitlements "$ENTITLEMENTS" --sign - "$APP/Contents/MacOS/whisper-catch"
   codesign --force --entitlements "$ENTITLEMENTS" --sign - "$APP"

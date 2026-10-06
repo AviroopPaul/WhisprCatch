@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// PTT key: rctrl, lctrl, ralt, lalt, super, f13, scrolllock
+    /// PTT key: fn, rcmd, lcmd, rctrl, lctrl, ralt, lalt, super, f13, scrolllock
     pub key: String,
     /// Speech model: "parakeet" (accurate) or "moonshine" (light, low RAM)
     pub model: String,
@@ -31,9 +31,10 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            // Right Alt is a low-conflict PTT key on Linux; on macOS Right Alt
-            // is a dead key for accents, so default to Right Command there.
-            key: if cfg!(target_os = "macos") { "rcmd" } else { "ralt" }.into(),
+            // macOS: fn, the key Mac dictation tools have trained people to
+            // hold (it needs "Press fn to: Do Nothing", which setup offers).
+            // Linux: Right Alt, because most laptops never report fn there.
+            key: if cfg!(target_os = "macos") { "fn" } else { "ralt" }.into(),
             // macOS floor device is an 8 GB M1 Air — default to the light model;
             // Linux defaults to the more accurate Parakeet.
             model: if cfg!(target_os = "macos") { "moonshine" } else { "parakeet" }.into(),
@@ -47,9 +48,10 @@ impl Default for Config {
 }
 
 /// PTT keys offered in Settings, with display names. Platform-aware: macOS
-/// leads with the Command keys (Right Alt is a dead key there).
+/// leads with fn, then the Command keys (Right Alt is a dead key there).
 pub const KEYS: &[(&str, &str)] = if cfg!(target_os = "macos") {
     &[
+        ("fn", "fn"),
         ("rcmd", "Right ⌘"),
         ("lcmd", "Left ⌘"),
         ("ralt", "Right Option"),
@@ -75,6 +77,7 @@ pub fn key_label(key: &str) -> &str {
     KEYS.iter()
         .chain(
             [
+                ("fn", "fn"),
                 ("rcmd", "Right ⌘"),
                 ("lcmd", "Left ⌘"),
                 ("super", "Super / Win"),
@@ -155,6 +158,18 @@ overlay = true
         assert_eq!(cfg.key, "rctrl");
         assert_eq!(cfg.model, Config::default().model);
         assert!(wc_text::Polish::from_config(&cfg.polish).is_empty());
+    }
+
+    /// fn is the macOS default and must be offered first in Settings; a
+    /// default the picker cannot show reads as a blank dropdown.
+    #[test]
+    fn the_default_key_is_offered_first() {
+        let def = Config::default();
+        assert_eq!(KEYS[0].0, def.key);
+        if cfg!(target_os = "macos") {
+            assert_eq!(def.key, "fn");
+            assert_eq!(key_label("fn"), "fn");
+        }
     }
 
     #[test]

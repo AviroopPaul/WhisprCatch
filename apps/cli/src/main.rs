@@ -1,6 +1,7 @@
 mod autostart;
 mod config;
 mod overlay;
+mod permissions;
 mod settings_app;
 mod shot;
 mod stream;
@@ -67,13 +68,17 @@ enum Cmd {
     },
     /// Open the settings & history window
     Settings {
-        /// Tab to open: history (default) or settings
+        /// Tab to open: home (default), history, cleanup, settings, permissions or about
         #[arg(long)]
         tab: Option<String>,
     },
     /// Internal: floating recording indicator (spawned by the daemon)
     #[command(hide = true)]
     Overlay,
+    /// Internal: the drag-to-grant panel shown beside System Settings
+    /// (macOS), for `accessibility` or `input-monitoring`
+    #[command(hide = true)]
+    DragHelper { pane: String },
     /// Internal: run the first-run setup wizard on its own (design + QA)
     #[command(hide = true)]
     Wizard,
@@ -109,6 +114,7 @@ fn main() -> Result<()> {
     match &cmd {
         Cmd::Settings { tab } => return settings_app::run(tab.clone()),
         Cmd::Overlay => return overlay::run(),
+        Cmd::DragHelper { pane } => return permissions::drag_helper(pane),
         Cmd::Wizard => {
             let model_id = wc_models::ModelId::parse(&cfg.model);
             wizard::run(model_id, config::key_label(&cfg.key))?;
@@ -180,13 +186,29 @@ fn main() -> Result<()> {
             if gui_session() {
                 match wizard::run(model_id, config::key_label(&cfg.key))? {
                     wizard::Outcome::Ready => {}
-                    wizard::Outcome::Cancelled => return Ok(()),
+                    wizard::Outcome::Cancelled | wizard::Outcome::Relaunching => return Ok(()),
                 }
             } else if !wc_hotkey::keyboard_accessible() {
                 anyhow::bail!(
                     "no access to input devices. Run 'sudo usermod -aG input $USER' \
                      and re-login, or launch whisper-catch from your app menu to set up graphically"
                 );
+            }
+        }
+        // The wizard only runs while the model is missing, so a reinstall, a
+        // re-signed build or a revoked grant used to start a daemon whose
+        // hotkey silently did nothing. A fresh process reads TCC truthfully,
+        // so if a grant is missing now, open Settings › Permissions beside the
+        // daemon. It guides; it never blocks.
+        #[cfg(target_os = "macos")]
+        if gui_session()
+            && (!wc_hotkey::keyboard_accessible() || !wc_hotkey::input_monitoring_granted())
+        {
+            log::warn!("a macOS permission is missing; opening Settings > Permissions");
+            if let Ok(exe) = std::env::current_exe() {
+                let _ = std::process::Command::new(exe)
+                    .args(["settings", "--tab", "permissions"])
+                    .spawn();
             }
         }
         // leak: hold the lock for the daemon's lifetime
@@ -284,6 +306,7 @@ fn main() -> Result<()> {
         }
         Cmd::Settings { .. }
         | Cmd::Overlay
+        | Cmd::DragHelper { .. }
         | Cmd::Wizard
         | Cmd::DownloadModel
         | Cmd::Doctor
@@ -397,17 +420,28 @@ fn notify(summary: &str, body: &str) {
 }
 
 /// Returns None when another daemon instance already holds the lock.
+/// Where the single-instance lock lives. It also holds the daemon's pid, so
+/// Settings › Permissions can restart the daemon after a grant.
+pub fn instance_lock_path() -> PathBuf {
+    let dir = dirs::runtime_dir().unwrap_or_else(std::env::temp_dir);
+    dir.join("whisper-catch.lock")
+}
+
 fn acquire_instance_lock() -> Option<std::fs::File> {
     use fs2::FileExt;
-    let dir = dirs::runtime_dir().unwrap_or_else(std::env::temp_dir);
-    let path = dir.join("whisper-catch.lock");
-    let f = std::fs::OpenOptions::new()
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
-        .open(&path)
+        .truncate(false)
+        .open(instance_lock_path())
         .ok()?;
     match f.try_lock_exclusive() {
-        Ok(()) => Some(f),
+        Ok(()) => {
+            let _ = f.set_len(0);
+            let _ = write!(f, "{}", std::process::id());
+            Some(f)
+        }
         Err(_) => None,
     }
 }
@@ -420,43 +454,98 @@ const MIC_IDLE_CLOSE: Duration = Duration::from_secs(10);
 /// plus inference, so keep this tight — inference is only ~0.1-0.5s.
 const STREAM_INTERVAL: Duration = Duration::from_millis(500);
 
-struct OverlayProc(std::process::Child);
+/// How often the level feed writes the mic level to the overlay while the
+/// key is held: ~30 Hz, enough for the waveform to track speech.
+const LEVEL_FEED: Duration = Duration::from_millis(33);
+
+/// The floating pill (`whisper-catch overlay`). It runs for the daemon's whole
+/// life: idle it is a small capsule at the bottom of the screen, and it
+/// expands while the key is held. One long-lived process rather than one per
+/// press, so the pill is already on screen at key-down instead of a window
+/// launch later. Protocol on its stdin, one line each: `show`, `l <rms>`,
+/// `t` (transcribing), `hide`; EOF quits it, which is also what happens when
+/// the daemon exits for any reason.
+struct OverlayProc {
+    exe: std::path::PathBuf,
+    child: Option<std::process::Child>,
+    stdin: Arc<std::sync::Mutex<Option<std::process::ChildStdin>>>,
+    /// Cleared to stop the current level feed thread.
+    feeding: Arc<std::sync::atomic::AtomicBool>,
+}
 
 impl OverlayProc {
     /// `exe` is resolved once at daemon startup: after a package upgrade
     /// replaces the binary, current_exe() of the running daemon points at
     /// "… (deleted)" and every spawn would fail.
-    fn spawn(exe: &std::path::Path) -> Option<Self> {
-        match std::process::Command::new(exe)
+    fn start(exe: &std::path::Path) -> Self {
+        let mut o = Self {
+            exe: exe.to_path_buf(),
+            child: None,
+            stdin: Arc::new(std::sync::Mutex::new(None)),
+            feeding: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        o.ensure();
+        o
+    }
+
+    /// (Re)spawns the overlay if it is not running, e.g. after a crash.
+    fn ensure(&mut self) {
+        if let Some(c) = self.child.as_mut() {
+            if matches!(c.try_wait(), Ok(None)) {
+                return;
+            }
+        }
+        match std::process::Command::new(&self.exe)
             .arg("overlay")
             .stdin(std::process::Stdio::piped())
             .spawn()
         {
-            Ok(child) => {
+            Ok(mut child) => {
                 log::info!("overlay spawned (pid {})", child.id());
-                Some(Self(child))
+                *self.stdin.lock().unwrap() = child.stdin.take();
+                self.child = Some(child);
             }
-            Err(e) => {
-                log::warn!("overlay spawn failed: {e}");
-                None
-            }
+            Err(e) => log::warn!("overlay spawn failed: {e}"),
         }
+    }
+
+    fn send(stdin: &std::sync::Mutex<Option<std::process::ChildStdin>>, line: &str) -> bool {
+        use std::io::Write;
+        let mut guard = stdin.lock().unwrap();
+        match guard.as_mut() {
+            Some(s) => writeln!(s, "{line}").and_then(|_| s.flush()).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Key down: expand the pill and stream the mic level to it.
+    fn listening(&mut self, level: Arc<std::sync::atomic::AtomicU32>) {
+        self.ensure();
+        self.feeding.store(false, Ordering::Relaxed);
+        Self::send(&self.stdin, "show");
+        let feeding = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        self.feeding = feeding.clone();
+        let stdin = self.stdin.clone();
+        std::thread::spawn(move || {
+            while feeding.load(Ordering::Relaxed) {
+                let rms = f32::from_bits(level.load(Ordering::Relaxed));
+                if !Self::send(&stdin, &format!("l {rms:.4}")) {
+                    break;
+                }
+                std::thread::sleep(LEVEL_FEED);
+            }
+        });
     }
 
     fn transcribing(&mut self) {
-        if let Some(stdin) = self.0.stdin.as_mut() {
-            use std::io::Write;
-            let _ = writeln!(stdin, "t");
-        }
+        self.feeding.store(false, Ordering::Relaxed);
+        Self::send(&self.stdin, "t");
     }
 
-    fn close(mut self) {
-        drop(self.0.stdin.take()); // EOF → overlay exits
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(2));
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        });
+    /// Back to the idle capsule.
+    fn idle(&mut self) {
+        self.feeding.store(false, Ordering::Relaxed);
+        Self::send(&self.stdin, "hide");
     }
 }
 
@@ -531,7 +620,7 @@ fn run_ptt(
     let mut capture: Option<Capture> = None;
     let mut last_use = std::time::Instant::now();
     let mut armed = false;
-    let mut overlay_proc: Option<OverlayProc> = None;
+    let mut overlay_proc: Option<OverlayProc> = cfg.overlay.then(|| OverlayProc::start(&self_exe));
 
     // rolling-transcription state for the current utterance
     let mut stream = Stream::new();
@@ -574,10 +663,28 @@ fn run_ptt(
                 last_pass = std::time::Instant::now();
                 log::info!("recording...");
                 state.recording.store(true, Ordering::Relaxed);
-                if cfg.overlay {
-                    overlay_proc = OverlayProc::spawn(&self_exe);
+                if let Some(o) = overlay_proc.as_mut() {
+                    o.listening(cap.level());
                 }
                 refresh(&tray);
+            }
+            Ok(PttEvent::Cancelled) => {
+                // fn was a modifier for another key (fn + Delete): drop the
+                // utterance, unless live typing already put words on screen,
+                // in which case let the release finish it as usual.
+                if !armed || !stream.committed().is_empty() {
+                    continue;
+                }
+                armed = false;
+                state.recording.store(false, Ordering::Relaxed);
+                if let Some(cap) = capture.as_ref() {
+                    cap.cancel();
+                }
+                if let Some(o) = overlay_proc.as_mut() {
+                    o.idle();
+                }
+                refresh(&tray);
+                log::info!("cancelled: fn was used with another key");
             }
             Ok(PttEvent::Released) => {
                 if !armed {
@@ -592,8 +699,8 @@ fn run_ptt(
                 let dur = cap.armed_secs();
                 if dur < 0.3 && stream.committed().is_empty() {
                     cap.cancel();
-                    if let Some(o) = overlay_proc.take() {
-                        o.close();
+                    if let Some(o) = overlay_proc.as_mut() {
+                        o.idle();
                     }
                     log::info!("too short ({dur:.2}s), ignored");
                     continue;
@@ -605,8 +712,8 @@ fn run_ptt(
                     Ok(s) => s,
                     Err(e) => {
                         log::error!("audio processing failed: {e:#}");
-                        if let Some(o) = overlay_proc.take() {
-                            o.close();
+                        if let Some(o) = overlay_proc.as_mut() {
+                            o.idle();
                         }
                         continue;
                     }
@@ -624,8 +731,8 @@ fn run_ptt(
                 );
                 let t0 = std::time::Instant::now();
                 let result = engine.transcribe(&samples);
-                if let Some(o) = overlay_proc.take() {
-                    o.close();
+                if let Some(o) = overlay_proc.as_mut() {
+                    o.idle();
                 }
                 match result {
                     Ok(text) if text.is_empty() && stream.committed().is_empty() => {

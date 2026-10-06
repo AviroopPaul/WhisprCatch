@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -25,7 +26,12 @@ pub struct Capture {
     _stream: cpal::Stream,
     inner: Arc<Mutex<Inner>>,
     device_rate: u32,
+    level: Arc<AtomicU32>,
 }
+
+/// RMS of one callback buffer, as the bits of an f32. Read by the overlay's
+/// level feed; written by the audio thread, so it must not take the lock.
+pub type Level = Arc<AtomicU32>;
 
 impl Capture {
     pub fn open() -> Result<Self> {
@@ -52,12 +58,18 @@ impl Capture {
             active: None,
         }));
         let cb_inner = inner.clone();
+        let level: Level = Arc::new(AtomicU32::new(0));
+        let cb_level = level.clone();
         let err_fn = |e| log::error!("audio stream error: {e}");
 
         let stream = device
             .build_input_stream(
                 &config.into(),
                 move |data: &[f32], _: &_| {
+                    let rms = (data.iter().map(|s| s * s).sum::<f32>()
+                        / data.len().max(1) as f32)
+                        .sqrt();
+                    cb_level.store(rms.to_bits(), Ordering::Relaxed);
                     let mut inner = cb_inner.lock().unwrap();
                     let mono = data
                         .chunks_exact(channels)
@@ -81,7 +93,14 @@ impl Capture {
             _stream: stream,
             inner,
             device_rate,
+            level,
         })
+    }
+
+    /// Live input level (RMS of the latest buffer), shared so a feeder thread
+    /// can sample it without touching the capture.
+    pub fn level(&self) -> Level {
+        self.level.clone()
     }
 
     /// Arms recording; the pre-roll becomes the start of the utterance.

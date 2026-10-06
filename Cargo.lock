@@ -5148,6 +5148,7 @@ name = "wc-tray"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "image",
  "ksni",
  "log",
  "objc2 0.6.4",
@@ -5325,8 +5326,10 @@ name = "whisper-catch"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "block2 0.6.2",
  "chrono",
  "clap",
+ "core-foundation 0.10.1",
  "core-graphics 0.25.0",
  "dirs",
  "eframe",
@@ -5336,6 +5339,9 @@ dependencies = [
  "image",
  "log",
  "notify-rust",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "serde",
  "serde_json",
  "signal-hook",
