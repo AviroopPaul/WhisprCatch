@@ -538,7 +538,7 @@ pub fn logo(ui: &mut egui::Ui, size: f32) -> egui::Response {
     ui.add(egui::Image::new((tex.id(), egui::vec2(size, size))))
 }
 
-fn logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
+pub fn logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
     let id = egui::Id::new("wc-logo-texture");
     if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
         return t;

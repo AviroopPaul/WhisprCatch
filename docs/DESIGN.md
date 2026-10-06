@@ -202,20 +202,48 @@ title, one-line reason, and either a **Granted** badge or the one action that fi
   it is already in the list), opens the exact pane and starts the **drag helper**: a
   borderless AppKit panel pinned under the System Settings window, holding the app icon
   to drag into the list. Dragging adds the app and switches it on. It follows the
-  Settings window, closes itself when both grants read as on, and is never shown on Linux.
+  Settings window, shows only while one is on screen, names the list that still needs
+  the app, quits once both grants are in, and is never shown on Linux. One at a time
+  (a lock file). The daemon also starts it whenever a grant is missing and System
+  Settings is open, so it is there however Settings was reached (macOS's own "receive
+  keystrokes" prompt opens Input Monitoring without our button). Closed with its ✕, it
+  stays closed until System Settings closes.
 - **fn key** (only when the hotkey is fn) — **Fix it** writes `AppleFnUsageType = 0`
   ("Press fn key to: Do Nothing"); Keyboard Settings is the fallback.
+
+When the System Settings window that a row opened closes, the checklist's window comes
+back to the front (`refocus_after_settings`). The app has no Dock icon, so macOS
+otherwise hands focus to the next regular app and buries ours. So while the main window
+or the wizard is open the process runs as a regular app (Dock icon), and the daemon drops
+back to accessory when its tray starts. Both windows also raise themselves on their
+first frame and after the Microphone prompt is answered.
 
 ### Pill overlay (`overlay.rs`)
 One long-lived process for the daemon's whole life, driven over stdin (`show`,
 `l <rms>`, `t`, `hide`). It sits bottom-centre on the display the pointer is on, 6pt
-above the Dock, on every Space and over full-screen apps, click-through, never focused.
+above the Dock, on every Space and over full-screen apps, never focused.
 
 - **Idle**: a 40×9 near-black capsule with a light grey ring, always visible, so the user
   can see dictation is one key away.
-- **Listening**: expands to 112×32; orange LED (2s pulse) and a 9-bar white waveform
-  driven by the real mic level, newest level in the centre rippling outward.
+- **Hover controls** (as Wispr Flow): under the pointer the capsule becomes a 72×32 mic
+  button, with a 32pt round gear button 6pt to its right; both near-black with a faint
+  ring, growing in over 180ms. The hovered one lightens and its icon turns `ACCENT`, and
+  a label pill sits 8pt above it: **Dictate ⟨key⟩** (key in SemiBold) or **Settings**.
+  Mic click: a hands-free dictation (a second click, or the hotkey, finishes it). Gear
+  click: the main window on its Settings page. Never a system menu.
+- **Listening**: expands to 92×30 with a centred 9-bar white waveform driven by the real
+  mic level, newest level in the centre rippling outward. No LED. Hovered, a
+  **Click to finish** label; a click finishes the dictation.
 - **Transcribing**: three orange dots pulsing in sequence.
+
+The egui window (248×96: the pill, the controls and a label) draws everything and stays
+click-through. Clicks land on one AppKit non-activating panel (`overlay::mac::Hit`)
+that never takes focus from the app being typed in, and that covers only what is
+clickable now: a 64×22 patch on the idle capsule, the mic and gear once hovered, the pill
+while listening, nothing while transcribing. It reports only enter, leave and click; the
+overlay reads the pointer every frame while it is inside to know what is hovered. A
+click that starts or finishes a dictation is written to the daemon as `toggle` on the
+overlay's stdout.
 
 ### Tray / menu bar (`crates/tray`)
 The app mark as a template image (`assets/icon-menubar.png`, from `icon-menubar.svg`),
@@ -246,7 +274,8 @@ none is reachable from normal use:
 - `WC_WIZARD_STEP=welcome|permission|download|done` opens the wizard on that step. The
   forced download step never fetches anything.
 - `WC_OVERLAY=idle|listening|transcribing` pins the pill in one state with a synthetic
-  waveform (`whisper-catch overlay`).
+  waveform (`whisper-catch overlay`); `WC_OVERLAY_HOVER=mic|gear|pill` puts the pointer
+  there (pill = the listening pill).
 - `WC_DEMO_HISTORY=1` swaps the transcript log for a fixed sample set. **Always capture
   with this on.** Two sample rows carry a `raw`, so the cleanup preview has something
   real to replay; `every_demo_row_polishes_to_the_text_beside_it` keeps them honest.

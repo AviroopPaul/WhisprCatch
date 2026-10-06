@@ -181,6 +181,12 @@ fn main() -> Result<()> {
                 return settings_app::run(None);
             }
         };
+        // Before the wizard, which runs in this process: the drag helper should
+        // appear beside System Settings however the user got there.
+        #[cfg(target_os = "macos")]
+        if gui_session() {
+            permissions::mac::watch_for_settings();
+        }
         let model_id = wc_models::ModelId::parse(&cfg.model);
         if wizard::need_setup(model_id) && cli.model.is_none() && cfg.model_dir.is_none() {
             if gui_session() {
@@ -464,13 +470,17 @@ const LEVEL_FEED: Duration = Duration::from_millis(33);
 /// press, so the pill is already on screen at key-down instead of a window
 /// launch later. Protocol on its stdin, one line each: `show`, `l <rms>`,
 /// `t` (transcribing), `hide`; EOF quits it, which is also what happens when
-/// the daemon exits for any reason.
+/// the daemon exits for any reason. The other way, on its stdout: `toggle`
+/// when the user clicks the pill's mic (start a hands-free dictation) or
+/// clicks the pill while it listens (finish it).
 struct OverlayProc {
     exe: std::path::PathBuf,
     child: Option<std::process::Child>,
     stdin: Arc<std::sync::Mutex<Option<std::process::ChildStdin>>>,
     /// Cleared to stop the current level feed thread.
     feeding: Arc<std::sync::atomic::AtomicBool>,
+    /// Set by the pill's `toggle`; the dictation loop consumes it.
+    toggle: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl OverlayProc {
@@ -483,6 +493,7 @@ impl OverlayProc {
             child: None,
             stdin: Arc::new(std::sync::Mutex::new(None)),
             feeding: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            toggle: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         o.ensure();
         o
@@ -498,11 +509,24 @@ impl OverlayProc {
         match std::process::Command::new(&self.exe)
             .arg("overlay")
             .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
             .spawn()
         {
             Ok(mut child) => {
                 log::info!("overlay spawned (pid {})", child.id());
                 *self.stdin.lock().unwrap() = child.stdin.take();
+                if let Some(out) = child.stdout.take() {
+                    let toggle = self.toggle.clone();
+                    std::thread::spawn(move || {
+                        use std::io::BufRead;
+                        for line in std::io::BufReader::new(out).lines() {
+                            let Ok(line) = line else { break };
+                            if line.trim() == "toggle" {
+                                toggle.store(true, Ordering::Relaxed);
+                            }
+                        }
+                    });
+                }
                 self.child = Some(child);
             }
             Err(e) => log::warn!("overlay spawn failed: {e}"),
@@ -638,6 +662,16 @@ fn run_ptt(
             Ok(PttEvent::Pressed)
         } else if sig_release.swap(false, Ordering::Relaxed) {
             Ok(PttEvent::Released)
+        } else if overlay_proc
+            .as_ref()
+            .is_some_and(|o| o.toggle.swap(false, Ordering::Relaxed))
+        {
+            // A click on the pill: start hands-free, or finish. Picked up on
+            // the loop's 120ms tick, well inside a click's latency budget.
+            // While hands-free, pressing and releasing the hotkey finishes it
+            // too: the press is ignored as `armed`, the release ends it.
+            log::info!("pill clicked: {}", if armed { "finish" } else { "start" });
+            Ok(if armed { PttEvent::Released } else { PttEvent::Pressed })
         } else {
             events.recv_timeout(Duration::from_millis(120))
         };

@@ -109,7 +109,7 @@
           "name": "How do I switch from Wispr Flow?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Install WhisprCatch (one Homebrew command on macOS, one .deb on Linux), grant the permissions, quit and reopen once, then cancel your subscription. Rebind the push-to-talk key in settings if you had muscle memory for a different one."
+            "text": "Install WhisprCatch (one Homebrew command on macOS, one .deb on Linux), grant the permissions (setup restarts the app for you), then cancel your subscription. Rebind the push-to-talk key in settings if you had muscle memory for a different one."
           }
         }
       ]
@@ -198,7 +198,7 @@
       <h2>What WhisprCatch is</h2>
       <p>
         WhisprCatch is an MIT-licensed dictation app for macOS and Linux that does the same
-        core thing and nothing else. Hold <kbd>Right ⌘</kbd> on a Mac or <kbd>Right Alt</kbd>
+        core thing and nothing else. Hold <kbd>fn</kbd> on a Mac or <kbd>Right Alt</kbd>
         on Linux, say your sentence, let go, and the punctuated, capitalised version is typed
         wherever your cursor already was. Words stream in live while you're still talking.
       </p>
@@ -311,11 +311,11 @@
         </span>
       </button>
       <p>
-        Open the app, let the wizard walk you through <strong>Accessibility</strong>,
-        <strong>Input Monitoring</strong> and <strong>Microphone</strong>, then quit and
-        reopen it once. That last step matters: macOS only re-reads permissions when an app
-        starts, so a fresh grant reads as denied until you relaunch. Then hold
-        <kbd>Right ⌘</kbd> and talk.
+        Open the app and setup walks you through <strong>Microphone</strong>,
+        <strong>Accessibility</strong> and <strong>Input Monitoring</strong>: click Grant and drag
+        the app icon into the list that opens. It also offers to stop fn opening the emoji
+        picker, and restarts itself at the end, because macOS only applies some grants to a
+        fresh launch. Then hold <kbd>fn</kbd> and talk.
       </p>
 
       <h3>On Linux</h3>
@@ -368,7 +368,7 @@
       </details>
       <details>
         <summary>How do I switch from Wispr Flow?</summary>
-        <p class="answer">Install WhisprCatch (one Homebrew command on macOS, one .deb on Linux), grant the permissions, quit and reopen once, then cancel your subscription. Rebind the push-to-talk key in settings if you had muscle memory for a different one.</p>
+        <p class="answer">Install WhisprCatch (one Homebrew command on macOS, one .deb on Linux), grant the permissions (setup restarts the app for you), then cancel your subscription. Rebind the push-to-talk key in settings if you had muscle memory for a different one.</p>
       </details>
     </div>
   </div>

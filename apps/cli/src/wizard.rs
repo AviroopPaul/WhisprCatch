@@ -454,6 +454,8 @@ impl eframe::App for Wizard {
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
                 WINDOW_W, WINDOW_H,
             )));
+            #[cfg(target_os = "macos")]
+            crate::permissions::mac::bring_to_front(ctx);
         }
         self.shot.tick(ctx);
         // poll background work

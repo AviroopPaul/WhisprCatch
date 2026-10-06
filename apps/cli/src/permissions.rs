@@ -323,6 +323,8 @@ pub fn panel(ui: &mut egui::Ui) {
 /// One row per permission with its live state and the action that fixes it
 /// (the setup wizard shows just this; it relaunches the app by itself).
 pub fn checklist(ui: &mut egui::Ui) {
+    #[cfg(target_os = "macos")]
+    mac::refocus_after_settings(ui.ctx());
     let s = status();
     ui.ctx().request_repaint_after(Duration::from_secs(1));
     #[cfg(target_os = "macos")]
@@ -369,6 +371,7 @@ pub fn fn_key_notice(ui: &mut egui::Ui, key_slug: &str) {
         if key_slug != "fn" {
             return;
         }
+        mac::refocus_after_settings(ui.ctx());
         let free = mac::fn_usage_cached() == Some(0);
         ui.add_space(4.0);
         if free {
@@ -483,12 +486,202 @@ pub mod mac {
                 "x-apple.systempreferences:com.apple.preference.security?{pane}"
             ))
             .status();
+        watch_settings();
     }
 
     pub fn open_keyboard_settings() {
         let _ = Command::new("open")
             .arg("x-apple.systempreferences:com.apple.Keyboard-Settings.extension")
             .status();
+        watch_settings();
+    }
+
+    // ------------------------------------------------------------- focus
+
+    /// Raises this process's window and makes it the active app. The app is
+    /// an accessory (no Dock icon), so when System Settings closes macOS hands
+    /// focus to the next *regular* app and our window ends up behind it.
+    ///
+    /// It also makes the process a *regular* app (Dock icon) for as long as
+    /// the window is open. An accessory app is skipped when macOS picks who
+    /// gets focus after a system prompt (Microphone) or System Settings goes
+    /// away, so the window kept falling behind whatever else was open. The
+    /// daemon drops back to accessory when its tray starts after setup
+    /// (`wc_tray::run_main`); the main window is its own process and exits.
+    pub fn bring_to_front(ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+            let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+            app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Regular);
+            #[allow(deprecated)] // `activate` needs macOS 14; we support 11
+            app.activateIgnoringOtherApps(true);
+        }
+    }
+
+    /// Set from a system prompt's completion handler (any thread); the next
+    /// checklist frame brings the window back.
+    static REFOCUS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    /// The checklist window's context, so a completion handler can wake it.
+    static CHECKLIST_CTX: Mutex<Option<egui::Context>> = Mutex::new(None);
+
+    fn request_refocus() {
+        REFOCUS.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(ctx) = CHECKLIST_CTX.lock().unwrap().as_ref() {
+            ctx.request_repaint();
+        }
+    }
+
+    /// 0 = not watching, 1 = we opened System Settings and wait for its
+    /// window, 2 = its window has been seen and we wait for it to close.
+    static SETTINGS_WATCH: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+    static WATCH_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
+    static WATCH_CHECKED: Mutex<Option<Instant>> = Mutex::new(None);
+
+    fn watch_settings() {
+        SETTINGS_WATCH.store(1, std::sync::atomic::Ordering::Relaxed);
+        *WATCH_SINCE.lock().unwrap() = Some(Instant::now());
+    }
+
+    /// Called every frame by the checklist: once the System Settings window we
+    /// opened has closed, bring our window back on top, whether or not the
+    /// user changed anything there. Checked at most every 300ms.
+    pub fn refocus_after_settings(ctx: &egui::Context) {
+        use std::sync::atomic::Ordering;
+        {
+            let mut slot = CHECKLIST_CTX.lock().unwrap();
+            if slot.is_none() {
+                *slot = Some(ctx.clone());
+            }
+        }
+        if REFOCUS.swap(false, Ordering::Relaxed) {
+            bring_to_front(ctx);
+        }
+        let state = SETTINGS_WATCH.load(Ordering::Relaxed);
+        if state == 0 {
+            return;
+        }
+        ctx.request_repaint_after(Duration::from_millis(300));
+        {
+            let mut checked = WATCH_CHECKED.lock().unwrap();
+            if checked.is_some_and(|t| t.elapsed() < Duration::from_millis(300)) {
+                return;
+            }
+            *checked = Some(Instant::now());
+        }
+        let open = settings_window().is_some();
+        match (state, open) {
+            (1, true) => SETTINGS_WATCH.store(2, Ordering::Relaxed),
+            (1, false) => {
+                // never appeared (or the user was very quick): give up quietly
+                let stale = WATCH_SINCE
+                    .lock()
+                    .unwrap()
+                    .is_none_or(|t| t.elapsed() > Duration::from_secs(15));
+                if stale {
+                    SETTINGS_WATCH.store(0, Ordering::Relaxed);
+                }
+            }
+            (2, false) => {
+                SETTINGS_WATCH.store(0, Ordering::Relaxed);
+                super::invalidate();
+                bring_to_front(ctx);
+            }
+            _ => {}
+        }
+    }
+
+    /// Frame of the System Settings window on screen, in CG (top-left)
+    /// coordinates. Matched by pid rather than by the localized app name.
+    pub fn settings_window() -> Option<core_graphics::geometry::CGRect> {
+        use core_foundation::base::{CFType, TCFType};
+        use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+        use core_foundation::number::CFNumber;
+        use core_foundation::string::CFString;
+        use core_graphics::geometry::CGRect;
+        use core_graphics::window::{
+            copy_window_info, kCGNullWindowID, kCGWindowListExcludeDesktopElements,
+            kCGWindowListOptionOnScreenOnly,
+        };
+
+        let pid = settings_pid()?;
+        let list = copy_window_info(
+            kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+            kCGNullWindowID,
+        )?;
+        for raw in list.iter() {
+            let dict: CFDictionary<CFString, CFType> =
+                unsafe { CFDictionary::wrap_under_get_rule(*raw as CFDictionaryRef) };
+            let num = |k: &'static str| {
+                dict.find(CFString::from_static_string(k))
+                    .and_then(|v| v.downcast::<CFNumber>())
+                    .and_then(|n| n.to_i64())
+            };
+            if num("kCGWindowOwnerPID") != Some(pid) || num("kCGWindowLayer") != Some(0) {
+                continue;
+            }
+            let bounds = dict
+                .find(CFString::from_static_string("kCGWindowBounds"))
+                .and_then(|v| v.downcast::<CFDictionary>())?;
+            let r = CGRect::from_dict_representation(&bounds)?;
+            if r.size.width > 200.0 && r.size.height > 200.0 {
+                return Some(r);
+            }
+        }
+        None
+    }
+
+    fn settings_pid() -> Option<i64> {
+        let apps = objc2_app_kit::NSRunningApplication::runningApplicationsWithBundleIdentifier(
+            &objc2_foundation::NSString::from_str("com.apple.systempreferences"),
+        );
+        Some(apps.firstObject()?.processIdentifier() as i64)
+    }
+
+    /// Daemon side: whenever a grant is missing and System Settings is open,
+    /// keep the drag helper running, however Settings was reached. macOS's own
+    /// "would like to receive keystrokes" prompt opens Input Monitoring
+    /// without going through our Grant button, and that is exactly where
+    /// people got stuck without the icon to drag. The helper shows itself only
+    /// beside a Settings window, names the list that still needs the app, and
+    /// quits once both grants are in.
+    pub fn watch_for_settings() {
+        std::thread::spawn(|| {
+            let mut helper: Option<std::process::Child> = None;
+            // closed with its ✕ (or another helper already showing): leave it
+            // closed until System Settings itself closes
+            let mut dismissed = false;
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                let missing =
+                    !wc_hotkey::keyboard_accessible() || !wc_hotkey::input_monitoring_granted();
+                let alive = helper
+                    .as_mut()
+                    .is_some_and(|c| matches!(c.try_wait(), Ok(None)));
+                if helper.is_some() && !alive {
+                    helper = None;
+                    dismissed = true;
+                }
+                let settings_open = settings_pid().is_some();
+                if !settings_open {
+                    dismissed = false;
+                }
+                if missing && !alive && settings_open && !dismissed {
+                    let Ok(exe) = std::env::current_exe() else {
+                        return;
+                    };
+                    helper = Command::new(exe)
+                        .args(["drag-helper", "auto"])
+                        .stdin(std::process::Stdio::piped())
+                        .spawn()
+                        .ok();
+                } else if !missing && alive {
+                    if let Some(mut c) = helper.take() {
+                        let _ = c.kill();
+                        let _ = c.wait();
+                    }
+                }
+            }
+        });
     }
 
     // ------------------------------------------------------- Microphone
@@ -525,6 +718,8 @@ pub mod mac {
         let block = block2::RcBlock::new(|granted: objc2::runtime::Bool| {
             log::info!("microphone access: {}", granted.as_bool());
             super::invalidate();
+            // the prompt took focus; give it back to the checklist window
+            request_refocus();
         });
         unsafe {
             let _: () = objc2::msg_send![
@@ -662,9 +857,9 @@ pub mod mac {
         use objc2_app_kit::{
             NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBox, NSBoxType,
             NSButton, NSColor, NSDragOperation, NSDraggingContext, NSDraggingItem,
-            NSDraggingSession, NSDraggingSource, NSEvent, NSFont, NSImageView, NSPanel,
-            NSRunningApplication, NSScreen, NSTextField, NSTitlePosition,
-            NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
+            NSDraggingSession, NSDraggingSource, NSEvent, NSFont, NSImageView, NSPanel, NSScreen,
+            NSTextField, NSTitlePosition, NSWindowCollectionBehavior, NSWindowStyleMask,
+            NSWorkspace,
         };
         use objc2_foundation::{
             MainThreadMarker, NSArray, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -758,50 +953,6 @@ pub mod mac {
             l
         }
 
-        /// Frame of the frontmost System Settings window in CG (top-left)
-        /// coordinates. Matched by pid rather than by the localized name.
-        fn settings_window() -> Option<core_graphics::geometry::CGRect> {
-            use core_foundation::base::{CFType, TCFType};
-            use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
-            use core_foundation::number::CFNumber;
-            use core_foundation::string::CFString;
-            use core_graphics::geometry::CGRect;
-            use core_graphics::window::{
-                copy_window_info, kCGNullWindowID, kCGWindowListExcludeDesktopElements,
-                kCGWindowListOptionOnScreenOnly,
-            };
-
-            let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(
-                &NSString::from_str("com.apple.systempreferences"),
-            );
-            let pid = apps.firstObject()?.processIdentifier() as i64;
-
-            let list = copy_window_info(
-                kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
-                kCGNullWindowID,
-            )?;
-            for raw in list.iter() {
-                let dict: CFDictionary<CFString, CFType> =
-                    unsafe { CFDictionary::wrap_under_get_rule(*raw as CFDictionaryRef) };
-                let num = |k: &'static str| {
-                    dict.find(CFString::from_static_string(k))
-                        .and_then(|v| v.downcast::<CFNumber>())
-                        .and_then(|n| n.to_i64())
-                };
-                if num("kCGWindowOwnerPID") != Some(pid) || num("kCGWindowLayer") != Some(0) {
-                    continue;
-                }
-                let bounds = dict
-                    .find(CFString::from_static_string("kCGWindowBounds"))
-                    .and_then(|v| v.downcast::<CFDictionary>())?;
-                let r = CGRect::from_dict_representation(&bounds)?;
-                if r.size.width > 200.0 && r.size.height > 200.0 {
-                    return Some(r);
-                }
-            }
-            None
-        }
-
         /// Under the System Settings window when there is room, else tucked
         /// inside its bottom edge; bottom-centre of the screen when Settings is
         /// not open (yet).
@@ -811,7 +962,7 @@ pub mod mac {
                 return;
             };
             let primary_h = primary.frame().size.height;
-            let origin = match settings_window() {
+            let origin = match super::settings_window() {
                 Some(w) => {
                     let x = w.origin.x + (w.size.width - PANEL_W) / 2.0;
                     let below = w.origin.y + w.size.height + 12.0;
@@ -838,9 +989,46 @@ pub mod mac {
             }
         }
 
+        /// The helper's second line, naming the list that still needs the app:
+        /// `preferred` when that one is missing, else whichever is. None when
+        /// both grants are in and the helper has nothing left to do.
+        fn needs_text(preferred: &str) -> Option<String> {
+            let ax = !wc_hotkey::keyboard_accessible();
+            let im = !wc_hotkey::input_monitoring_granted();
+            let list = match (ax, im) {
+                (false, false) => return None,
+                (true, true) if preferred == "Input Monitoring" => "Input Monitoring",
+                (true, true) => {
+                    return Some(
+                        "Drop it on Accessibility, then on Input\nMonitoring. Each switches on for you."
+                            .into(),
+                    )
+                }
+                (true, false) => "Accessibility",
+                (false, true) => "Input Monitoring",
+            };
+            Some(format!(
+                "Drop it on the {list} list above. It is\nadded and switched on for you."
+            ))
+        }
+
         pub fn run(pane: &str) -> anyhow::Result<()> {
             let mtm = MainThreadMarker::new()
                 .ok_or_else(|| anyhow::anyhow!("drag helper must run on the main thread"))?;
+
+            // One helper at a time: the Grant buttons and the daemon's
+            // watcher can both ask for one. The lock dies with the process.
+            let lock = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(std::env::temp_dir().join("whisper-catch-helper.lock"))?;
+            if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
+                return Ok(());
+            }
+            if needs_text("").is_none() {
+                return Ok(()); // nothing to grant
+            }
             let app = NSApplication::sharedApplication(mtm);
             app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
@@ -925,7 +1113,7 @@ pub mod mac {
             card.addSubview(&title);
             let sub = label(
                 mtm,
-                &format!("Drop it on {list_name} above. It is added\nand switched on for you."),
+                &needs_text(list_name).unwrap_or_default(),
                 11.5,
                 false,
                 (0.64, 0.64, 0.64),
@@ -960,13 +1148,32 @@ pub mod mac {
             card.addSubview(&close);
 
             place(&panel, mtm);
-            panel.orderFrontRegardless();
 
-            // follow the Settings window as it opens, moves or resizes
-            let held = RefCell::new(panel.clone());
+            // Follow the Settings window as it opens, moves or resizes; show
+            // only while one is on screen; keep the text on whichever list
+            // still needs the app, and leave once both grants are in.
+            let held = RefCell::new((panel.clone(), sub.clone(), 0u32, String::new()));
             let block = block2::RcBlock::new(move |_t: std::ptr::NonNull<NSTimer>| {
-                if let Some(mtm) = MainThreadMarker::new() {
-                    place(&held.borrow(), mtm);
+                let Some(mtm) = MainThreadMarker::new() else {
+                    return;
+                };
+                let mut h = held.borrow_mut();
+                h.2 += 1;
+                if h.2 % 4 == 1 {
+                    match needs_text("") {
+                        None => std::process::exit(0),
+                        Some(text) if text != h.3 => {
+                            h.1.setStringValue(&NSString::from_str(&text));
+                            h.3 = text;
+                        }
+                        Some(_) => {}
+                    }
+                }
+                if super::settings_window().is_some() {
+                    place(&h.0, mtm);
+                    h.0.orderFrontRegardless();
+                } else {
+                    h.0.orderOut(None);
                 }
             });
             let _timer = unsafe {

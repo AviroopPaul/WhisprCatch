@@ -417,6 +417,11 @@ impl eframe::App for App {
         if self.needs_size {
             self.needs_size = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(window_size()));
+            // Opened from the tray or the pill, this process starts behind
+            // whatever app is in front; the window the user asked for should
+            // not need a hunt.
+            #[cfg(target_os = "macos")]
+            crate::permissions::mac::bring_to_front(ctx);
         }
         self.shot.tick(ctx);
         self.poll_download();
