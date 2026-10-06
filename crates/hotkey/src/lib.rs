@@ -1,7 +1,8 @@
 //! Global push-to-talk hotkey via raw evdev (Linux).
 //!
 //! Listen-only: never grabs the device, so a key also bound in the
-//! compositor will fire both — pick a low-conflict key (default Right-Ctrl).
+//! compositor will fire both. Pick a low-conflict key: the default is fn on
+//! macOS and Right Alt on Linux.
 //! Requires read access to /dev/input/event* (`input` group membership).
 
 use std::sync::mpsc::{self, Receiver};
@@ -13,12 +14,19 @@ use anyhow::{bail, Result};
 pub enum PttEvent {
     Pressed,
     Released,
+    /// The PTT key turned out to be a modifier for something else (fn + Delete,
+    /// fn + an arrow key): the daemon drops the utterance instead of typing it.
+    /// Only sent for keys that double as everyday modifiers, i.e. fn.
+    Cancelled,
 }
 
 /// Named keys we support as PTT triggers. Maps to evdev codes on Linux and to
 /// virtual keycodes / modifier flags on macOS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PttKey {
+    /// The fn / Globe key. macOS in practice: most Linux keyboards handle fn
+    /// in firmware and never report it.
+    Fn,
     RightCtrl,
     LeftCtrl,
     RightAlt,
@@ -34,11 +42,12 @@ impl PttKey {
     /// Kernel evdev key code (X11 keycode = this + 8).
     pub fn evdev_code(self) -> u16 {
         match self {
+            Self::Fn => 464, // KEY_FN, where the keyboard reports it at all
             Self::RightCtrl => 97,
             Self::LeftCtrl => 29,
             Self::RightAlt => 100,
             Self::LeftAlt => 56,
-            Self::RightCommand => 126, // KEY_RIGHTMETA
+            Self::RightCommand => 126,              // KEY_RIGHTMETA
             Self::LeftCommand | Self::Super => 125, // KEY_LEFTMETA
             Self::F13 => 183,
             Self::ScrollLock => 70,
@@ -47,6 +56,7 @@ impl PttKey {
 
     pub fn parse(s: &str) -> Result<Self> {
         Ok(match s.to_ascii_lowercase().as_str() {
+            "fn" | "globe" | "function" => Self::Fn,
             "rightctrl" | "rctrl" => Self::RightCtrl,
             "leftctrl" | "lctrl" => Self::LeftCtrl,
             "rightalt" | "ralt" | "rightoption" | "ropt" => Self::RightAlt,
@@ -57,7 +67,7 @@ impl PttKey {
             "f13" => Self::F13,
             "scrolllock" => Self::ScrollLock,
             other => bail!(
-                "unknown PTT key '{other}' (try: rctrl, lctrl, ralt, lalt, rcmd, lcmd, super, f13, scrolllock)"
+                "unknown PTT key '{other}' (try: fn, rctrl, lctrl, ralt, lalt, rcmd, lcmd, super, f13, scrolllock)"
             ),
         })
     }
@@ -147,6 +157,7 @@ mod linux {
     impl PttKey {
         fn code(self) -> KeyCode {
             match self {
+                PttKey::Fn => KeyCode::KEY_FN,
                 PttKey::RightCtrl => KeyCode::KEY_RIGHTCTRL,
                 PttKey::LeftCtrl => KeyCode::KEY_LEFTCTRL,
                 PttKey::RightAlt => KeyCode::KEY_RIGHTALT,
@@ -181,7 +192,11 @@ mod linux {
 
         let (tx, rx) = mpsc::channel();
         for (path, mut dev) in devices {
-            log::info!("listening on {} ({})", path.display(), dev.name().unwrap_or("?"));
+            log::info!(
+                "listening on {} ({})",
+                path.display(),
+                dev.name().unwrap_or("?")
+            );
             let tx = tx.clone();
             thread::spawn(move || loop {
                 let events = match dev.fetch_events() {
@@ -244,14 +259,16 @@ mod macos {
         /// keys as `KeyDown`/`KeyUp`.
         fn mac(self) -> (i64, Option<CGEventFlags>) {
             match self {
+                // kVK_Function. Arrow and F-keys also carry the SecondaryFn
+                // flag, but they arrive as KeyDown, never as a FlagsChanged
+                // for keycode 63, so the match in `listen` stays exact.
+                PttKey::Fn => (63, Some(CGEventFlags::CGEventFlagSecondaryFn)),
                 PttKey::RightCtrl => (62, Some(CGEventFlags::CGEventFlagControl)),
                 PttKey::LeftCtrl => (59, Some(CGEventFlags::CGEventFlagControl)),
                 PttKey::RightAlt => (61, Some(CGEventFlags::CGEventFlagAlternate)),
                 PttKey::LeftAlt => (58, Some(CGEventFlags::CGEventFlagAlternate)),
                 PttKey::RightCommand => (54, Some(CGEventFlags::CGEventFlagCommand)),
-                PttKey::LeftCommand | PttKey::Super => {
-                    (55, Some(CGEventFlags::CGEventFlagCommand))
-                }
+                PttKey::LeftCommand | PttKey::Super => (55, Some(CGEventFlags::CGEventFlagCommand)),
                 PttKey::F13 => (105, None),
                 PttKey::ScrollLock => (107, None), // F14 — no Scroll Lock on macOS
             }
@@ -266,7 +283,13 @@ mod macos {
         let (keycode, mask) = key.mac();
 
         thread::spawn(move || {
-            let events = if mask.is_some() {
+            // fn doubles as an everyday modifier (fn + Delete is forward
+            // delete on a laptop), so for fn we also watch KeyDown and cancel
+            // the utterance when another key goes down while it is held.
+            let cancel_on_combo = key == PttKey::Fn;
+            let events = if cancel_on_combo {
+                vec![CGEventType::FlagsChanged, CGEventType::KeyDown]
+            } else if mask.is_some() {
                 vec![CGEventType::FlagsChanged]
             } else {
                 vec![CGEventType::KeyDown, CGEventType::KeyUp]
@@ -276,62 +299,89 @@ mod macos {
             let port: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
             let port_cb = port.clone();
 
-            let tap = CGEventTap::new(
-                CGEventTapLocation::HID,
-                CGEventTapPlacement::HeadInsertEventTap,
-                CGEventTapOptions::ListenOnly,
-                events,
-                move |_proxy, etype, event| {
-                    let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
-                    match etype {
-                        CGEventType::FlagsChanged => {
-                            if code == keycode {
-                                if let Some(m) = mask {
-                                    let down = event.get_flags().contains(m);
-                                    let _ = tx.send(if down {
-                                        PttEvent::Pressed
-                                    } else {
-                                        PttEvent::Released
-                                    });
+            // Without Input Monitoring the tap cannot be created. Retry rather
+            // than give up, so a grant that takes effect without a restart
+            // starts the hotkey working on its own; Settings › Permissions
+            // covers the case where macOS wants a relaunch.
+            let mut warned = false;
+            let tap = loop {
+                let tx = tx.clone();
+                let port_cb = port_cb.clone();
+                let events = events.clone();
+                let held = std::sync::atomic::AtomicBool::new(false);
+                let made = CGEventTap::new(
+                    CGEventTapLocation::HID,
+                    CGEventTapPlacement::HeadInsertEventTap,
+                    CGEventTapOptions::ListenOnly,
+                    events,
+                    move |_proxy, etype, event| {
+                        let code =
+                            event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
+                        match etype {
+                            CGEventType::FlagsChanged => {
+                                if code == keycode {
+                                    if let Some(m) = mask {
+                                        let down = event.get_flags().contains(m);
+                                        held.store(down, Ordering::Relaxed);
+                                        let _ = tx.send(if down {
+                                            PttEvent::Pressed
+                                        } else {
+                                            PttEvent::Released
+                                        });
+                                    }
                                 }
                             }
-                        }
-                        CGEventType::KeyDown => {
-                            if code == keycode {
-                                let _ = tx.send(PttEvent::Pressed);
+                            CGEventType::KeyDown if cancel_on_combo => {
+                                if held.swap(false, Ordering::Relaxed) {
+                                    let _ = tx.send(PttEvent::Cancelled);
+                                }
                             }
-                        }
-                        CGEventType::KeyUp => {
-                            if code == keycode {
-                                let _ = tx.send(PttEvent::Released);
+                            CGEventType::KeyDown => {
+                                if code == keycode {
+                                    let _ = tx.send(PttEvent::Pressed);
+                                }
                             }
-                        }
-                        CGEventType::TapDisabledByTimeout
-                        | CGEventType::TapDisabledByUserInput => {
-                            let p = port_cb.load(Ordering::Relaxed);
-                            if p != 0 {
-                                unsafe { CGEventTapEnable(p as *mut c_void, true) };
-                                log::warn!("event tap re-enabled after {:?}", etype);
+                            CGEventType::KeyUp => {
+                                if code == keycode {
+                                    let _ = tx.send(PttEvent::Released);
+                                }
                             }
+                            CGEventType::TapDisabledByTimeout
+                            | CGEventType::TapDisabledByUserInput => {
+                                let p = port_cb.load(Ordering::Relaxed);
+                                if p != 0 {
+                                    unsafe { CGEventTapEnable(p as *mut c_void, true) };
+                                    log::warn!("event tap re-enabled after {:?}", etype);
+                                }
+                            }
+                            _ => {}
                         }
-                        _ => {}
+                        CallbackResult::Keep
+                    },
+                );
+                match made {
+                    Ok(t) => break t,
+                    Err(()) => {
+                        if !warned {
+                            warned = true;
+                            log::error!(
+                                "could not create the keyboard event tap: grant WhisprCatch \
+                                 Accessibility and Input Monitoring in System Settings › \
+                                 Privacy (retrying every 2s)"
+                            );
+                        }
+                        thread::sleep(std::time::Duration::from_secs(2));
                     }
-                    CallbackResult::Keep
-                },
-            );
-
-            let tap = match tap {
-                Ok(t) => t,
-                Err(()) => {
-                    log::error!(
-                        "could not create the keyboard event tap — grant WhisprCatch \
-                         Accessibility and Input Monitoring in System Settings › Privacy"
-                    );
-                    return;
                 }
             };
+            if warned {
+                log::info!("keyboard event tap created after a permission change");
+            }
 
-            port.store(tap.mach_port().as_concrete_TypeRef() as usize, Ordering::Relaxed);
+            port.store(
+                tap.mach_port().as_concrete_TypeRef() as usize,
+                Ordering::Relaxed,
+            );
             let source = match tap.mach_port().create_runloop_source(0) {
                 Ok(s) => s,
                 Err(()) => {
@@ -341,7 +391,11 @@ mod macos {
             };
             CFRunLoop::get_current().add_source(&source, unsafe { kCFRunLoopCommonModes });
             tap.enable();
-            log::info!("macOS event tap installed for {:?} (keycode {})", key, keycode);
+            log::info!(
+                "macOS event tap installed for {:?} (keycode {})",
+                key,
+                keycode
+            );
             CFRunLoop::run_current();
         });
 
@@ -355,4 +409,35 @@ pub use macos::listen;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn listen(_key: PttKey) -> Result<Receiver<PttEvent>> {
     bail!("hotkey listener not implemented for this platform yet")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fn_parses_under_its_common_names() {
+        for name in ["fn", "FN", "globe", "function"] {
+            assert_eq!(PttKey::parse(name).unwrap(), PttKey::Fn, "{name}");
+        }
+    }
+
+    /// Settings writes these slugs to config.toml; every one must load.
+    #[test]
+    fn every_offered_slug_parses() {
+        for slug in [
+            "fn",
+            "rcmd",
+            "lcmd",
+            "ralt",
+            "lalt",
+            "rctrl",
+            "lctrl",
+            "super",
+            "f13",
+            "scrolllock",
+        ] {
+            assert!(PttKey::parse(slug).is_ok(), "{slug}");
+        }
+    }
 }

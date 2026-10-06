@@ -10,10 +10,10 @@ The two surfaces now speak **two deliberate languages**:
 - **Website** — "**warm paper**": a cream editorial marketing surface, serif display type,
   deep-green section blocks, one mint accent. Confident and well-funded looking, aimed at
   people comparing us against paid dictation subscriptions (Part A below).
-- **Desktop app** — "**tactile engineer dark**", adopted from the EchoNode design handoff
-  (archived verbatim at `docs/DESIGN-handoff.md`): precise, developer-native,
-  keyboard-first. The app should feel like a hardware push-to-talk radio: status LEDs,
-  signal meters, mono uppercase labels (Part B below).
+- **Desktop app** — "**black + orange**": a dark SaaS surface in the shadcn/ui manner.
+  Neutral near-black, one orange accent, sidebar navigation, cards, a small component kit.
+  Calm, dense where it matters, nothing decorative (Part B below). It replaced the
+  mint "tactile engineer dark" language of `docs/DESIGN-handoff.md`, which stays archived.
 
 ---
 
@@ -100,183 +100,188 @@ for answer engines; `robots.txt` names the AI crawlers explicitly.
 
 ---
 
-# Part B — Desktop app ("tactile engineer dark")
 
-Direction: precise, developer-native, keyboard-first. A hardware push-to-talk radio:
-physical button, status LED, clean signal meter. **Dark only — there is no light theme
-and no theme picker.** Source: `docs/DESIGN-handoff.md` §2–3 (surface composition and
-design system); adapted here to WhisprCatch's real feature set.
+# Part B — Desktop app ("black + orange")
 
-All tokens live in `apps/cli/src/theme.rs`. Screens never hand-pick colors.
+Direction: a modern dark SaaS app (shadcn/ui, Linear, the Vercel dashboard). Neutral
+near-black surfaces, **one orange accent**, generous whitespace, sentence-case copy.
+**Dark only — there is no light theme and no theme picker.**
+
+All tokens and components live in `apps/cli/src/theme.rs`. Screens never hand-pick a
+colour or restyle a widget inline.
 
 ## B1. Type
 
 Embedded in the binary (`apps/cli/assets/fonts/`, OFL — license alongside):
 
-- Sans: **Geist** (Regular + Medium + SemiBold) — UI text, labels, buttons, titles.
-- Mono: **Geist Mono** (Regular + Medium) — timestamps, hotkey chips, section labels,
-  numeric readouts, paths.
-- Serif: **Newsreader** (Regular + Italic) — display type only: wizard step titles, the
-  history empty state, and the transcript body in the detail pane. The same face the
-  website sets its headlines in, and used the same way: roman then italic for the
-  emphasised clause ("Three *permissions.*"). Never for UI chrome.
+- Sans: **Geist** (Regular + Medium + SemiBold) — everything: UI text, headings, buttons.
+- Mono: **Geist Mono** (Regular + Medium) — timestamps, key caps, numeric readouts, paths.
 
 egui families: `Proportional` → Geist, `Monospace` → Geist Mono, plus named families
-`GeistMedium` / `GeistSemiBold` / `GeistMonoMedium` (egui's `strong()` only recolors, so
-weight = family switch via `theme::medium/semibold/mono_medium`). egui-phosphor
-(Regular) is appended for icons — used sparingly, muted.
+`GeistMedium` / `GeistSemiBold` / `GeistMonoMedium` (egui's `strong()` only recolours, so
+weight = family switch via `theme::medium/semibold/mono_medium`). egui-phosphor (Regular)
+is the icon set, appended to the font stack.
 
-Text scale: Body/Button 14 · Small 11.5 · Mono 12 · section labels mono 11 uppercase ·
-wizard titles 23 SemiBold. Hierarchy comes from weight + muted color, never from many
-sizes on one screen. **Anything uppercase is mono** (`theme::mono_upper`,
-`theme::section_label`).
+Scale: page title SemiBold 22 · card title SemiBold 15 · body 14 · secondary 12.5–13 ·
+mono 11–12.5. Display headings (wizard) SemiBold 31, with the emphasised clause in
+`ACCENT` ("Grant *access.*"). Uppercase only for mono machine readouts (`mono_upper`).
 
 ## B2. Palette (dark-only)
 
-Warm near-black neutrals — a dark cousin of the website's cream, not pure zinc —
-plus the site's mint as the one accent and two signal colors. Signal colors mean
-state, never decoration.
+| Token          | Value     | Use |
+|----------------|-----------|-----|
+| `BG`           | `#0a0a0a` | Window background |
+| `SIDEBAR`      | `#0e0e0e` | Navigation rail |
+| `SURFACE`      | `#131313` | Cards |
+| `SURFACE_2`    | `#1a1a1a` | Inputs, secondary buttons, selected nav item |
+| `SURFACE_3`    | `#262626` | Hover/active fills, key caps, switch track (off) |
+| `FG`           | `#fafafa` | Primary text |
+| `TEXT_2`       | `#a3a3a3` | Secondary text |
+| `MUTED`        | `#737373` | Labels, timestamps, descriptions |
+| `BORDER`       | `#242424` | 1px hairlines everywhere |
+| `RING`         | `#3c3c3c` | Hover and focus rings |
+| `ACCENT`       | `#f97316` | Primary buttons, active nav, switches, granted, progress, recording |
+| `ACCENT_HOVER` | `#fb8c3c` | Hovered primary button |
+| `ON_ACCENT`    | `#140a02` | Text on an orange fill |
+| `RED`          | `#ef4444` | Errors and destructive actions only |
+| `AMBER`        | `#f59e0b` | Advisories that still work ("note:" problems, setup needed) |
 
-| Token       | Value       | Use |
-|-------------|-------------|-----|
-| `BG`        | `#0b0d0c`   | Window background |
-| `SURFACE`   | `#141817`   | Cards, selected list rows, icon plates |
-| `SURFACE_2` | `#1c2120`   | Buttons, inputs, raised controls |
-| `SURFACE_3` | `#262c2a`   | Hover/active fills, toggle troughs |
-| `FG`        | `#e9efec`   | Primary text |
-| `TEXT_2`    | `#9aa5a0`   | Secondary text |
-| `MUTED`     | `#6e7873`   | Labels, timestamps, metadata |
-| `BORDER`    | `#1e2322`   | 1px hairlines everywhere |
-| `RING`      | `#333b39`   | Focus/selected/hover rings |
-| `MINT`      | `#5de8cd`   | Primary button fill, ready/active, ticks, selected-row rail |
-| `ON_MINT`   | `#06342c`   | Text on a mint fill |
-| `RED`       | `#ef5f52`   | Recording (LED, waveform, destructive) |
-| `AMBER`     | `#f0a94c`   | Processing (spinner, dots) + hotkey chips |
-
-`MINT` is the website's accent, unchanged. That single shared value is what makes
-the app and the landing page read as one product.
-
-`theme::tint(color)` = ~9% alpha, for chip fills behind signal text.
-`theme::tint_strong(color)` = ~18%, for the ring around a tinted plate.
-The primary button is a `MINT` fill with `ON_MINT` text — the site's CTA, in the dark.
+`theme::tint(c)` ≈ 9% alpha (badge fills), `theme::tint_strong(c)` ≈ 18% (their rings).
+Warnings sit on a neutral surface with an amber ring and icon, never on an amber fill:
+amber over near-black reads as brown.
 
 ## B3. Radius, elevation, motion
 
-- Radius: **4** (chips) / **6** (buttons, inputs, list rows) / **10** (cards) /
-  **14** (windows). Pill overlay is fully rounded.
-- Elevation is borders-first: background step (`BG` → `SURFACE` → `SURFACE_2`) + 1px
-  `BORDER`. No drop shadows inside windows.
-- Motion: LED pulse 2s ease-in-out (opacity 1 → 0.4 → 1), spinner 1s linear,
-  150–200ms color transitions. Nothing else animates.
+- Radius: **6** (key caps) / **8** (buttons, inputs, nav items, list rows) / **12**
+  (cards) / pill (badges, the overlay).
+- Elevation is borders-first: `BG` → `SURFACE` → `SURFACE_2` + 1px `BORDER`. Only popups
+  and menus get a (soft, black) shadow.
+- Motion: switch 150ms, overlay expand 220ms cubic-out, LED pulse 2s, waveform eased
+  toward the live mic level every frame. Nothing else animates.
 
 ## B4. Components (theme.rs)
 
-- `led(ui, color, pulse)` — status LED with soft halo.
-- `key_chip(ui, label)` — hotkey chip: amber mono uppercase on amber tint, radius 4.
-- `section_label(ui, text)` — mono uppercase muted 11px heading.
-- `mono_upper(text, size, color)` — mono uppercase micro-text (timestamps, readouts).
-- `card(ui)` — SURFACE fill, hairline ring, radius 10, 16px inset.
-- `toggle(ui, &mut bool)` — hardware-style switch, green when on.
-- `primary_button(ui, text)` — the one high-emphasis action per screen.
+- `button(ui, Variant, text)` / `button_with(ui, Variant, icon, text, small)` — shadcn
+  `<Button>`: `Primary` (orange), `Secondary`, `Outline`, `Ghost`, `Destructive`. Height
+  34 (`small` 28). Hover states belong to the variant. `primary_button` is the shorthand.
+- `badge(ui, text, Tone)` — pill; `Neutral`, `Accent`, `Warn`, `Danger`.
+- `kbd(ui, label)` — key cap: `SURFACE_3`, ring, darker bottom edge, mono, keeps the key's
+  own case ("fn", "Right ⌘").
+- `toggle(ui, &mut bool)` — switch: orange track when on, white thumb.
+- `nav_item(ui, icon, label, selected)` — sidebar row; selected = `SURFACE_2` fill, orange
+  icon, 2.5px orange rail.
+- `card(ui)`, `card_header`, `page_header`, `section_label`, `progress`, `hairline`, `led`,
+  `logo(ui, size)` (the app icon, `assets/icon-128.png`), `display`, `mono_upper`.
 
 ## B5. Surfaces
 
 ### Main window (`settings_app.rs`)
-Opens at **1000×680**, centered, min 720×480. Not maximized and geometry is not
-persisted: this is a utility window, and a remembered 27-inch frame is mostly
-background. macOS hands a window back at its own size regardless, so both windows
-assert their size once from inside `update()` on the first frame. Header (52px): green LED + "WhisprCatch" left · **top-center segmented
-control** (History | Settings) · mono stats readout right ("163 WORDS · 9 UTT · 1 MIN").
+Opens at **1000×680**, centred, min 720×480; geometry is not persisted. A 232px
+`SIDEBAR` rail: logo + name, then **Home · History · Text cleanup · Settings ·
+Permissions · About** (an amber dot on Permissions while anything is missing), and a
+status card pinned to the bottom ("Ready" / "Setup needed", "Hold ⟨kbd⟩ to dictate").
+Content is a centred column ≤720px that scrolls, each page opening with `page_header`.
+`--tab home|history|cleanup|settings|permissions|about` picks the page.
 
-- **History**: left sidebar (288px) = search field + chronological list. Row = mono
-  uppercase muted timestamp ("TODAY 23:21") + right-aligned mono duration + 2-line
-  clamped preview; selected = SURFACE fill + RING ring. Footer = mono count + quiet
-  "Clear all" with inline red confirm. Right pane = mono timestamp + metadata readout
-  ("6.1S SPOKEN · 19 WORDS · 0.38S INFERENCE"), ghost Copy/Delete top-right (delete
-  confirms inline, red), hairline, then the transcript at 15px in a ≤720px column.
-  Empty state: muted mic glyph on a surface plate, "No transcripts yet", "Hold
-  ⟨key chip⟩ and speak to dictate." with the *configured* hotkey.
-- **Settings**: centered 560px column of sections, each = mono uppercase label + card:
-  **ENGINE PARAMETERS** (model picker, mono RAM/download readout, green READY LED or
-  green progress bar), **HOTKEY** (key picker + amber key chip preview), **OUTPUT
-  BEHAVIOR** (green toggles: live typing, recording indicator, keep history, start on
-  login), **TEXT CLEANUP**, **PROBLEMS**, **CLEANUP PREVIEW**, **ABOUT** (version,
-  links, config path in mono). One primary Save button.
-  - **TEXT CLEANUP** (#49): one row per transform, in chain order. Green toggle, or a
-    segmented level picker where the transform is graded; sub-options indent 16px under
-    their parent. Under a row that reads a rule file, the effective path and its rule
-    count in 9.5px mono, home written as `~`. A transform that is merged but still a
-    no-op is listed under a hairline and a mono `NOT AVAILABLE YET`, with `NOT YET`
-    where its control would be: a toggle that silently does nothing is worse than
-    either showing it or hiding it. Card footer = mono chain readout and the restart
-    caveat, plus an amber line when live typing is on, because words already typed
-    cannot be taken back.
-  - **PROBLEMS**: present only when `PolishConfig::validate()` returns something. Red
-    header + red bullets for entries that are switched off, amber for `note:`
-    advisories that still work. Messages in 10.5px mono, wrapped inside the column.
-  - **CLEANUP PREVIEW**: the user's own recent dictations replayed through the current
-    settings. Mono count header ("2 OF YOUR LAST 6 DICTATIONS WOULD CHANGE") + ghost
-    Recheck, then each changed dictation in Newsreader 15 with removed words struck
-    through in `RED`, added words in `MINT` and a muted `…` where unchanged text was
-    dropped. Never a canned example. Empty states say which of "nothing enabled",
-    "nothing dictated" and "nothing would change" is true.
+- **Home**: a "Finish setup" card while a permission is missing, three stat tiles,
+  "How it works", the three latest dictations.
+- **History**: search + list (selected row = orange rail) beside a detail card with
+  metadata badges, Copy and Delete (inline confirm).
+- **Text cleanup**: the transforms, Problems and the live Cleanup preview (removed words
+  struck through in `RED`, added words in `ACCENT`), as in #49.
+- **Settings**: Engine, Hotkey (with the fn notice below the picker), Output. Settings and
+  Text cleanup share a sticky footer with **Save changes**.
+- **Permissions**: the checklist below plus **Restart WhisprCatch**.
+
+### Permission checklist (`permissions.rs`)
+Shared by the wizard and Settings. One row per grant: icon plate (orange when granted),
+title, one-line reason, and either a **Granted** badge or the one action that fixes it:
+
+- **Microphone** — **Allow** shows the system prompt now, not mid-dictation.
+- **Accessibility / Input Monitoring** — **Grant** registers the app with the system (so
+  it is already in the list), opens the exact pane and starts the **drag helper**: a
+  borderless AppKit panel pinned under the System Settings window, holding the app icon
+  to drag into the list. Dragging adds the app and switches it on. It follows the
+  Settings window, shows only while one is on screen, names the list that still needs
+  the app, quits once both grants are in, and is never shown on Linux. One at a time
+  (a lock file). The daemon also starts it whenever a grant is missing and System
+  Settings is open, so it is there however Settings was reached (macOS's own "receive
+  keystrokes" prompt opens Input Monitoring without our button). Closed with its ✕, it
+  stays closed until System Settings closes.
+- **fn key** (only when the hotkey is fn) — **Fix it** writes `AppleFnUsageType = 0`
+  ("Press fn key to: Do Nothing"); Keyboard Settings is the fallback.
+
+When the System Settings window that a row opened closes, the checklist's window comes
+back to the front (`refocus_after_settings`). The app has no Dock icon, so macOS
+otherwise hands focus to the next regular app and buries ours. So while the main window
+or the wizard is open the process runs as a regular app (Dock icon), and the daemon drops
+back to accessory when its tray starts. Both windows also raise themselves on their
+first frame and after the Microphone prompt is answered.
 
 ### Pill overlay (`overlay.rs`)
-232×40, bottom-center, dark translucent (zinc-950 @ ~92%) with a subtle white ring,
-fully rounded, click-through, never takes focus.
+One long-lived process for the daemon's whole life, driven over stdin (`show`,
+`l <rms>`, `t`, `hide`). It sits bottom-centre on the display the pointer is on, 6pt
+above the Dock, on every Space and over full-screen apps, never focused.
 
-- **Listening**: red pulsing LED (2s) + 4-bar red waveform + "Listening…" + elapsed
-  mono timer right-aligned behind a vertical hairline.
-- **Transcribing**: amber arc spinner (1s) + "Transcribing…" + 3 amber dots pulsing
-  sequentially behind the hairline.
+- **Idle**: a 40×9 near-black capsule with a light grey ring, always visible, so the user
+  can see dictation is one key away.
+- **Hover controls** (as Wispr Flow): under the pointer the capsule becomes a 72×32 mic
+  button, with a 32pt round gear button 6pt to its right; both near-black with a faint
+  ring, growing in over 180ms. The hovered one lightens and its icon turns `ACCENT`, and
+  a label pill sits 8pt above it: **Dictate ⟨key⟩** (key in SemiBold) or **Settings**.
+  Mic click: a hands-free dictation (a second click, or the hotkey, finishes it). Gear
+  click: the main window on its Settings page. Never a system menu.
+- **Listening**: expands to 92×30 with a centred 9-bar white waveform driven by the real
+  mic level, newest level in the centre rippling outward. No LED. Hovered, a
+  **Click to finish** label; a click finishes the dictation.
+- **Transcribing**: three orange dots pulsing in sequence.
+
+The egui window (248×96: the pill, the controls and a label) draws everything and stays
+click-through. Clicks land on one AppKit non-activating panel (`overlay::mac::Hit`)
+that never takes focus from the app being typed in, and that covers only what is
+clickable now: a 64×22 patch on the idle capsule, the mic and gear once hovered, the pill
+while listening, nothing while transcribing. It reports only enter, leave and click; the
+overlay reads the pointer every frame while it is inside to know what is hovered. A
+click that starts or finishes a dictation is written to the daemon as `toggle` on the
+overlay's stdout.
 
 ### Tray / menu bar (`crates/tray`)
-Native menus can't be themed; the language shows in structure + icon states.
-Menu: status header (state — model, "Hold ⟨key⟩ to dictate", disabled rows) ·
-Listening toggle · **Open History** / **Preferences…** (opens the Settings tab) ·
-divider · **Quit WhisprCatch**. Icons: idle = outline/template mic, recording = red,
-muted = crossed mic (Linux icon names; macOS uses a template glyph).
+The app mark as a template image (`assets/icon-menubar.png`, from `icon-menubar.svg`),
+so it follows light and dark menu bars. Menu: status header, Listening toggle,
+**Open History** / **Preferences…**, divider, **Quit WhisprCatch**.
 
 ### Wizard (`wizard.rs`)
-560×640 fixed, centered, non-resizable. Green step dots (done fill / current ring), "STEP N OF 4" in mono
-uppercase, painted stroke icon on a surface plate, SemiBold 23 title, green mono
-privacy chip, green download progress bar with mono readout, amber spinner while
-waiting on authorization, amber key chip on the done screen. One primary button,
-pinned near the bottom.
+600×740 fixed, centred. Orange step dots, "STEP N OF 4" in mono, the logo on Welcome
+and an orange stroke icon on a plate elsewhere (none on the permission step, which needs
+the height), display title, one primary button pinned near the bottom. Welcome shows
+the hotkey as a key cap; the permission step is the checklist above; Done says
+**Start dictating** and, if the permission step was shown, relaunches the app so grants
+given during setup apply to a fresh process.
 
 ## B6. Copy voice (app)
 
-Same voice as the site: short, confident, privacy-forward, concrete numbers
-("0.38S INFERENCE", not "blazingly fast"). Mono uppercase for machine facts, sentence
-case for human sentences. Quirk allowed once per surface (wizard done-screen).
-**No em dashes**, same as Part A — that applies to log lines and error strings too,
-not just what's on screen.
-
+Same voice as the site: short, confident, privacy-forward, concrete numbers. Sentence
+case everywhere; mono uppercase only for machine readouts. **No em dashes**, in log lines
+and error strings too.
 
 ## B7. Capturing screenshots
 
-The README and the website show real renders, not mockups. Five dev-only hooks
-produce them; none is reachable from normal use:
+The README and the website show real renders, not mockups. Dev-only hooks produce them;
+none is reachable from normal use:
 
-- `WC_SHOT=<path>` (+ `WC_SHOT_FRAMES`, default 30) saves a PNG of the window after
-  N frames and exits — `apps/cli/src/shot.rs`.
-- `WC_WIZARD_STEP=welcome|permission|download|done` opens the wizard on that step, so
-  captures don't depend on real permission or model state. The forced download step
-  never fetches anything.
+- `WC_SHOT=<path>` (+ `WC_SHOT_FRAMES`, default 30) saves a PNG of the window after N
+  frames and exits — `apps/cli/src/shot.rs`.
+- `WC_WIZARD_STEP=welcome|permission|download|done` opens the wizard on that step. The
+  forced download step never fetches anything.
+- `WC_OVERLAY=idle|listening|transcribing` pins the pill in one state with a synthetic
+  waveform (`whisper-catch overlay`); `WC_OVERLAY_HOVER=mic|gear|pill` puts the pointer
+  there (pill = the listening pill).
 - `WC_DEMO_HISTORY=1` swaps the transcript log for a fixed sample set. **Always capture
-  with this on** — the history pane otherwise shows whatever the person running the
-  capture actually dictated. Two of the sample rows carry a `raw`, so the cleanup
-  preview has something real to replay; `every_demo_row_polishes_to_the_text_beside_it`
-  keeps them honest.
-- `WC_WINDOW=1440x900` opens the main window at that size instead of 1000×680, and
-  `WC_SCROLL=<points>` opens the Settings tab already scrolled. Between them a capture
-  can show any section at any width, which nothing else can: the window deliberately
-  does not remember a size, and no size on a laptop display holds every section at once.
+  with this on.** Two sample rows carry a `raw`, so the cleanup preview has something
+  real to replay; `every_demo_row_polishes_to_the_text_beside_it` keeps them honest.
+- `WC_WINDOW=1440x900` opens the main window at that size, and `WC_SCROLL=<points>`
+  opens the current page already scrolled.
 
-Captures should run against a throwaway `HOME` (config, history and rule files all hang
-off it), with the models directory symlinked in so the engine card reads READY. That is
-what keeps the operator's own dictionary and dictations out of a published PNG.
-
-`whisper-catch wizard` is a hidden subcommand that runs the wizard on its own.
-Published files live in `docs/screenshots/` (full size, for the README) and
-`site/assets/` (resized, for the landing page).
+Captures run against a throwaway `HOME`, with the models directory symlinked in so the
+engine card reads Ready. `whisper-catch wizard` is a hidden subcommand that runs the
+wizard on its own. Published files live in `docs/screenshots/`.

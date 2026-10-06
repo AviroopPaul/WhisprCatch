@@ -1,63 +1,66 @@
-//! Shared look & feel for all app windows — "tactile engineer dark".
+//! Shared look & feel for all app windows: "black + orange".
 //!
 //! Every value comes from docs/DESIGN.md (Part B). Dark only: there is no
-//! light theme and no theme picker. The palette is a warm near-black cousin
-//! of the website's cream, and it shares the site's one accent — mint —
-//! so the app and the landing page read as the same product.
-//!
-//! Screens never hand-pick colors; they use the tokens and helpers below.
+//! light theme and no theme picker. Neutral near-black surfaces in the
+//! shadcn/ui manner, one orange accent, and a small kit of components
+//! (buttons in five variants, badge, kbd, switch, nav item) so screens never
+//! hand-pick a colour or restyle a widget inline.
 
 use eframe::egui::{self, Color32, FontFamily, FontId};
 
 // ---------------------------------------------------------------- palette
-// Warm neutrals. Slightly green-shifted rather than pure zinc, so the app
-// feels related to the site's paper instead of like a different product.
+// Neutral near-black, no tint. Three surface steps above the window, so depth
+// comes from fill + hairline, never from a shadow.
 
-pub const BG: Color32 = Color32::from_rgb(11, 13, 12); // window
-pub const SURFACE: Color32 = Color32::from_rgb(20, 24, 23); // cards
-pub const SURFACE_2: Color32 = Color32::from_rgb(28, 33, 32); // raised controls
-pub const SURFACE_3: Color32 = Color32::from_rgb(38, 44, 42); // hover/active
-pub const FG: Color32 = Color32::from_rgb(233, 239, 236); // primary text
-pub const TEXT_2: Color32 = Color32::from_rgb(154, 165, 160); // secondary text
-pub const MUTED: Color32 = Color32::from_rgb(110, 120, 115); // labels, metadata
-/// 1px hairline — white at ~8% over BG.
-pub const BORDER: Color32 = Color32::from_rgb(30, 35, 34);
-/// Focus/selected ring — white at ~20%.
-pub const RING: Color32 = Color32::from_rgb(51, 59, 57);
+pub const BG: Color32 = Color32::from_rgb(10, 10, 10); // window
+pub const SIDEBAR: Color32 = Color32::from_rgb(14, 14, 14); // nav rail
+pub const SURFACE: Color32 = Color32::from_rgb(19, 19, 19); // cards
+pub const SURFACE_2: Color32 = Color32::from_rgb(26, 26, 26); // inputs, secondary buttons
+pub const SURFACE_3: Color32 = Color32::from_rgb(38, 38, 38); // hover / active fills
+pub const FG: Color32 = Color32::from_rgb(250, 250, 250); // primary text
+pub const TEXT_2: Color32 = Color32::from_rgb(163, 163, 163); // secondary text
+pub const MUTED: Color32 = Color32::from_rgb(115, 115, 115); // labels, metadata
+/// 1px hairline.
+pub const BORDER: Color32 = Color32::from_rgb(36, 36, 36);
+/// Hover / focus ring.
+pub const RING: Color32 = Color32::from_rgb(60, 60, 60);
 
-// accent — the website's mint, and the deep green it sits on there
-pub const MINT: Color32 = Color32::from_rgb(93, 232, 205);
-/// Text on a mint fill.
-pub const ON_MINT: Color32 = Color32::from_rgb(6, 52, 44);
-// signal colors — state only, never decoration
-pub const RED: Color32 = Color32::from_rgb(239, 95, 82); // recording
-pub const AMBER: Color32 = Color32::from_rgb(240, 169, 76); // processing / hotkey
+/// The one accent: orange-500. Primary buttons, active nav, switches, the
+/// recording state, granted permissions, progress.
+pub const ACCENT: Color32 = Color32::from_rgb(249, 115, 22);
+/// Hovered primary button.
+pub const ACCENT_HOVER: Color32 = Color32::from_rgb(251, 140, 60);
+/// Text and glyphs on an orange fill.
+pub const ON_ACCENT: Color32 = Color32::from_rgb(20, 10, 2);
+/// Errors and destructive actions only.
+pub const RED: Color32 = Color32::from_rgb(239, 68, 68);
+/// Advisories that still work ("note:" problems, the live-typing caveat).
+pub const AMBER: Color32 = Color32::from_rgb(245, 158, 11);
 
-/// `color` at ~9% alpha — chip fills behind signal-colored text.
+/// `color` at ~9% alpha: badge fills behind signal-coloured text.
 pub fn tint(color: Color32) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 22)
 }
 
-/// `color` at ~18% alpha — rings and edges around a tinted plate.
+/// `color` at ~18% alpha: the ring around a tinted plate.
 pub fn tint_strong(color: Color32) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 46)
 }
 
 // ------------------------------------------------------------------ fonts
 
-/// Geist (sans) + Geist Mono + Newsreader (serif display), all embedded;
-/// egui-phosphor appended for icons. Families: `Proportional` → Geist,
-/// `Monospace` → Geist Mono, plus named "GeistMedium" / "GeistSemiBold" /
-/// "GeistMonoMedium" for emphasis (egui's `strong()` only recolors — weight
-/// needs a family switch) and "Serif" / "SerifItalic" for display type.
-///
-/// Newsreader is the same face the website sets its headlines in; it is what
-/// makes the two surfaces look like one product.
+/// Geist (sans) + Geist Mono, embedded; egui-phosphor appended for icons.
+/// Families: `Proportional` → Geist, `Monospace` → Geist Mono, plus named
+/// "GeistMedium" / "GeistSemiBold" / "GeistMonoMedium" for emphasis (egui's
+/// `strong()` only recolors, so weight needs a family switch).
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    let data: [(&str, &[u8]); 7] = [
+    let data: [(&str, &[u8]); 5] = [
         ("geist", include_bytes!("../assets/fonts/Geist-Regular.ttf")),
-        ("geist-medium", include_bytes!("../assets/fonts/Geist-Medium.ttf")),
+        (
+            "geist-medium",
+            include_bytes!("../assets/fonts/Geist-Medium.ttf"),
+        ),
         (
             "geist-semibold",
             include_bytes!("../assets/fonts/Geist-SemiBold.ttf"),
@@ -69,14 +72,6 @@ pub fn install_fonts(ctx: &egui::Context) {
         (
             "geist-mono-medium",
             include_bytes!("../assets/fonts/GeistMono-Medium.ttf"),
-        ),
-        (
-            "newsreader",
-            include_bytes!("../assets/fonts/Newsreader-Regular.ttf"),
-        ),
-        (
-            "newsreader-italic",
-            include_bytes!("../assets/fonts/Newsreader-Italic.ttf"),
         ),
     ];
     for (name, bytes) in data {
@@ -104,8 +99,6 @@ pub fn install_fonts(ctx: &egui::Context) {
         ("GeistMedium", "geist-medium", &prop),
         ("GeistSemiBold", "geist-semibold", &prop),
         ("GeistMonoMedium", "geist-mono-medium", &mono),
-        ("Serif", "newsreader", &prop),
-        ("SerifItalic", "newsreader-italic", &prop),
     ] {
         let mut chain = base.clone();
         chain.insert(0, face.to_owned());
@@ -128,16 +121,6 @@ pub fn mono_medium(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("GeistMonoMedium".into()))
 }
 
-/// Newsreader — display type only (window titles, step titles, empty states).
-pub fn serif(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("Serif".into()))
-}
-
-/// Newsreader italic — the emphasis half of a display line, as on the site.
-pub fn serif_italic(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name("SerifItalic".into()))
-}
-
 // ------------------------------------------------------------------ style
 
 /// Full design-token pass over egui defaults. Dark-only.
@@ -146,14 +129,16 @@ pub fn apply(ctx: &egui::Context) {
     ctx.style_mut_of(egui::Theme::Dark, |style| {
         style.spacing.item_spacing = egui::vec2(8.0, 8.0);
         style.spacing.button_padding = egui::vec2(12.0, 7.0);
-        style.spacing.interact_size.y = 28.0;
-        style.spacing.scroll.bar_width = 8.0;
+        style.spacing.interact_size.y = 32.0;
+        style.spacing.combo_width = 200.0;
+        style.spacing.scroll.bar_width = 6.0;
+        style.spacing.scroll.floating = true;
         for (ts, font) in style.text_styles.iter_mut() {
             match ts {
-                egui::TextStyle::Heading => font.size = 17.0,
+                egui::TextStyle::Heading => font.size = 18.0,
                 egui::TextStyle::Body | egui::TextStyle::Button => font.size = 14.0,
-                egui::TextStyle::Small => font.size = 11.5,
-                egui::TextStyle::Monospace => font.size = 12.0,
+                egui::TextStyle::Small => font.size = 12.0,
+                egui::TextStyle::Monospace => font.size = 12.5,
                 _ => {}
             }
         }
@@ -162,10 +147,18 @@ pub fn apply(ctx: &egui::Context) {
         v.panel_fill = BG;
         v.window_fill = SURFACE;
         v.window_stroke = egui::Stroke::new(1.0, BORDER);
-        v.window_corner_radius = egui::CornerRadius::same(14);
-        v.menu_corner_radius = egui::CornerRadius::same(10);
+        v.window_corner_radius = egui::CornerRadius::same(12);
+        v.menu_corner_radius = egui::CornerRadius::same(8);
+        v.window_shadow = egui::epaint::Shadow {
+            offset: [0, 8],
+            blur: 24,
+            spread: 0,
+            color: Color32::from_black_alpha(140),
+        };
+        v.popup_shadow = v.window_shadow;
         v.faint_bg_color = SURFACE;
-        v.extreme_bg_color = Color32::from_rgb(15, 18, 17); // inputs
+        v.extreme_bg_color = SURFACE_2; // text inputs
+        v.code_bg_color = SURFACE_2;
 
         let r = egui::CornerRadius::same(8);
         for w in [
@@ -176,29 +169,33 @@ pub fn apply(ctx: &egui::Context) {
             &mut v.widgets.open,
         ] {
             w.corner_radius = r;
+            w.expansion = 0.0;
         }
+        v.widgets.noninteractive.bg_fill = SURFACE;
+        v.widgets.noninteractive.weak_bg_fill = SURFACE;
         v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, BORDER);
-        v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, FG);
+        v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, TEXT_2);
         v.widgets.inactive.bg_fill = SURFACE_2;
         v.widgets.inactive.weak_bg_fill = SURFACE_2;
         v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, BORDER);
-        v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, TEXT_2);
+        v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, FG);
         v.widgets.hovered.bg_fill = SURFACE_3;
         v.widgets.hovered.weak_bg_fill = SURFACE_3;
         v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, RING);
         v.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, FG);
         v.widgets.active.bg_fill = SURFACE_3;
         v.widgets.active.weak_bg_fill = SURFACE_3;
-        v.widgets.active.bg_stroke = egui::Stroke::new(1.0, RING);
+        v.widgets.active.bg_stroke = egui::Stroke::new(1.0, ACCENT);
         v.widgets.active.fg_stroke = egui::Stroke::new(1.0, FG);
         v.widgets.open.bg_fill = SURFACE_2;
         v.widgets.open.weak_bg_fill = SURFACE_2;
         v.widgets.open.bg_stroke = egui::Stroke::new(1.0, RING);
         v.widgets.open.fg_stroke = egui::Stroke::new(1.0, FG);
 
-        v.selection.bg_fill = tint_strong(MINT);
-        v.selection.stroke = egui::Stroke::new(1.0, MINT);
-        v.hyperlink_color = MINT;
+        v.selection.bg_fill = tint_strong(ACCENT);
+        v.selection.stroke = egui::Stroke::new(1.0, ACCENT);
+        v.text_cursor.stroke = egui::Stroke::new(2.0, ACCENT);
+        v.hyperlink_color = ACCENT;
         v.error_fg_color = RED;
         v.warn_fg_color = AMBER;
         v.override_text_color = None;
@@ -207,46 +204,50 @@ pub fn apply(ctx: &egui::Context) {
 
 // ------------------------------------------------------------- components
 
-/// Card container: surface fill, hairline ring, radius 12, 18px inset.
+/// Card: surface fill, hairline ring, radius 12, 20px inset.
 pub fn card(_ui: &egui::Ui) -> egui::Frame {
     egui::Frame::default()
         .fill(SURFACE)
         .stroke(egui::Stroke::new(1.0, BORDER))
         .corner_radius(egui::CornerRadius::same(12))
-        .inner_margin(18.0)
+        .inner_margin(20.0)
 }
 
-/// Display heading in Newsreader, with the trailing clause in italic — the
-/// same two-tone headline the website uses ("You talk. *It types.*").
-///
-/// Painted at its exact measured size rather than laid out as two labels, so
-/// it stays centered inside a `vertical_centered` and the roman and italic
-/// halves sit tight against each other.
-pub fn display(ui: &mut egui::Ui, roman: &str, italic: &str, size: f32) {
-    let roman_g = ui.fonts(|f| f.layout_no_wrap(roman.to_string(), serif(size), FG));
-    let italic_g =
-        ui.fonts(|f| f.layout_no_wrap(italic.to_string(), serif_italic(size), FG));
-    let total = egui::vec2(
-        roman_g.size().x + italic_g.size().x,
-        roman_g.size().y.max(italic_g.size().y),
-    );
+/// Card heading: SemiBold 15 title over a muted one-line description.
+pub fn card_header(ui: &mut egui::Ui, title: &str, desc: &str) {
+    ui.spacing_mut().item_spacing.y = 4.0;
+    ui.label(egui::RichText::new(title).font(semibold(15.0)).color(FG));
+    if !desc.is_empty() {
+        ui.label(egui::RichText::new(desc).size(13.0).color(MUTED));
+    }
+    ui.spacing_mut().item_spacing.y = 8.0;
+}
+
+/// Page heading: SemiBold 22 title with an optional muted description.
+pub fn page_header(ui: &mut egui::Ui, title: &str, desc: &str) {
+    ui.label(egui::RichText::new(title).font(semibold(22.0)).color(FG));
+    if !desc.is_empty() {
+        ui.add_space(-2.0);
+        ui.label(egui::RichText::new(desc).size(13.5).color(TEXT_2));
+    }
+}
+
+/// Display heading: SemiBold, with the trailing clause in orange ("Three
+/// *permissions.*"). Painted at its measured size so it centres cleanly.
+pub fn display(ui: &mut egui::Ui, plain: &str, accent: &str, size: f32) {
+    let a = ui.fonts(|f| f.layout_no_wrap(plain.to_string(), semibold(size), FG));
+    let b = ui.fonts(|f| f.layout_no_wrap(accent.to_string(), semibold(size), ACCENT));
+    let total = egui::vec2(a.size().x + b.size().x, a.size().y.max(b.size().y));
     let (rect, _) = ui.allocate_exact_size(total, egui::Sense::hover());
     let p = ui.painter();
-    p.galley(rect.min, roman_g.clone(), FG);
-    p.galley(
-        egui::pos2(rect.min.x + roman_g.size().x, rect.min.y),
-        italic_g,
-        FG,
-    );
+    p.galley(rect.min, a.clone(), FG);
+    p.galley(egui::pos2(rect.min.x + a.size().x, rect.min.y), b, ACCENT);
 }
 
-/// Small mono uppercase section label ("ENGINE PARAMETERS").
+/// Small section label above a group of cards: medium 12, muted, sentence
+/// case. (Uppercase stays reserved for mono machine readouts.)
 pub fn section_label(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        egui::RichText::new(text.to_uppercase())
-            .font(mono_medium(11.0))
-            .color(MUTED),
-    );
+    ui.label(egui::RichText::new(text).font(medium(12.5)).color(MUTED));
 }
 
 /// Mono uppercase micro-text (timestamps, readouts).
@@ -256,25 +257,83 @@ pub fn mono_upper(text: &str, size: f32, color: Color32) -> egui::RichText {
         .color(color)
 }
 
-/// Hotkey chip: amber mono uppercase on an amber tint, radius 5, with the
-/// bottom edge that makes it read as a physical key.
-pub fn key_chip(ui: &mut egui::Ui, label: &str) {
-    egui::Frame::default()
-        .fill(tint(AMBER))
-        .stroke(egui::Stroke::new(1.0, tint_strong(AMBER)))
-        .corner_radius(egui::CornerRadius::same(5))
-        .inner_margin(egui::Margin::symmetric(9, 5))
-        .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(label.to_uppercase())
-                    .font(mono_medium(11.0))
-                    .color(AMBER),
-            );
-        });
+/// Keyboard key, shadcn `<Kbd>`: raised surface, hairline ring, a darker
+/// bottom edge so it reads as a physical key.
+pub fn kbd(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), mono_medium(12.0), FG));
+    let pad = egui::vec2(8.0, 4.0);
+    let size = egui::vec2(
+        (galley.size().x + pad.x * 2.0).max(26.0),
+        galley.size().y + pad.y * 2.0,
+    );
+    let (rect, resp) = ui.allocate_exact_size(size + egui::vec2(0.0, 2.0), egui::Sense::hover());
+    let key = egui::Rect::from_min_size(rect.min, size);
+    let p = ui.painter();
+    p.rect_filled(
+        key.translate(egui::vec2(0.0, 2.0)),
+        6.0,
+        Color32::from_rgb(4, 4, 4),
+    );
+    p.rect_filled(key, 6.0, SURFACE_3);
+    p.rect_stroke(
+        key,
+        6.0,
+        egui::Stroke::new(1.0, RING),
+        egui::StrokeKind::Inside,
+    );
+    p.galley(
+        egui::pos2(key.center().x - galley.size().x / 2.0, key.min.y + pad.y),
+        galley,
+        FG,
+    );
+    resp
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // the full kit, not only what today's screens use
+pub enum Tone {
+    Neutral,
+    Accent,
+    Danger,
+    Warn,
+}
+
+impl Tone {
+    fn color(self) -> Color32 {
+        match self {
+            Tone::Neutral => TEXT_2,
+            Tone::Accent => ACCENT,
+            Tone::Danger => RED,
+            Tone::Warn => AMBER,
+        }
+    }
+}
+
+/// Badge, shadcn `<Badge>`: pill, tinted fill, 11.5 medium text.
+pub fn badge(ui: &mut egui::Ui, text: &str, tone: Tone) -> egui::Response {
+    let c = tone.color();
+    let galley = ui.fonts(|f| f.layout_no_wrap(text.to_string(), medium(11.5), c));
+    let pad = egui::vec2(8.0, 3.0);
+    let (rect, resp) = ui.allocate_exact_size(galley.size() + pad * 2.0, egui::Sense::hover());
+    let p = ui.painter();
+    let (fill, ring) = if tone == Tone::Neutral {
+        (SURFACE_2, BORDER)
+    } else {
+        (tint(c), tint_strong(c))
+    };
+    p.rect_filled(rect, rect.height() / 2.0, fill);
+    p.rect_stroke(
+        rect,
+        rect.height() / 2.0,
+        egui::Stroke::new(1.0, ring),
+        egui::StrokeKind::Inside,
+    );
+    p.galley(rect.min + pad, galley, c);
+    resp
 }
 
 /// Status LED: small filled dot with a soft halo. `pulse` animates opacity
-/// on a 2s cycle (caller must keep repainting, e.g. the overlay).
+/// on a 2s cycle (the caller must keep repainting).
 pub fn led(ui: &mut egui::Ui, color: Color32, pulse: bool) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
     let a = if pulse {
@@ -284,13 +343,12 @@ pub fn led(ui: &mut egui::Ui, color: Color32, pulse: bool) {
     } else {
         1.0
     };
-    let c = color.linear_multiply(a);
     let p = ui.painter();
-    p.circle_filled(rect.center(), 7.0, color.linear_multiply(0.16 * a));
-    p.circle_filled(rect.center(), 3.5, c);
+    p.circle_filled(rect.center(), 6.5, color.linear_multiply(0.18 * a));
+    p.circle_filled(rect.center(), 3.5, color.linear_multiply(a));
 }
 
-/// Hardware-style toggle switch — mint when on.
+/// Switch, shadcn `<Switch>`: orange track when on, white thumb always.
 pub fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let size = egui::vec2(36.0, 20.0);
     let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click());
@@ -304,46 +362,193 @@ pub fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
         Color32::from(a * (1.0 - t) + b * t)
     };
     let p = ui.painter();
-    p.rect_filled(rect, 10.0, mix(SURFACE_3, MINT));
-    p.rect_stroke(
-        rect,
-        10.0,
-        egui::Stroke::new(1.0, mix(RING, MINT)),
-        egui::StrokeKind::Inside,
-    );
-    let knob = mix(FG, ON_MINT);
+    let track = if resp.hovered() && !*on {
+        RING
+    } else {
+        SURFACE_3
+    };
+    p.rect_filled(rect, 10.0, mix(track, ACCENT));
     let x = egui::lerp((rect.left() + 10.0)..=(rect.right() - 10.0), t);
-    p.circle_filled(egui::pos2(x, rect.center().y), 7.0, knob);
+    p.circle_filled(egui::pos2(x, rect.center().y), 8.0, FG);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// The one high-emphasis action per screen: mint fill, deep-green text —
-/// the website's button, in the dark.
-pub fn primary_button(ui: &mut egui::Ui, text: impl Into<String>) -> egui::Response {
-    ui.add(
-        egui::Button::new(
-            egui::RichText::new(text.into())
-                .font(medium(13.5))
-                .color(ON_MINT),
-        )
-        .fill(MINT)
-        .stroke(egui::Stroke::NONE)
-        .corner_radius(egui::CornerRadius::same(8)),
-    )
-    .on_hover_cursor(egui::CursorIcon::PointingHand)
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // the full kit, not only what today's screens use
+pub enum Variant {
+    /// Orange fill: the one high-emphasis action per screen.
+    Primary,
+    /// Raised neutral fill.
+    Secondary,
+    /// Transparent with a hairline ring.
+    Outline,
+    /// No fill, no ring; fills on hover.
+    Ghost,
+    /// Red text, red fill on hover: irreversible actions.
+    Destructive,
 }
 
-/// Quiet secondary action: no fill, hairline ring.
-pub fn ghost_button(ui: &mut egui::Ui, text: impl Into<String>) -> egui::Response {
-    ui.add(
-        egui::Button::new(
-            egui::RichText::new(text.into())
-                .font(medium(13.0))
-                .color(TEXT_2),
-        )
-        .fill(Color32::TRANSPARENT)
-        .stroke(egui::Stroke::new(1.0, RING))
-        .corner_radius(egui::CornerRadius::same(8)),
-    )
-    .on_hover_cursor(egui::CursorIcon::PointingHand)
+/// Button, shadcn `<Button>`, with an optional leading phosphor icon. Height
+/// 32 (`sm` 28); hover states are part of the variant, not the call site.
+pub fn button_with(
+    ui: &mut egui::Ui,
+    variant: Variant,
+    icon: Option<&str>,
+    text: &str,
+    small: bool,
+) -> egui::Response {
+    let h = if small { 28.0 } else { 34.0 };
+    let font = medium(if small { 12.5 } else { 13.5 });
+    let label = match icon {
+        Some(i) if text.is_empty() => i.to_string(),
+        Some(i) => format!("{i}  {text}"),
+        None => text.to_string(),
+    };
+    let galley = ui.fonts(|f| f.layout_no_wrap(label, font, FG));
+    let pad_x = if text.is_empty() {
+        (h - galley.size().x) / 2.0
+    } else if small {
+        10.0
+    } else {
+        14.0
+    };
+    let size = egui::vec2(galley.size().x + pad_x * 2.0, h);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let hov = resp.hovered();
+    let down = resp.is_pointer_button_down_on();
+    let (fill, ring, ink) = match variant {
+        Variant::Primary => (
+            if hov { ACCENT_HOVER } else { ACCENT },
+            Color32::TRANSPARENT,
+            ON_ACCENT,
+        ),
+        Variant::Secondary => (if hov { SURFACE_3 } else { SURFACE_2 }, BORDER, FG),
+        Variant::Outline => (
+            if hov { SURFACE_2 } else { Color32::TRANSPARENT },
+            if hov { RING } else { BORDER },
+            if hov { FG } else { TEXT_2 },
+        ),
+        Variant::Ghost => (
+            if hov { SURFACE_2 } else { Color32::TRANSPARENT },
+            Color32::TRANSPARENT,
+            if hov { FG } else { TEXT_2 },
+        ),
+        Variant::Destructive => (
+            if hov { tint_strong(RED) } else { tint(RED) },
+            tint_strong(RED),
+            RED,
+        ),
+    };
+    let rect = if down { rect.shrink(0.5) } else { rect };
+    let p = ui.painter();
+    p.rect_filled(rect, 8.0, fill);
+    if ring != Color32::TRANSPARENT {
+        p.rect_stroke(
+            rect,
+            8.0,
+            egui::Stroke::new(1.0, ring),
+            egui::StrokeKind::Inside,
+        );
+    }
+    p.galley(rect.center() - galley.size() / 2.0, galley, ink);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+pub fn button(ui: &mut egui::Ui, variant: Variant, text: &str) -> egui::Response {
+    button_with(ui, variant, None, text, false)
+}
+
+/// The one high-emphasis action per screen.
+pub fn primary_button(ui: &mut egui::Ui, text: impl Into<String>) -> egui::Response {
+    button(ui, Variant::Primary, &text.into())
+}
+
+/// Sidebar navigation item: icon + label, full width, 34px tall. Selected =
+/// raised fill, orange icon and a 2px orange rail on the left edge.
+pub fn nav_item(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -> egui::Response {
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 34.0), egui::Sense::click());
+    let hov = resp.hovered();
+    let p = ui.painter();
+    if selected {
+        p.rect_filled(rect, 8.0, SURFACE_2);
+        p.rect_stroke(
+            rect,
+            8.0,
+            egui::Stroke::new(1.0, BORDER),
+            egui::StrokeKind::Inside,
+        );
+        p.rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(rect.left(), rect.top() + 9.0),
+                egui::vec2(2.5, rect.height() - 18.0),
+            ),
+            1.5,
+            ACCENT,
+        );
+    } else if hov {
+        p.rect_filled(rect, 8.0, SURFACE);
+    }
+    let cy = rect.center().y;
+    p.text(
+        egui::pos2(rect.left() + 14.0, cy),
+        egui::Align2::LEFT_CENTER,
+        icon,
+        FontId::proportional(16.0),
+        if selected {
+            ACCENT
+        } else if hov {
+            FG
+        } else {
+            MUTED
+        },
+    );
+    p.text(
+        egui::pos2(rect.left() + 40.0, cy),
+        egui::Align2::LEFT_CENTER,
+        label,
+        medium(13.5),
+        if selected || hov { FG } else { TEXT_2 },
+    );
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Thin determinate progress bar: orange fill on a surface track.
+pub fn progress(ui: &mut egui::Ui, frac: f32) {
+    let w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 6.0), egui::Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 3.0, SURFACE_3);
+    let mut fill = rect;
+    fill.set_width(rect.width() * frac.clamp(0.0, 1.0));
+    p.rect_filled(fill, 3.0, ACCENT);
+}
+
+/// 1px horizontal hairline across the available width.
+pub fn hairline(ui: &mut egui::Ui) {
+    let w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 1.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, BORDER);
+}
+
+/// The app icon (assets/icon-128.png), drawn at `size` points. Decoded once
+/// per window and cached in egui's memory.
+pub fn logo(ui: &mut egui::Ui, size: f32) -> egui::Response {
+    let tex = logo_texture(ui.ctx());
+    ui.add(egui::Image::new((tex.id(), egui::vec2(size, size))))
+}
+
+pub fn logo_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let id = egui::Id::new("wc-logo-texture");
+    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return t;
+    }
+    let img = image::load_from_memory(include_bytes!("../../../assets/icon-128.png"))
+        .expect("bundled logo decodes")
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+    let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
+    let t = ctx.load_texture("wc-logo", color, egui::TextureOptions::LINEAR);
+    ctx.data_mut(|d| d.insert_temp(id, t.clone()));
+    t
 }

@@ -20,12 +20,12 @@ Site: https://whisper-catch.vercel.app/ · Licence: MIT · Price: $0, no paid ti
 - **Models**: NVIDIA Parakeet 0.6B (~660 MB, more accurate) or Moonshine base (~64 MB,
   smaller). macOS defaults to Moonshine, Linux to Parakeet. Roughly 25x realtime on CPU,
   no GPU required.
-- **Hotkeys**: Right Command on macOS, Right Alt on Linux, both reconfigurable.
+- **Hotkeys**: fn on macOS, Right Alt on Linux, both reconfigurable.
 - **Where it types**: keystrokes are injected at the OS level, so it works in any focused
   application with no plugin or integration.
 - **Install (macOS)**: `brew install --cask AviroopPaul/whisprcatch/whisprcatch`, then grant
-  Accessibility, Input Monitoring and Microphone, then quit and reopen the app once (macOS
-  only re-reads permissions at launch).
+  Microphone, Accessibility and Input Monitoring in the first-run setup (drag the app icon
+  into each list); setup restarts the app when it is done.
 - **Install (Linux)**: `sudo apt install ./whisper-catch_amd64.deb`, then one polkit prompt.
 - **What it deliberately does not do**: AI tone rewriting, cloud sync, learned personal
   dictionaries, snippets, phone apps, team billing. For those, a paid cloud tool such as

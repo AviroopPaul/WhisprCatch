@@ -148,13 +148,13 @@
         },
         {
           "@type": "HowToStep",
-          "name": "Quit and reopen",
-          "text": "macOS only re-reads permissions when an app starts, so quit and reopen WhisprCatch once."
+          "name": "Let setup restart it",
+          "text": "Setup restarts WhisprCatch once it has the permissions, because macOS only applies some of them to a fresh launch."
         },
         {
           "@type": "HowToStep",
           "name": "Dictate",
-          "text": "Hold Right Command, speak, and release. Punctuated text is typed wherever your cursor is."
+          "text": "Hold fn, speak, and release. Punctuated text is typed wherever your cursor is."
         }
       ]
     },
@@ -223,7 +223,7 @@
           "name": "What do I need to do on macOS after installing?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Grant three permissions (Accessibility, Input Monitoring, Microphone), then quit and reopen the app. macOS only re-reads permissions when an app starts, which trips up a lot of people. The first-run wizard opens each pane for you, and whisper-catch doctor tells you which grants are live."
+            "text": "Grant three permissions (Accessibility, Input Monitoring, Microphone). The first-run setup asks for each one, floats the app icon for you to drag into the System Settings list, and restarts the app when it is done, because macOS only applies some grants to a fresh launch. whisper-catch doctor tells you which grants are live."
           }
         },
         {
@@ -466,7 +466,7 @@
       <div class="step reveal">
         <span class="n">01</span>
         <h3>Hold the key</h3>
-        <p><kbd>Right ⌘</kbd> on macOS, <kbd>Right Alt</kbd> on Linux, or whichever key you'd rather use. A small pill shows up to say it's listening.</p>
+        <p><kbd>fn</kbd> on macOS, <kbd>Right Alt</kbd> on Linux, or whichever key you'd rather use. A small pill shows up to say it's listening.</p>
       </div>
       <div class="step reveal" data-d="1">
         <span class="n">02</span>
@@ -666,8 +666,8 @@ network            <span class="ok">not used</span>
           </span>
         </button>
         <p class="plat-note">
-          Grant <b>Accessibility</b>, <b>Input Monitoring</b> and <b>Microphone</b>, then quit and
-          reopen once. macOS only re-reads permissions at launch. After that, hold <kbd>Right ⌘</kbd> and talk.
+          Setup asks for the <b>Microphone</b>, then <b>Accessibility</b> and <b>Input Monitoring</b>:
+          click Grant and drag the app icon into the list. It restarts itself when it is done. Then hold <kbd>fn</kbd> and talk.
         </p>
       </div>
 
@@ -748,7 +748,7 @@ network            <span class="ok">not used</span>
       </details>
       <details>
         <summary>What do I need to do on macOS after installing?</summary>
-        <p class="answer">Grant three permissions (<b>Accessibility</b>, <b>Input Monitoring</b>, <b>Microphone</b>), then quit and reopen the app. macOS only re-reads permissions when an app starts, which trips up a lot of people. The first-run wizard opens each pane for you, and <code>whisper-catch doctor</code> tells you which grants are live.</p>
+        <p class="answer">Grant three permissions (<b>Accessibility</b>, <b>Input Monitoring</b>, <b>Microphone</b>). The first-run setup asks for each one, floats the app icon for you to drag into the System Settings list, and restarts the app when it is done, because macOS only applies some grants to a fresh launch. <code>whisper-catch doctor</code> tells you which grants are live.</p>
       </details>
       <details>
         <summary>What can Wispr Flow do that WhisprCatch can't?</summary>

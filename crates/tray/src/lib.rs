@@ -116,7 +116,7 @@ mod linux {
                     icon_name: "document-open-recent".into(),
                     activate: Box::new(|this: &mut Self| {
                         if let Err(e) =
-                            std::process::Command::new(&this.exe).arg("settings").spawn()
+                            std::process::Command::new(&this.exe).args(["settings", "--tab", "history"]).spawn()
                         {
                             log::error!("failed to open history: {e}");
                         }
@@ -249,7 +249,7 @@ mod macos {
                     st.enabled.store(now, std::sync::atomic::Ordering::Relaxed);
                     log::info!("listening {}", if now { "enabled" } else { "disabled" });
                 } else if ev.id == "history" {
-                    if let Err(e) = std::process::Command::new(&exe).arg("settings").spawn() {
+                    if let Err(e) = std::process::Command::new(&exe).args(["settings", "--tab", "history"]).spawn() {
                         log::error!("failed to open history: {e}");
                     }
                 } else if ev.id == "prefs" {
@@ -269,43 +269,15 @@ mod macos {
         Ok(())
     }
 
-    /// An 18×18 push-to-talk mic glyph rendered as a template image (adapts
-    /// to light/dark menu bars). The real app icon ships in the `.app` bundle.
+    /// The app mark as a menu-bar template image: `assets/icon-menubar.png`,
+    /// a 36×36 black silhouette (18pt at 2×) rendered from `icon-menubar.svg`.
+    /// AppKit recolours template images for light and dark menu bars.
     fn mic_icon() -> Icon {
-        let (w, h) = (18u32, 18u32);
-        let mut rgba = vec![0u8; (w * h * 4) as usize];
-        let mut set = |x: i32, y: i32, a: u8| {
-            if (0..w as i32).contains(&x) && (0..h as i32).contains(&y) {
-                let i = ((y as u32 * w + x as u32) * 4) as usize;
-                rgba[i + 3] = rgba[i + 3].max(a);
-            }
-        };
-        // capsule body: rounded rect x∈[6.5,11.5], y∈[1.5,9.5]
-        for y in 0..h as i32 {
-            for x in 0..w as i32 {
-                let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-                // distance to capsule core segment (x=9, y from 4 to 7.5)
-                let cy = fy.clamp(4.0, 7.5);
-                let d = ((fx - 9.0).powi(2) + (fy - cy).powi(2)).sqrt();
-                if d <= 2.6 {
-                    set(x, y, 255);
-                }
-                // holder arc: ring r∈[4.6,5.8] around (9,8), lower half
-                let dr = ((fx - 9.0).powi(2) + (fy - 8.0).powi(2)).sqrt();
-                if fy >= 8.0 && (4.6..=5.8).contains(&dr) {
-                    set(x, y, 255);
-                }
-            }
-        }
-        // stem + base
-        for y in 14..16 {
-            set(8, y, 255);
-            set(9, y, 255);
-        }
-        for x in 6..12 {
-            set(x, 16, 255);
-        }
-        Icon::from_rgba(rgba, w, h).expect("valid tray icon")
+        let img = image::load_from_memory(include_bytes!("../../../assets/icon-menubar.png"))
+            .expect("bundled menu-bar icon decodes")
+            .to_rgba8();
+        let (w, h) = img.dimensions();
+        Icon::from_rgba(img.into_raw(), w, h).expect("valid tray icon")
     }
 }
 

@@ -1,11 +1,11 @@
 //! Settings & history window (eframe/egui), launched as
-//! `whisper-catch settings [--tab history|settings]` — from the tray menu
-//! or the shell.
+//! `whisper-catch settings [--tab home|history|cleanup|settings|permissions|about]`
+//! from the tray menu or the shell.
 //!
-//! Layout per docs/DESIGN.md: top header with a centered segmented control;
-//! History = 288px sidebar (search + chronological list) + a detail pane
-//! with metadata and copy/delete; Settings = sections with small mono
-//! uppercase headings. Dark-only, "tactile engineer" language.
+//! Layout per docs/DESIGN.md: a left nav rail (Home, History, Text cleanup,
+//! Settings, Permissions, About) beside a content area. History is a list pane
+//! beside a detail card; the other pages are a centered column of cards.
+//! Dark-only, black + orange.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
@@ -21,15 +21,20 @@ use wc_text::fillers::FillerLevel;
 use crate::{autostart, config, theme};
 use wc_core::history;
 
-const SIDEBAR_W: f32 = 288.0;
-const SETTINGS_COL: f32 = 560.0;
+const SIDEBAR_W: f32 = 232.0;
+/// Widest the centered page column grows.
+const PAGE_COL: f32 = 720.0;
 const GITHUB_URL: &str = "https://github.com/AviroopPaul/whisper-catch";
 const SITE_URL: &str = "https://whisper-catch.vercel.app";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
+    Home,
     History,
+    Cleanup,
     Settings,
+    Permissions,
+    About,
 }
 
 /// Opening size of the settings window, in points.
@@ -178,6 +183,9 @@ enum DlMsg {
 
 struct App {
     tab: Tab,
+    /// Cached `permissions::all_granted()`, refreshed about once a second.
+    perm_ok: bool,
+    perm_checked: Instant,
     cfg: config::Config,
     autostart_on: bool,
     entries: Vec<history::Entry>,
@@ -222,11 +230,16 @@ impl App {
         }
         let cleanup = Cleanup::build(&cfg.polish, &entries);
         Self {
-            tab: if tab == Some("settings") {
-                Tab::Settings
-            } else {
-                Tab::History
+            tab: match tab {
+                Some("history") => Tab::History,
+                Some("settings") => Tab::Settings,
+                Some("permissions") => Tab::Permissions,
+                Some("cleanup") | Some("text-cleanup") => Tab::Cleanup,
+                Some("about") => Tab::About,
+                _ => Tab::Home,
             },
+            perm_ok: crate::permissions::all_granted(),
+            perm_checked: Instant::now(),
             cfg,
             autostart_on,
             entries,
@@ -395,35 +408,6 @@ fn seg_button(ui: &mut egui::Ui, selected: bool, label: &str, min_w: f32) -> boo
 }
 
 /// Top-center segmented control (History | Settings).
-fn segmented(ui: &mut egui::Ui, tab: &mut Tab) {
-    egui::Frame::default()
-        .fill(theme::SURFACE)
-        .stroke(egui::Stroke::new(1.0, theme::BORDER))
-        .corner_radius(egui::CornerRadius::same(8))
-        .inner_margin(3.0)
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            ui.horizontal(|ui| {
-                if seg_button(ui, *tab == Tab::History, "History", 92.0) {
-                    *tab = Tab::History;
-                }
-                if seg_button(ui, *tab == Tab::Settings, "Settings", 92.0) {
-                    *tab = Tab::Settings;
-                }
-            });
-        });
-}
-
-/// Ghost button: transparent fill, hairline ring.
-fn ghost_button(ui: &mut egui::Ui, text: impl Into<egui::RichText>) -> egui::Response {
-    ui.add(
-        egui::Button::new(text.into().font(theme::medium(12.0)).color(theme::TEXT_2))
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::new(1.0, theme::RING))
-            .corner_radius(egui::CornerRadius::same(6)),
-    )
-}
-
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // macOS hands a resizable window back at whatever size it was last
@@ -433,122 +417,455 @@ impl eframe::App for App {
         if self.needs_size {
             self.needs_size = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(window_size()));
+            // Opened from the tray or the pill, this process starts behind
+            // whatever app is in front; the window the user asked for should
+            // not need a hunt.
+            #[cfg(target_os = "macos")]
+            crate::permissions::mac::bring_to_front(ctx);
         }
         self.shot.tick(ctx);
         self.poll_download();
         if self.dl.is_some() {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
+        // Cheap struct compare; the rebuild behind it reads the user's rule
+        // files off disk and replays their history, so it must not run per
+        // frame. See `Cleanup`.
+        if self.cleanup.fp != PolishFingerprint::of(&self.cfg.polish) {
+            self.cleanup = Cleanup::build(&self.cfg.polish, &self.entries);
+        }
+        // Permissions can change while the window is open; re-read once a second.
+        if self.perm_checked.elapsed() >= Duration::from_secs(1) {
+            self.perm_ok = crate::permissions::all_granted();
+            self.perm_checked = Instant::now();
+        }
+        ctx.request_repaint_after(Duration::from_secs(1));
 
-        egui::TopBottomPanel::top("header")
-            .exact_height(52.0)
+        let nav = egui::SidePanel::left("nav")
+            .exact_width(SIDEBAR_W)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::default()
+                    .fill(theme::SIDEBAR)
+                    .inner_margin(12.0),
+            )
+            .show(ctx, |ui| self.sidebar(ui));
+        // 1px hairline on the right edge of the rail.
+        let r = nav.response.rect;
+        ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("nav-edge"),
+        ))
+        .vline(
+            r.right() - 0.5,
+            r.y_range(),
+            egui::Stroke::new(1.0, theme::BORDER),
+        );
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::default().fill(theme::BG))
+            .show(ctx, |ui| match self.tab {
+                Tab::Home => self.scroll_col(ui, |s, ui| s.home_page(ui)),
+                Tab::History => self.history_page(ui),
+                Tab::Cleanup => {
+                    self.save_footer(ui);
+                    self.scroll_col(ui, |s, ui| s.cleanup_page(ui));
+                }
+                Tab::Settings => {
+                    self.save_footer(ui);
+                    self.scroll_col(ui, |s, ui| s.settings_page(ui));
+                }
+                Tab::Permissions => self.scroll_col(ui, |_, ui| {
+                    theme::page_header(
+                        ui,
+                        "Permissions",
+                        "WhisprCatch needs three macOS permissions to hear the hotkey, use the \
+                         microphone and type for you.",
+                    );
+                    ui.add_space(20.0);
+                    crate::permissions::panel(ui);
+                }),
+                Tab::About => self.scroll_col(ui, |s, ui| s.about_page(ui)),
+            });
+    }
+}
+
+// ------------------------------------------------------------------ shell
+
+impl App {
+    fn sidebar(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            ui.add_space(4.0);
+            theme::logo(ui, 28.0);
+            ui.label(
+                egui::RichText::new(crate::app_name())
+                    .font(theme::semibold(15.0))
+                    .color(theme::FG),
+            );
+        });
+        ui.add_space(18.0);
+
+        let items = [
+            (Tab::Home, icons::HOUSE, "Home"),
+            (Tab::History, icons::CLOCK_COUNTER_CLOCKWISE, "History"),
+            (Tab::Cleanup, icons::MAGIC_WAND, "Text cleanup"),
+            (Tab::Settings, icons::GEAR_SIX, "Settings"),
+            (Tab::Permissions, icons::SHIELD_CHECK, "Permissions"),
+            (Tab::About, icons::INFO, "About"),
+        ];
+        for (tab, icon, label) in items {
+            let resp = theme::nav_item(ui, icon, label, self.tab == tab);
+            if tab == Tab::Permissions && !self.perm_ok {
+                let c = egui::pos2(resp.rect.right() - 16.0, resp.rect.center().y);
+                ui.painter().circle_filled(c, 3.5, theme::AMBER);
+            }
+            if resp.clicked() {
+                self.tab = tab;
+            }
+        }
+
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+            egui::Frame::default()
+                .fill(theme::SURFACE)
+                .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                .corner_radius(egui::CornerRadius::same(10))
+                .inner_margin(12.0)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
+                    // bottom-up layout: the last row added sits on top
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label(egui::RichText::new("Hold").size(12.5).color(theme::MUTED));
+                        theme::kbd(ui, self.key_label());
+                        ui.label(
+                            egui::RichText::new("to dictate")
+                                .size(12.5)
+                                .color(theme::MUTED),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        let (led, state) = if self.perm_ok {
+                            (theme::ACCENT, "Ready")
+                        } else {
+                            (theme::AMBER, "Setup needed")
+                        };
+                        theme::led(ui, led, false);
+                        ui.label(
+                            egui::RichText::new(state)
+                                .font(theme::medium(13.0))
+                                .color(theme::FG),
+                        );
+                    });
+                });
+        });
+    }
+
+    /// A vertically scrolling page with a centered column (max `PAGE_COL`).
+    fn scroll_col(&mut self, ui: &mut egui::Ui, body: impl FnOnce(&mut Self, &mut egui::Ui)) {
+        let mut area = egui::ScrollArea::vertical().auto_shrink(false);
+        if let Some(offset) = shot_scroll() {
+            area = area.vertical_scroll_offset(offset);
+        }
+        area.show(ui, |ui| {
+            ui.add_space(32.0);
+            let w = (ui.available_width() - 48.0).clamp(200.0, PAGE_COL);
+            centered_col(ui, w, |ui| body(self, ui));
+            ui.add_space(32.0);
+        });
+    }
+
+    /// Sticky bottom bar on Settings and Text cleanup: status left, save right.
+    fn save_footer(&mut self, ui: &mut egui::Ui) {
+        egui::TopBottomPanel::bottom("save-footer")
+            .exact_height(60.0)
+            .show_separator_line(false)
             .frame(
                 egui::Frame::default()
                     .fill(theme::BG)
-                    .inner_margin(egui::Margin::symmetric(16, 0)),
+                    .inner_margin(egui::Margin::symmetric(24, 0)),
             )
-            .show(ctx, |ui| {
-                let narrow = ui.available_width() < 760.0;
-                ui.columns(3, |cols| {
-                    cols[0].with_layout(
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.set_min_height(52.0);
-                            theme::led(ui, theme::MINT, false);
-                            ui.add_space(2.0);
-                            ui.label(
-                                egui::RichText::new(crate::app_name())
-                                    .font(theme::semibold(14.0))
-                                    .color(theme::FG),
-                            );
-                        },
-                    );
-                    cols[1].with_layout(
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.set_min_height(52.0);
-                            let w = ui.available_width();
-                            ui.add_space(((w - 196.0) / 2.0).max(0.0));
-                            segmented(ui, &mut self.tab);
-                        },
-                    );
-                    cols[2].with_layout(
+            .show_inside(ui, |ui| {
+                let r = ui.max_rect();
+                ui.painter().hline(
+                    r.x_range().expand(24.0),
+                    r.top(),
+                    egui::Stroke::new(1.0, theme::BORDER),
+                );
+                let w = ui.available_width().min(PAGE_COL);
+                centered_col(ui, w, |ui| {
+                    ui.set_min_height(60.0);
+                    ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
-                            ui.set_min_height(52.0);
-                            if !narrow {
-                                let (n, w, s) = self.totals;
-                                ui.label(theme::mono_upper(
-                                    &format!("{w} words · {n} utt · {:.0} min", s / 60.0),
-                                    10.5,
-                                    theme::MUTED,
-                                ));
+                            if theme::primary_button(ui, "Save changes").clicked() {
+                                self.save();
+                            }
+                            if !self.status.is_empty() {
+                                let color = if self.saved_ok {
+                                    theme::ACCENT
+                                } else {
+                                    theme::RED
+                                };
+                                let prefix =
+                                    if self.saved_ok { icons::CHECK } else { icons::WARNING };
+                                ui.with_layout(
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(format!(
+                                                    "{prefix} {}",
+                                                    self.status
+                                                ))
+                                                .size(12.5)
+                                                .color(color),
+                                            )
+                                            .truncate(),
+                                        );
+                                    },
+                                );
                             }
                         },
                     );
                 });
             });
+    }
+}
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme::BG))
-            .show(ctx, |ui| match self.tab {
-                Tab::History => self.history_tab(ui),
-                Tab::Settings => {
-                    egui::Frame::default()
-                        .inner_margin(egui::Margin {
-                            left: 24,
-                            right: 24,
-                            top: 20,
-                            bottom: 16,
-                        })
-                        .show(ui, |ui| {
-                            centered_col(ui, SETTINGS_COL, |ui| self.settings_tab(ui));
+// ------------------------------------------------------------------- home
+
+impl App {
+    fn home_page(&mut self, ui: &mut egui::Ui) {
+        theme::page_header(
+            ui,
+            "Home",
+            "Hold the key, speak, release. Your words appear where you are typing.",
+        );
+        ui.add_space(20.0);
+
+        if !self.perm_ok {
+            let mut review = false;
+            theme::card(ui)
+                .fill(theme::SURFACE)
+                .stroke(egui::Stroke::new(1.0, theme::tint_strong(theme::AMBER)))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(icons::WARNING)
+                                .size(18.0)
+                                .color(theme::AMBER),
+                        );
+                        ui.vertical(|ui| {
+                            ui.set_max_width((ui.available_width() - 190.0).max(160.0));
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.label(
+                                egui::RichText::new("Finish setup")
+                                    .font(theme::semibold(15.0))
+                                    .color(theme::FG),
+                            );
+                            ui.label(
+                                egui::RichText::new(
+                                    "A macOS permission is missing, so dictation cannot work yet.",
+                                )
+                                .size(13.0)
+                                .color(theme::TEXT_2),
+                            );
                         });
-                }
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if theme::button(ui, theme::Variant::Primary, "Review permissions")
+                                    .clicked()
+                                {
+                                    review = true;
+                                }
+                            },
+                        );
+                    });
+                });
+            if review {
+                self.tab = Tab::Permissions;
+            }
+            ui.add_space(16.0);
+        }
+
+        // Stat tiles.
+        let (n, words, secs) = self.totals;
+        let mins = secs / 60.0;
+        let mins_s = if mins < 10.0 {
+            format!("{mins:.1}")
+        } else {
+            format!("{mins:.0}")
+        };
+        let gap = 12.0;
+        let tile_w = ((ui.available_width() - gap * 2.0) / 3.0).floor();
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for (value, label) in [
+                (words.to_string(), "Words dictated"),
+                (n.to_string(), "Dictations"),
+                (mins_s, "Minutes spoken"),
+            ] {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(tile_w, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        theme::card(ui).show(ui, |ui| {
+                            ui.set_width(tile_w - 42.0);
+                            ui.spacing_mut().item_spacing.y = 4.0;
+                            ui.label(
+                                egui::RichText::new(value)
+                                    .font(theme::semibold(26.0))
+                                    .color(theme::FG),
+                            );
+                            ui.label(egui::RichText::new(label).size(13.0).color(theme::MUTED));
+                        });
+                    },
+                );
+            }
+        });
+        ui.add_space(16.0);
+
+        theme::card(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            theme::card_header(ui, "How it works", "");
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                theme::kbd(ui, self.key_label());
+                ui.label(
+                    egui::RichText::new("Hold, speak, release. Text appears at your cursor.")
+                        .size(14.0)
+                        .color(theme::FG),
+                );
             });
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{}  Everything runs on this Mac. No audio leaves the device.",
+                    icons::SHIELD_CHECK
+                ))
+                .size(13.0)
+                .color(theme::TEXT_2),
+            );
+        });
+        ui.add_space(16.0);
+
+        let mut goto_history = false;
+        theme::card(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Recent").font(theme::semibold(15.0)).color(theme::FG));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if theme::button_with(
+                        ui,
+                        theme::Variant::Ghost,
+                        Some(icons::ARROW_RIGHT),
+                        "View all",
+                        true,
+                    )
+                    .clicked()
+                    {
+                        goto_history = true;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            if self.entries.is_empty() {
+                ui.label(
+                    egui::RichText::new("Nothing dictated yet.")
+                        .size(13.5)
+                        .color(theme::MUTED),
+                );
+            }
+            for (i, e) in self.entries.iter().take(3).enumerate() {
+                if i > 0 {
+                    ui.add_space(2.0);
+                    theme::hairline(ui);
+                    ui.add_space(2.0);
+                }
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.set_min_height(30.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(124.0, 18.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.label(
+                                egui::RichText::new(list_time(e.ts))
+                                    .font(egui::FontId::monospace(11.5))
+                                    .color(theme::MUTED),
+                            );
+                        },
+                    );
+                    let t = e.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    let (t, color) = if t.is_empty() {
+                        ("(nothing was said)".to_string(), theme::MUTED)
+                    } else {
+                        (t, theme::TEXT_2)
+                    };
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(t).size(13.5).color(color)).truncate(),
+                    );
+                });
+            }
+        });
+        if goto_history {
+            self.tab = Tab::History;
+        }
     }
 }
 
 // ---------------------------------------------------------------- history
 
 impl App {
-    fn history_tab(&mut self, ui: &mut egui::Ui) {
-        if self.entries.is_empty() {
-            self.history_empty_state(ui);
-            return;
-        }
+    fn history_page(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::default()
+            .inner_margin(egui::Margin {
+                left: 24,
+                right: 24,
+                top: 32,
+                bottom: 24,
+            })
+            .show(ui, |ui| {
+                theme::page_header(
+                    ui,
+                    "History",
+                    "Everything you dictate is saved here, on this Mac only.",
+                );
+                if self.entries.is_empty() {
+                    self.history_empty_state(ui);
+                    return;
+                }
+                ui.add_space(20.0);
 
-        egui::SidePanel::left("history-list")
-            .exact_width(SIDEBAR_W)
-            .resizable(false)
-            .frame(
-                egui::Frame::default()
-                    .fill(theme::BG)
-                    .inner_margin(egui::Margin {
-                        left: 16,
-                        right: 12,
-                        top: 14,
-                        bottom: 10,
-                    }),
-            )
-            .show_inside(ui, |ui| self.history_sidebar(ui));
+                let list_w = (ui.available_width() * 0.4).clamp(190.0, 300.0);
+                egui::SidePanel::left("history-list")
+                    .exact_width(list_w)
+                    .resizable(false)
+                    .show_separator_line(false)
+                    .frame(egui::Frame::default().inner_margin(egui::Margin {
+                        left: 0,
+                        right: 16,
+                        top: 0,
+                        bottom: 0,
+                    }))
+                    .show_inside(ui, |ui| self.history_list(ui));
 
-        egui::CentralPanel::default()
-            .frame(
-                egui::Frame::default()
-                    .fill(theme::BG)
-                    .inner_margin(egui::Margin {
-                        left: 28,
-                        right: 28,
-                        top: 18,
-                        bottom: 16,
-                    }),
-            )
-            .show_inside(ui, |ui| self.history_detail(ui));
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::default())
+                    .show_inside(ui, |ui| self.history_detail(ui));
+            });
     }
 
     fn history_empty_state(&mut self, ui: &mut egui::Ui) {
-        ui.add_space((ui.available_height() * 0.32).clamp(24.0, 260.0));
+        ui.add_space((ui.available_height() * 0.28).clamp(24.0, 220.0));
         ui.vertical_centered(|ui| {
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::hover());
@@ -570,22 +887,36 @@ impl App {
                 ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
                 ui.spacing_mut().item_spacing.x = 6.0;
                 ui.label(egui::RichText::new("Hold").color(theme::TEXT_2));
-                theme::key_chip(ui, self.key_label());
+                theme::kbd(ui, self.key_label());
                 ui.label(egui::RichText::new("and speak to dictate.").color(theme::TEXT_2));
             });
         });
     }
 
-    fn history_sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.add(
-            egui::TextEdit::singleline(&mut self.search)
-                .hint_text(
-                    egui::RichText::new(format!("{}  Search", icons::MAGNIFYING_GLASS))
-                        .color(theme::MUTED),
-                )
-                .desired_width(f32::INFINITY),
-        );
-        ui.add_space(8.0);
+    fn history_list(&mut self, ui: &mut egui::Ui) {
+        // Search input with a leading magnifier.
+        egui::Frame::default()
+            .fill(theme::SURFACE_2)
+            .stroke(egui::Stroke::new(1.0, theme::BORDER))
+            .corner_radius(egui::CornerRadius::same(8))
+            .inner_margin(egui::Margin::symmetric(10, 4))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.label(
+                        egui::RichText::new(icons::MAGNIFYING_GLASS)
+                            .size(14.0)
+                            .color(theme::MUTED),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .frame(false)
+                            .hint_text(egui::RichText::new("Search").color(theme::MUTED))
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+            });
+        ui.add_space(10.0);
 
         let q = self.search.to_lowercase();
         let shown: Vec<(u64, String, f32)> = self
@@ -600,19 +931,19 @@ impl App {
             self.selected = shown.first().map(|(ts, ..)| *ts);
         }
 
-        let footer_h = 30.0;
+        let footer_h = 36.0;
         let list_h = (ui.available_height() - footer_h).max(60.0);
         egui::ScrollArea::vertical()
             .max_height(list_h)
             .auto_shrink(false)
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.spacing_mut().item_spacing.y = 4.0;
                 if shown.is_empty() {
                     ui.add_space(16.0);
                     ui.vertical_centered(|ui| {
                         ui.label(
                             egui::RichText::new("No matches")
-                                .small()
+                                .size(13.0)
                                 .color(theme::MUTED),
                         );
                     });
@@ -627,8 +958,9 @@ impl App {
             });
 
         // footer: count + clear-all with inline confirm
-        ui.add_space(4.0);
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
             ui.label(theme::mono_upper(
                 &format!("{} transcripts", shown.len()),
                 10.0,
@@ -636,50 +968,17 @@ impl App {
             ));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if self.confirm_clear {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Delete all")
-                                    .font(theme::medium(11.0))
-                                    .color(theme::RED),
-                            )
-                            .fill(theme::tint(theme::RED))
-                            .stroke(egui::Stroke::NONE)
-                            .corner_radius(egui::CornerRadius::same(4)),
-                        )
+                    if theme::button_with(ui, theme::Variant::Destructive, None, "Delete all", true)
                         .clicked()
                     {
                         let _ = history::clear();
                         self.reload_history();
                         self.confirm_clear = false;
                     }
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Keep")
-                                    .font(theme::medium(11.0))
-                                    .color(theme::TEXT_2),
-                            )
-                            .fill(egui::Color32::TRANSPARENT)
-                            .stroke(egui::Stroke::new(1.0, theme::RING))
-                            .corner_radius(egui::CornerRadius::same(4)),
-                        )
-                        .clicked()
-                    {
+                    if theme::button_with(ui, theme::Variant::Ghost, None, "Keep", true).clicked() {
                         self.confirm_clear = false;
                     }
-                } else if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("Clear all")
-                                .font(theme::medium(11.0))
-                                .color(theme::MUTED),
-                        )
-                        .fill(egui::Color32::TRANSPARENT)
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(egui::CornerRadius::same(4)),
-                    )
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                } else if theme::button_with(ui, theme::Variant::Ghost, None, "Clear all", true)
                     .clicked()
                 {
                     self.confirm_clear = true;
@@ -688,8 +987,8 @@ impl App {
         });
     }
 
-    /// One sidebar row: mono uppercase timestamp + duration, then a 2-line
-    /// clamped preview. Returns true when clicked.
+    /// One list row: mono timestamp + duration, then a 2-line clamped
+    /// preview. Returns true when clicked.
     fn history_row(&self, ui: &mut egui::Ui, ts: u64, text: &str, dur: f32) -> bool {
         let selected = Some(ts) == self.selected;
         let resp = ui
@@ -698,22 +997,31 @@ impl App {
                     .id_salt(ts)
                     .sense(egui::Sense::click()),
                 |ui| {
+                    let hovered = ui.rect_contains_pointer(ui.max_rect());
                     let fill = if selected {
+                        theme::SURFACE_2
+                    } else if hovered {
                         theme::SURFACE
                     } else {
                         egui::Color32::TRANSPARENT
                     };
                     egui::Frame::default()
                         .fill(fill)
-                        .corner_radius(egui::CornerRadius::same(6))
-                        .inner_margin(egui::Margin::symmetric(10, 8))
+                        .corner_radius(egui::CornerRadius::same(8))
+                        .inner_margin(egui::Margin {
+                            left: 14,
+                            right: 12,
+                            top: 10,
+                            bottom: 10,
+                        })
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.spacing_mut().item_spacing.y = 4.0;
+                            ui.spacing_mut().interact_size.y = 16.0;
                             ui.horizontal(|ui| {
                                 ui.label(theme::mono_upper(
                                     &list_time(ts),
-                                    10.0,
+                                    10.5,
                                     if selected { theme::TEXT_2 } else { theme::MUTED },
                                 ));
                                 ui.with_layout(
@@ -721,7 +1029,7 @@ impl App {
                                     |ui| {
                                         ui.label(theme::mono_upper(
                                             &format!("{dur:.1}s"),
-                                            10.0,
+                                            10.5,
                                             theme::MUTED,
                                         ));
                                     },
@@ -734,7 +1042,7 @@ impl App {
                             let mut job = egui::text::LayoutJob::single_section(
                                 preview.to_owned(),
                                 egui::TextFormat {
-                                    font_id: egui::FontId::proportional(12.5),
+                                    font_id: egui::FontId::proportional(13.0),
                                     color: if blank {
                                         theme::MUTED
                                     } else if selected {
@@ -760,29 +1068,103 @@ impl App {
         if selected {
             ui.painter().rect_stroke(
                 resp.rect,
-                egui::CornerRadius::same(6),
-                egui::Stroke::new(1.0, theme::RING),
-                egui::StrokeKind::Inside,
-            );
-            // mint rail on the selected row, as on the website's feature list
-            let r = resp.rect;
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(
-                    egui::pos2(r.left(), r.top() + 6.0),
-                    egui::vec2(2.0, r.height() - 12.0),
-                ),
-                egui::CornerRadius::same(1),
-                theme::MINT,
-            );
-        } else if resp.hovered() {
-            ui.painter().rect_stroke(
-                resp.rect,
-                egui::CornerRadius::same(6),
+                egui::CornerRadius::same(8),
                 egui::Stroke::new(1.0, theme::BORDER),
                 egui::StrokeKind::Inside,
             );
+            let r = resp.rect;
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.left(), r.top() + 8.0),
+                    egui::vec2(2.0, r.height() - 16.0),
+                ),
+                egui::CornerRadius::same(1),
+                theme::ACCENT,
+            );
         }
         resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+    }
+
+    /// Copy and Delete (with inline confirm), in reading order. When `rtl` the
+    /// row lays out right to left, so the buttons are added in reverse.
+    fn detail_actions(
+        &mut self,
+        ui: &mut egui::Ui,
+        ts: u64,
+        rtl: bool,
+        copy: &mut bool,
+        delete: &mut bool,
+    ) {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let flash = self
+            .copied
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(1500));
+        let confirming = self.confirm_delete == Some(ts);
+
+        // 0 = copy, 1 = delete group
+        let order = if rtl { [1, 0] } else { [0, 1] };
+        for part in order {
+            if part == 0 {
+                if flash {
+                    theme::button_with(
+                        ui,
+                        theme::Variant::Outline,
+                        Some(icons::CHECK),
+                        "Copied",
+                        true,
+                    );
+                    ui.ctx().request_repaint_after(Duration::from_millis(200));
+                } else if theme::button_with(
+                    ui,
+                    theme::Variant::Outline,
+                    Some(icons::COPY),
+                    "Copy",
+                    true,
+                )
+                .clicked()
+                {
+                    *copy = true;
+                }
+            } else if confirming {
+                let cancel = |s: &mut Self, ui: &mut egui::Ui| {
+                    if theme::button_with(ui, theme::Variant::Ghost, None, "Cancel", true)
+                        .clicked()
+                    {
+                        s.confirm_delete = None;
+                    }
+                };
+                let confirm = |ui: &mut egui::Ui, delete: &mut bool| {
+                    if theme::button_with(
+                        ui,
+                        theme::Variant::Destructive,
+                        Some(icons::TRASH),
+                        "Confirm delete",
+                        true,
+                    )
+                    .clicked()
+                    {
+                        *delete = true;
+                    }
+                };
+                if rtl {
+                    cancel(self, ui);
+                    confirm(ui, delete);
+                } else {
+                    confirm(ui, delete);
+                    cancel(self, ui);
+                }
+            } else if theme::button_with(
+                ui,
+                theme::Variant::Ghost,
+                Some(icons::TRASH),
+                "Delete",
+                true,
+            )
+            .clicked()
+            {
+                self.confirm_delete = Some(ts);
+            }
+        }
     }
 
     fn history_detail(&mut self, ui: &mut egui::Ui) {
@@ -798,97 +1180,68 @@ impl App {
         let words = entry.text.split_whitespace().count();
         let mut do_copy = false;
         let mut do_delete = false;
+        let h = ui.available_height();
 
-        ui.horizontal(|ui| {
-            ui.label(theme::mono_upper(
-                &detail_time(entry.ts),
-                11.0,
-                theme::MUTED,
-            ));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                if self.confirm_delete == Some(entry.ts) {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new(format!("{} Confirm", icons::TRASH))
-                                    .font(theme::medium(12.0))
-                                    .color(theme::RED),
-                            )
-                            .fill(theme::tint(theme::RED))
-                            .stroke(egui::Stroke::NONE)
-                            .corner_radius(egui::CornerRadius::same(6)),
-                        )
-                        .clicked()
-                    {
-                        do_delete = true;
-                    }
-                } else if ghost_button(
-                    ui,
-                    egui::RichText::new(format!("{} Delete", icons::TRASH)),
-                )
-                .clicked()
-                {
-                    self.confirm_delete = Some(entry.ts);
-                }
-                let flash = self
-                    .copied
-                    .is_some_and(|at| at.elapsed() < Duration::from_millis(1500));
-                if flash {
-                    ui.label(theme::mono_upper("copied", 10.5, theme::MINT));
-                    ui.ctx().request_repaint_after(Duration::from_millis(200));
-                } else if ghost_button(
-                    ui,
-                    egui::RichText::new(format!("{} Copy", icons::COPY)),
-                )
-                .clicked()
-                {
-                    do_copy = true;
+        theme::card(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.set_min_height(h - 44.0);
+            ui.spacing_mut().interact_size.y = 20.0;
+            let wide = ui.available_width() > 440.0;
+            ui.horizontal(|ui| {
+                ui.label(theme::mono_upper(
+                    &detail_time(entry.ts),
+                    11.0,
+                    theme::MUTED,
+                ));
+                if wide {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        self.detail_actions(ui, entry.ts, true, &mut do_copy, &mut do_delete);
+                    });
                 }
             });
-        });
-        ui.add_space(2.0);
-        ui.label(theme::mono_upper(
-            &format!(
-                "{:.1}s spoken · {words} words · {:.2}s inference",
-                entry.dur_s, entry.infer_s
-            ),
-            10.5,
-            theme::MUTED,
-        ));
-        ui.add_space(12.0);
-        // hairline
-        let w = ui.available_width();
-        let y = ui.cursor().top();
-        ui.painter().hline(
-            egui::Rangef::new(ui.cursor().left(), ui.cursor().left() + w),
-            y,
-            egui::Stroke::new(1.0, theme::BORDER),
-        );
-        ui.add_space(14.0);
-
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            // readable measure: cap the transcript column
-            ui.set_max_width(680.0);
-            if entry.text.trim().is_empty() {
-                ui.label(
-                    egui::RichText::new("Nothing was said in this one.")
-                        .size(15.0)
-                        .italics()
-                        .color(theme::MUTED),
+            ui.add_space(10.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                theme::badge(ui, &format!("{:.1}s spoken", entry.dur_s), theme::Tone::Neutral);
+                theme::badge(ui, &format!("{words} words"), theme::Tone::Neutral);
+                theme::badge(
+                    ui,
+                    &format!("{:.2}s inference", entry.infer_s),
+                    theme::Tone::Neutral,
                 );
-                return;
+            });
+            if !wide {
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui| {
+                    self.detail_actions(ui, entry.ts, false, &mut do_copy, &mut do_delete)
+                });
             }
-            // Newsreader for the transcript itself: this is prose to read,
-            // and it is the same face the website sets its headlines in.
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(&entry.text)
-                        .font(theme::serif(18.0))
-                        .color(theme::FG),
-                )
-                .wrap(),
-            );
+            ui.add_space(14.0);
+            theme::hairline(ui);
+            ui.add_space(14.0);
+
+            egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .show(ui, |ui| {
+                    if entry.text.trim().is_empty() {
+                        ui.label(
+                            egui::RichText::new("Nothing was said in this one.")
+                                .size(15.0)
+                                .italics()
+                                .color(theme::MUTED),
+                        );
+                        return;
+                    }
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&entry.text)
+                                .size(15.0)
+                                .line_height(Some(22.5))
+                                .color(theme::FG),
+                        )
+                        .wrap(),
+                    );
+                });
         });
 
         if do_copy {
@@ -904,81 +1257,42 @@ impl App {
 
 // ---------------------------------------------------------------- settings
 
+/// 1px rule between rows inside a card, with 14px of air on each side.
+fn row_sep(ui: &mut egui::Ui) {
+    ui.add_space(14.0);
+    theme::hairline(ui);
+    ui.add_space(14.0);
+}
+
 impl App {
-    fn settings_tab(&mut self, ui: &mut egui::Ui) {
-        // Cheap struct compare; the rebuild behind it reads the user's rule
-        // files off disk and replays their history, so it must not run per
-        // frame. See `Cleanup`.
-        if self.cleanup.fp != PolishFingerprint::of(&self.cfg.polish) {
-            self.cleanup = Cleanup::build(&self.cfg.polish, &self.entries);
+    fn settings_page(&mut self, ui: &mut egui::Ui) {
+        theme::page_header(
+            ui,
+            "Settings",
+            "Everything runs on this Mac. Changes apply after the daemon restarts.",
+        );
+        ui.add_space(20.0);
+        self.engine_card(ui);
+        ui.add_space(16.0);
+        self.hotkey_card(ui);
+        ui.add_space(16.0);
+        self.output_card(ui);
+    }
+
+    fn cleanup_page(&mut self, ui: &mut egui::Ui) {
+        theme::page_header(
+            ui,
+            "Text cleanup",
+            "Tidy what the model heard before it is typed. Nothing leaves this Mac.",
+        );
+        ui.add_space(20.0);
+        self.cleanup_card(ui);
+        ui.add_space(16.0);
+        if self.cleanup.has_problems() {
+            self.problems_card(ui);
+            ui.add_space(16.0);
         }
-
-        let mut area = egui::ScrollArea::vertical().auto_shrink(false);
-        if let Some(offset) = shot_scroll() {
-            area = area.vertical_scroll_offset(offset);
-        }
-        area.show(ui, |ui| {
-            theme::section_label(ui, "Engine parameters");
-            ui.add_space(6.0);
-            self.engine_card(ui);
-            ui.add_space(18.0);
-
-            theme::section_label(ui, "Hotkey");
-            ui.add_space(6.0);
-            self.hotkey_card(ui);
-            ui.add_space(18.0);
-
-            theme::section_label(ui, "Output behavior");
-            ui.add_space(6.0);
-            self.output_card(ui);
-            ui.add_space(18.0);
-
-            theme::section_label(ui, "Text cleanup");
-            ui.add_space(6.0);
-            self.cleanup_card(ui);
-            ui.add_space(18.0);
-
-            if self.cleanup.has_problems() {
-                theme::section_label(ui, "Problems");
-                ui.add_space(6.0);
-                self.problems_card(ui);
-                ui.add_space(18.0);
-            }
-
-            theme::section_label(ui, "Cleanup preview");
-            ui.add_space(6.0);
-            self.preview_card(ui);
-            ui.add_space(18.0);
-
-            #[cfg(target_os = "macos")]
-            {
-                theme::section_label(ui, "Permissions");
-                ui.add_space(6.0);
-                self.permissions_card(ui);
-                ui.add_space(18.0);
-            }
-
-            theme::section_label(ui, "About");
-            ui.add_space(6.0);
-            self.about_card(ui);
-            ui.add_space(20.0);
-
-            ui.horizontal(|ui| {
-                if theme::primary_button(ui, "Save changes").clicked() {
-                    self.save();
-                }
-                if !self.status.is_empty() {
-                    let color = if self.saved_ok { theme::MINT } else { theme::RED };
-                    let prefix = if self.saved_ok { icons::CHECK } else { icons::WARNING };
-                    ui.label(
-                        egui::RichText::new(format!("{prefix} {}", self.status))
-                            .small()
-                            .color(color),
-                    );
-                }
-            });
-            ui.add_space(8.0);
-        });
+        self.preview_card(ui);
     }
 
     fn save(&mut self) {
@@ -1010,12 +1324,19 @@ impl App {
         desc: &str,
         control: impl FnOnce(&mut egui::Ui),
     ) {
+        let full = ui.available_width();
+        let left_w = (full - 230.0).max(full * 0.5);
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
+                ui.set_max_width(left_w);
                 ui.spacing_mut().item_spacing.y = 2.0;
-                ui.label(egui::RichText::new(label).color(theme::FG));
+                ui.label(
+                    egui::RichText::new(label)
+                        .font(theme::medium(14.0))
+                        .color(theme::FG),
+                );
                 if !desc.is_empty() {
-                    ui.label(egui::RichText::new(desc).small().color(theme::MUTED));
+                    ui.label(egui::RichText::new(desc).size(12.5).color(theme::MUTED));
                 }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), control);
@@ -1030,6 +1351,13 @@ impl App {
 
         theme::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
+            theme::card_header(
+                ui,
+                "Engine",
+                "The speech model that turns your voice into text, on this Mac.",
+            );
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.add_space(16.0);
             Self::setting_row(ui, "Speech model", selected.blurb(), |ui| {
                 egui::ComboBox::from_id_salt("model")
                     .selected_text(selected.label())
@@ -1043,14 +1371,9 @@ impl App {
                         }
                     });
             });
-            ui.add_space(10.0);
-            ui.label(theme::mono_upper(
-                &format!("{} · {} MB download", selected.ram_hint(), selected.download_mb()),
-                10.0,
-                theme::MUTED,
-            ));
-            ui.add_space(10.0);
+            row_sep(ui);
 
+            let readout = format!("{} · {} MB download", selected.ram_hint(), selected.download_mb());
             if downloading {
                 let dl = self.dl.as_ref().unwrap();
                 let frac = if dl.total > 0 {
@@ -1058,53 +1381,44 @@ impl App {
                 } else {
                     0.0
                 };
-                ui.add(
-                    egui::ProgressBar::new(frac)
-                        .desired_height(6.0)
-                        .fill(theme::MINT)
-                        .corner_radius(egui::CornerRadius::same(4)),
-                );
-                ui.add_space(6.0);
+                Self::setting_row(ui, "Status", &readout, |ui| {
+                    theme::badge(ui, "Downloading", theme::Tone::Neutral);
+                });
+                ui.add_space(12.0);
+                theme::progress(ui, frac);
+                ui.add_space(8.0);
                 if let Some(e) = &dl.error {
-                    ui.label(egui::RichText::new(e).small().color(theme::RED));
+                    ui.label(egui::RichText::new(e).size(12.5).color(theme::RED));
                 } else {
-                    ui.label(theme::mono_upper(
-                        &format!(
+                    ui.label(
+                        egui::RichText::new(format!(
                             "{:.0}% · {:.0} / {:.0} MB · {}",
                             frac * 100.0,
                             dl.done as f64 / 1e6,
                             dl.total as f64 / 1e6,
                             if dl.file.is_empty() { "preparing" } else { &dl.file }
-                        ),
-                        10.0,
-                        theme::MUTED,
-                    ));
+                        ))
+                        .font(egui::FontId::monospace(11.5))
+                        .color(theme::MUTED),
+                    );
                 }
             } else if complete {
-                ui.horizontal(|ui| {
-                    theme::led(ui, theme::MINT, false);
-                    ui.label(theme::mono_upper("ready", 10.5, theme::MINT));
-                    ui.label(theme::mono_upper(
-                        "· applies after the daemon restarts",
-                        10.0,
-                        theme::MUTED,
-                    ));
+                Self::setting_row(ui, "Status", &readout, |ui| {
+                    theme::badge(ui, "Ready", theme::Tone::Accent);
                 });
             } else {
-                ui.horizontal(|ui| {
-                    if ghost_button(
+                Self::setting_row(ui, "Status", &readout, |ui| {
+                    if theme::button_with(
                         ui,
-                        egui::RichText::new(format!(
-                            "{} Download ({} MB)",
-                            icons::DOWNLOAD_SIMPLE,
-                            selected.download_mb()
-                        )),
+                        theme::Variant::Outline,
+                        Some(icons::DOWNLOAD_SIMPLE),
+                        &format!("Download ({} MB)", selected.download_mb()),
+                        true,
                     )
                     .clicked()
                     {
                         do_download = Some(selected);
                     }
-                    ui.label(theme::mono_upper("not downloaded", 10.0, theme::MUTED));
                 });
             }
         });
@@ -1118,6 +1432,9 @@ impl App {
     fn hotkey_card(&mut self, ui: &mut egui::Ui) {
         theme::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
+            theme::card_header(ui, "Hotkey", "The key you hold to dictate.");
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.add_space(16.0);
             Self::setting_row(
                 ui,
                 "Push-to-talk key",
@@ -1132,27 +1449,31 @@ impl App {
                         });
                 },
             );
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                ui.label(egui::RichText::new("Hold").small().color(theme::MUTED));
-                theme::key_chip(ui, config::key_label(&self.cfg.key));
+                ui.label(egui::RichText::new("Hold").size(13.0).color(theme::MUTED));
+                theme::kbd(ui, config::key_label(&self.cfg.key));
                 ui.label(
                     egui::RichText::new("and speak. Release to type.")
-                        .small()
+                        .size(13.0)
                         .color(theme::MUTED),
                 );
             });
+            crate::permissions::fn_key_notice(ui, &self.cfg.key);
         });
     }
 
     fn output_card(&mut self, ui: &mut egui::Ui) {
         theme::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 12.0;
+            theme::card_header(ui, "Output", "How your words reach the screen.");
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.add_space(16.0);
             Self::setting_row(ui, "Live typing", "Words appear while you speak", |ui| {
                 theme::toggle(ui, &mut self.cfg.streaming);
             });
+            row_sep(ui);
             Self::setting_row(
                 ui,
                 "Recording indicator",
@@ -1161,136 +1482,89 @@ impl App {
                     theme::toggle(ui, &mut self.cfg.overlay);
                 },
             );
+            row_sep(ui);
             Self::setting_row(ui, "Keep history", "Log transcriptions locally", |ui| {
                 theme::toggle(ui, &mut self.cfg.history);
             });
+            row_sep(ui);
             Self::setting_row(ui, "Start on login", "Launch the daemon with your session", |ui| {
                 theme::toggle(ui, &mut self.autostart_on);
             });
         });
     }
 
-    /// macOS permission manager — live status plus a jump to each Privacy pane.
-    /// The wizard only guides the first grant; this is where a user fixes a
-    /// permission they skipped or that got revoked.
-    #[cfg(target_os = "macos")]
-    fn permissions_card(&mut self, ui: &mut egui::Ui) {
-        fn open_pane(anchor: &str) {
-            let _ = std::process::Command::new("open")
-                .arg(format!(
-                    "x-apple.systempreferences:com.apple.preference.security?{anchor}"
-                ))
-                .status();
-        }
-
-        // `granted: None` for Microphone — there is no cheap way to read its TCC
-        // state without triggering the prompt, and it is requested on first
-        // capture anyway, so we show the pane link without a verdict.
-        fn row(ui: &mut egui::Ui, label: &str, desc: &str, granted: Option<bool>, anchor: &str) {
-            App::setting_row(ui, label, desc, |ui| {
-                if ghost_button(ui, "Open").clicked() {
-                    open_pane(anchor);
-                }
-                ui.add_space(8.0);
-                match granted {
-                    Some(true) => {
-                        ui.label(
-                            egui::RichText::new(format!("{} granted", icons::CHECK))
-                                .small()
-                                .color(theme::MINT),
-                        );
-                    }
-                    Some(false) => {
-                        ui.label(
-                            egui::RichText::new("not granted")
-                                .small()
-                                .color(theme::AMBER),
-                        );
-                    }
-                    None => {}
-                }
-            });
-            ui.add_space(10.0);
-        }
-
-        let acc = wc_hotkey::keyboard_accessible();
-        let inp = wc_hotkey::input_monitoring_granted();
-
-        theme::card(ui).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            row(
-                ui,
-                "Accessibility",
-                "Types transcribed text into the focused app",
-                Some(acc),
-                "Privacy_Accessibility",
-            );
-            row(
-                ui,
-                "Input Monitoring",
-                "Notices the push-to-talk key globally",
-                Some(inp),
-                "Privacy_ListenEvent",
-            );
-            row(
-                ui,
-                "Microphone",
-                "Captures speech while the key is held",
-                None,
-                "Privacy_Microphone",
-            );
-            ui.label(
-                egui::RichText::new(
-                    "macOS only re-reads these when an app starts. After enabling one, \
-                     quit WhisprCatch (menu bar → Quit) and open it again.",
-                )
-                .small()
-                .color(theme::MUTED),
-            );
-        });
-    }
-
-    fn about_card(&mut self, ui: &mut egui::Ui) {
+    fn about_page(&mut self, ui: &mut egui::Ui) {
+        theme::page_header(ui, "About", "");
+        ui.add_space(20.0);
         theme::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(crate::app_name())
-                        .font(theme::medium(13.0))
-                        .color(theme::FG),
-                );
-                ui.label(theme::mono_upper(
-                    &format!("v{}", env!("CARGO_PKG_VERSION")),
-                    10.5,
-                    theme::MUTED,
-                ));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
-                    ui.hyperlink_to(
-                        egui::RichText::new(format!("{} Site", icons::GLOBE))
-                            .small()
-                            .color(theme::TEXT_2),
-                        SITE_URL,
-                    );
-                    ui.hyperlink_to(
-                        egui::RichText::new(format!("{} GitHub", icons::GITHUB_LOGO))
-                            .small()
-                            .color(theme::TEXT_2),
-                        GITHUB_URL,
+                ui.spacing_mut().item_spacing.x = 14.0;
+                theme::logo(ui, 44.0);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        ui.label(
+                            egui::RichText::new(crate::app_name())
+                                .font(theme::semibold(18.0))
+                                .color(theme::FG),
+                        );
+                        theme::badge(
+                            ui,
+                            &format!("v{}", env!("CARGO_PKG_VERSION")),
+                            theme::Tone::Neutral,
+                        );
+                    });
+                    ui.label(
+                        egui::RichText::new(
+                            "Push-to-talk dictation that runs entirely on your machine.",
+                        )
+                        .size(13.0)
+                        .color(theme::TEXT_2),
                     );
                 });
             });
+            ui.add_space(16.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if theme::button_with(
+                    ui,
+                    theme::Variant::Outline,
+                    Some(icons::GITHUB_LOGO),
+                    "GitHub",
+                    false,
+                )
+                .clicked()
+                {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(GITHUB_URL));
+                }
+                if theme::button_with(ui, theme::Variant::Outline, Some(icons::GLOBE), "Website", false)
+                    .clicked()
+                {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(SITE_URL));
+                }
+            });
+        });
+        ui.add_space(16.0);
+        theme::card(ui).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            theme::card_header(ui, "Privacy", "");
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new("Push-to-talk dictation that runs entirely on your machine.")
-                    .small()
-                    .color(theme::MUTED),
+                egui::RichText::new(
+                    "No account, no telemetry, no cloud. Audio and text never leave this machine.",
+                )
+                .size(13.5)
+                .color(theme::TEXT_2),
             );
-            ui.add_space(4.0);
-            // path stays lowercase — it's case-sensitive
+            ui.add_space(14.0);
+            theme::section_label(ui, "Config file");
+            ui.add_space(2.0);
+            // path stays lowercase: it is case-sensitive
             ui.label(
-                egui::RichText::new(format!("config · {}", config::config_path().display()))
-                    .font(egui::FontId::monospace(9.5))
+                egui::RichText::new(config::config_path().display().to_string())
+                    .font(egui::FontId::monospace(11.5))
                     .color(theme::MUTED),
             );
         });
@@ -1717,17 +1991,16 @@ fn diff_format(change: Change, font: &egui::FontId) -> egui::TextFormat {
             f.color = theme::RED;
             f.strikethrough = egui::Stroke::new(1.0, theme::RED);
         }
-        Change::Added => f.color = theme::MINT,
+        Change::Added => f.color = theme::ACCENT,
         Change::Elided => f.color = theme::MUTED,
     }
     f
 }
 
 /// Paints one replayed dictation: removed words struck through in `RED`, added
-/// words in `MINT`, everything else quiet. Newsreader, because this is the
-/// user's own speech and not UI chrome.
+/// words in `ACCENT`, everything else quiet.
 fn diff_label(ui: &mut egui::Ui, pieces: &[(Change, String)]) {
-    let font = theme::serif(15.0);
+    let font = egui::FontId::proportional(15.0);
     let mut job = egui::text::LayoutJob::default();
     job.wrap.max_width = ui.available_width();
     let mut first = true;
@@ -1750,7 +2023,13 @@ impl App {
     fn cleanup_card(&mut self, ui: &mut egui::Ui) {
         theme::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 12.0;
+            theme::card_header(
+                ui,
+                "Cleanup rules",
+                "Each rule runs on your words, in this order, before they are typed.",
+            );
+            ui.spacing_mut().item_spacing.y = 6.0;
+            ui.add_space(10.0);
 
             Self::setting_row(
                 ui,
@@ -1761,6 +2040,7 @@ impl App {
                 },
             );
             Self::file_readout(ui, &self.cleanup.dictionary, "rule", "rules");
+            row_sep(ui);
 
             Self::setting_row(
                 ui,
@@ -1771,6 +2051,7 @@ impl App {
                 },
             );
             Self::file_readout(ui, &self.cleanup.snippets, "entry", "entries");
+            row_sep(ui);
 
             Self::setting_row(
                 ui,
@@ -1781,6 +2062,7 @@ impl App {
                 },
             );
             if self.cfg.polish.spoken.enabled {
+                ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     ui.add_space(16.0);
                     ui.vertical(|ui| {
@@ -1817,6 +2099,7 @@ impl App {
                 });
             }
 
+            row_sep(ui);
             Self::setting_row(ui, "Filler words", "Hesitation sounds and stutters", |ui| {
                 Self::level_picker(ui, &mut self.cfg.polish.fillers);
             });
@@ -1829,9 +2112,9 @@ impl App {
                 .color(theme::MUTED),
             );
 
-            ui.add_space(2.0);
-            ui.separator();
-            ui.label(theme::mono_upper("not available yet", 10.0, theme::MUTED));
+            row_sep(ui);
+            theme::section_label(ui, "Not available yet");
+            ui.add_space(8.0);
             Self::pending_row(
                 ui,
                 "Self-correction",
@@ -1846,7 +2129,7 @@ impl App {
             );
 
             if !self.cleanup.chain.is_empty() {
-                ui.add_space(2.0);
+                row_sep(ui);
                 ui.label(theme::mono_upper(
                     &format!(
                         "runs {} · applies after the daemon restarts",
@@ -1947,6 +2230,8 @@ impl App {
     fn problems_card(&mut self, ui: &mut egui::Ui) {
         theme::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
+            theme::card_header(ui, "Problems", "Found in your own rule files.");
+            ui.add_space(10.0);
             // One wrapped paragraph rather than a horizontal row: these
             // messages carry a path and a line number and are long, and a
             // label in a horizontal layout does not wrap. It runs off the
@@ -2019,6 +2304,12 @@ impl App {
         let mut recheck = false;
         theme::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
+            theme::card_header(
+                ui,
+                "Cleanup preview",
+                "Your own recent dictations, replayed through the rules above.",
+            );
+            ui.add_space(10.0);
             ui.horizontal(|ui| {
                 let head = if self.cleanup.chain.is_empty() {
                     "nothing enabled".to_string()
@@ -2033,9 +2324,12 @@ impl App {
                 };
                 ui.label(theme::mono_upper(&head, 10.0, theme::MUTED));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ghost_button(
+                    if theme::button_with(
                         ui,
-                        egui::RichText::new(format!("{} Recheck", icons::ARROWS_CLOCKWISE)),
+                        theme::Variant::Outline,
+                        Some(icons::ARROWS_CLOCKWISE),
+                        "Recheck",
+                        true,
                     )
                     .on_hover_text("Re-read your rule files and your latest dictations")
                     .clicked()
@@ -2068,7 +2362,7 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         ui.label(egui::RichText::new("Hold").small().color(theme::MUTED));
-                        theme::key_chip(ui, self.key_label());
+                        theme::kbd(ui, self.key_label());
                         ui.label(
                             egui::RichText::new("and say something, then come back.")
                                 .small()
@@ -2118,7 +2412,7 @@ impl App {
                             .color(theme::RED),
                     );
                     ui.label(egui::RichText::new("·").small().color(theme::MUTED));
-                    ui.label(egui::RichText::new("added").small().color(theme::MINT));
+                    ui.label(egui::RichText::new("added").small().color(theme::ACCENT));
                     if self.cleanup.changed > self.cleanup.samples.len() {
                         ui.label(theme::mono_upper(
                             &format!(
@@ -2433,8 +2727,7 @@ mod tests {
     /// panel — so it is bounded on both sides.
     #[test]
     fn a_very_long_dictation_is_counted_but_not_diffed() {
-        let long = std::iter::repeat("um word")
-            .take(PREVIEW_MAX_WORDS)
+        let long = std::iter::repeat_n("um word", PREVIEW_MAX_WORDS)
             .collect::<Vec<_>>()
             .join(" ");
         let c = Cleanup::build(&light(), &[entry(1, &long, None)]);

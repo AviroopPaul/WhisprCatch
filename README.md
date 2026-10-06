@@ -31,11 +31,11 @@ Local push-to-talk dictation for **macOS and Linux** — no cloud, no account, n
 Most of the time it's a menu-bar icon and a small pill while you talk. Open it and
 there's a searchable log of what you've dictated, plus settings — all local.
 
-![The WhisprCatch window: a searchable list of past transcripts on the left, the selected transcript on the right with duration, word count and inference time](docs/screenshots/app-history.png)
+![The WhisprCatch window: a sidebar of pages, then a searchable list of past transcripts beside the selected transcript with its duration, word count and inference time](docs/screenshots/app-history.png)
 
 | First run | Settings |
 | --- | --- |
-| ![First-run setup: the three macOS permissions as a checklist, each with live status and its own button](docs/screenshots/setup-permissions.png) | ![Settings: speech model, push-to-talk key, output behaviour toggles and permissions](docs/screenshots/app-settings.png) |
+| ![First-run setup: Microphone, Accessibility, Input Monitoring and the fn key as a checklist, each with live status and its own button](docs/screenshots/setup-permissions.png) | ![Settings: speech model, the fn push-to-talk key and output behaviour switches](docs/screenshots/app-settings.png) |
 
 <sub>Transcripts shown are sample text, not a real history.</sub>
 
@@ -47,14 +47,15 @@ there's a searchable log of what you've dictated, plus settings — all local.
 brew install --cask AviroopPaul/whisprcatch/whisprcatch
 ```
 
-Then open **WhisprCatch** from Applications. macOS needs three permissions before
-it can hear the hotkey and type for you — Accessibility, Input Monitoring, and
-Microphone. The first-run wizard opens each pane for you.
+Then open **WhisprCatch** from Applications. The first-run setup asks for the
+Microphone, then for Accessibility and Input Monitoring: click **Grant** and drag
+the app icon from the small panel under System Settings into the list. It also
+offers to set **Press fn key to: Do Nothing**, so holding fn dictates instead of
+opening the emoji picker. When setup finishes the app restarts itself, because
+macOS only applies some grants to a fresh process. `whisper-catch doctor` prints
+their live status.
 
-> macOS only re-reads those permissions when an app starts, so **quit and reopen
-> WhisprCatch after granting them**. `whisper-catch doctor` prints their live status.
-
-Hold **Right ⌘**, speak, release. macOS 11+, Apple Silicon.
+Hold **fn**, speak, release. macOS 11+, Apple Silicon.
 
 ### Linux (Ubuntu/Debian, x86-64)
 
@@ -73,13 +74,13 @@ A first-run wizard handles keyboard permission (a one-time polkit prompt) and th
 
 ## Usage
 
-Hold the push-to-talk key (**Right ⌘** on macOS, **Right Alt** on Linux), speak, release — the transcription is typed into whatever window has focus. A menu-bar/tray icon shows recording state, session stats, and shortcuts; `whisper-catch settings` opens settings and your local transcription history, and `whisper-catch doctor` prints permission and model status.
+Hold the push-to-talk key (**fn** on macOS, **Right Alt** on Linux), speak, release — the transcription is typed into whatever window has focus. A menu-bar/tray icon shows recording state, session stats, and shortcuts; `whisper-catch settings` opens settings and your local transcription history, and `whisper-catch doctor` prints permission and model status.
 
 Configuration lives at `~/Library/Application Support/whisper-catch/config.toml` on macOS, `~/.config/whisper-catch/config.toml` on Linux:
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `key` | `rcmd` / `ralt` | Push-to-talk key (`rcmd`, `lcmd`, `ralt`, `lalt`, `rctrl`, `lctrl`, `super`, `f13`, `scrolllock`, …) |
+| `key` | `fn` / `ralt` | Push-to-talk key (`fn`, `rcmd`, `lcmd`, `ralt`, `lalt`, `rctrl`, `lctrl`, `super`, `f13`, `scrolllock`, …) |
 | `model` | `moonshine` / `parakeet` | `parakeet` (best accuracy, ~660 MB) or `moonshine` (tiny, ~64 MB) |
 | `streaming` | `true` | Type words live while speaking instead of all at once on release |
 | `overlay` | `true` | Show the floating recording pill while dictating |

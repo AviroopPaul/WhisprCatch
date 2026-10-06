@@ -17,6 +17,11 @@ pub enum Outcome {
     Ready,
     /// User closed the window before finishing.
     Cancelled,
+    /// Setup finished and a fresh copy of the app is starting (macOS), so
+    /// grants given during setup apply: macOS caches them per process, and an
+    /// event tap created in *this* process would still be refused Input
+    /// Monitoring. The caller exits so the new copy can take the lock.
+    Relaunching,
 }
 
 enum Step {
@@ -57,8 +62,8 @@ pub fn need_setup(model: ModelId) -> bool {
 }
 
 /// Opening size of the wizard window, in points.
-const WINDOW_W: f32 = 560.0;
-const WINDOW_H: f32 = 640.0;
+const WINDOW_W: f32 = 600.0;
+const WINDOW_H: f32 = 740.0;
 
 /// Blocks on the wizard window; returns when setup is complete or abandoned.
 pub fn run(model: ModelId, key_label: &str) -> Result<Outcome> {
@@ -97,6 +102,9 @@ struct Wizard {
     key_label: String,
     /// Cleared after the opening size has been asserted once.
     needs_size: bool,
+    /// The permission step was shown, so grants may have changed under
+    /// this process: finish by relaunching (see [`Outcome::Relaunching`]).
+    saw_permissions: bool,
     shot: crate::shot::Shot,
 }
 
@@ -108,6 +116,7 @@ impl Wizard {
             model,
             key_label,
             needs_size: true,
+            saw_permissions: false,
             shot: crate::shot::Shot::from_env(),
         }
     }
@@ -194,100 +203,6 @@ fn grant_keyboard_access() -> Result<(), String> {
     Err("keyboard access setup is not implemented on this platform".into())
 }
 
-/// Open one System Settings privacy pane.
-#[cfg(target_os = "macos")]
-fn open_pane(pane: &str) {
-    let _ = std::process::Command::new("open")
-        .arg(format!("x-apple.systempreferences:com.apple.preference.security?{pane}"))
-        .status();
-}
-
-/// The three grants macOS needs, in the order the user meets them.
-/// `granted` is None where the system gives us no way to ask (Microphone is
-/// prompted on first capture), so the row shows "on first use" instead of a
-/// wrong answer.
-#[cfg(target_os = "macos")]
-fn permissions() -> [(&'static str, &'static str, Option<bool>, &'static str); 3] {
-    [
-        (
-            "Accessibility",
-            "Lets it type the transcript into the focused app",
-            Some(wc_hotkey::keyboard_accessible()),
-            "Privacy_Accessibility",
-        ),
-        (
-            "Input Monitoring",
-            "Lets it notice the push-to-talk key going down",
-            Some(wc_hotkey::input_monitoring_granted()),
-            "Privacy_ListenEvent",
-        ),
-        (
-            "Microphone",
-            "Asked the first time you dictate",
-            None,
-            "Privacy_Microphone",
-        ),
-    ]
-}
-
-/// One row of the permission checklist: status dot, name, why it is needed,
-/// and its own button to the exact pane. Returns true if the button was hit.
-#[cfg(target_os = "macos")]
-fn perm_row(ui: &mut egui::Ui, name: &str, why: &str, granted: Option<bool>) -> bool {
-    let mut clicked = false;
-    egui::Frame::default()
-        .fill(theme::SURFACE)
-        .stroke(egui::Stroke::new(
-            1.0,
-            if granted == Some(true) {
-                theme::tint_strong(theme::MINT)
-            } else {
-                theme::BORDER
-            },
-        ))
-        .corner_radius(egui::CornerRadius::same(10))
-        .inner_margin(egui::Margin::symmetric(14, 12))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                let dot = match granted {
-                    Some(true) => theme::MINT,
-                    Some(false) => theme::MUTED,
-                    None => theme::AMBER,
-                };
-                theme::led(ui, dot, false);
-                ui.add_space(4.0);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.label(
-                        egui::RichText::new(name)
-                            .font(theme::medium(13.5))
-                            .color(theme::FG),
-                    );
-                    ui.label(
-                        egui::RichText::new(why)
-                            .size(11.5)
-                            .color(theme::MUTED),
-                    );
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    match granted {
-                        Some(true) => {
-                            ui.label(theme::mono_upper("on", 10.5, theme::MINT));
-                        }
-                        Some(false) => {
-                            clicked = theme::ghost_button(ui, "Open").clicked();
-                        }
-                        None => {
-                            ui.label(theme::mono_upper("on first use", 10.5, theme::MUTED));
-                        }
-                    }
-                });
-            });
-        });
-    clicked
-}
-
 // ---------------------------------------------------------------------------
 // Painted UI pieces (no icon fonts needed; crisp at any DPI).
 // ---------------------------------------------------------------------------
@@ -304,12 +219,12 @@ enum StepIcon {
 /// accent rather than the plate, so the step reads as one bright object on
 /// a dark field instead of a grey disc.
 fn icon_plate(ui: &mut egui::Ui, icon: StepIcon) {
-    let ink = theme::MINT;
+    let ink = theme::ACCENT;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(72.0, 72.0), egui::Sense::hover());
     let c = rect.center();
     let p = ui.painter();
     p.circle_filled(c, 36.0, theme::SURFACE);
-    p.circle_stroke(c, 36.0, egui::Stroke::new(1.0, theme::tint_strong(theme::MINT)));
+    p.circle_stroke(c, 36.0, egui::Stroke::new(1.0, theme::tint_strong(theme::ACCENT)));
     let s = egui::Stroke::new(2.5, ink);
     match icon {
         StepIcon::Mic => {
@@ -335,7 +250,7 @@ fn icon_plate(ui: &mut egui::Ui, icon: StepIcon) {
                 s,
             );
             // recording LED next to the mic
-            p.circle_filled(egui::pos2(c.x + 14.0, c.y - 14.0), 3.0, theme::RED);
+            p.circle_filled(egui::pos2(c.x + 14.0, c.y - 14.0), 3.0, theme::ACCENT);
         }
         StepIcon::Keyboard => {
             p.rect_stroke(
@@ -378,14 +293,14 @@ fn icon_plate(ui: &mut egui::Ui, icon: StepIcon) {
             ));
         }
         StepIcon::Check => {
-            p.circle_stroke(c, 16.0, egui::Stroke::new(2.5, theme::MINT));
+            p.circle_stroke(c, 16.0, egui::Stroke::new(2.5, theme::ACCENT));
             p.add(egui::Shape::line(
                 vec![
                     egui::pos2(c.x - 7.5, c.y + 0.5),
                     egui::pos2(c.x - 2.5, c.y + 6.0),
                     egui::pos2(c.x + 8.0, c.y - 5.5),
                 ],
-                egui::Stroke::new(3.0, theme::MINT),
+                egui::Stroke::new(3.0, theme::ACCENT),
             ));
         }
     }
@@ -405,9 +320,9 @@ fn step_dots(ui: &mut egui::Ui, current: usize) {
             rect.center().y,
         );
         if i < current {
-            p.circle_filled(c, r, theme::MINT);
+            p.circle_filled(c, r, theme::ACCENT);
         } else if i == current {
-            p.circle_stroke(c, r + 0.5, egui::Stroke::new(1.5, theme::MINT));
+            p.circle_stroke(c, r + 0.5, egui::Stroke::new(1.5, theme::ACCENT));
         } else {
             p.circle_filled(c, r, theme::SURFACE_2);
         }
@@ -439,9 +354,9 @@ fn primary_button(ui: &mut egui::Ui, text: &str, min: egui::Vec2) -> egui::Respo
         egui::Button::new(
             egui::RichText::new(text)
                 .font(theme::medium(14.0))
-                .color(theme::ON_MINT),
+                .color(theme::ON_ACCENT),
         )
-        .fill(theme::MINT)
+        .fill(theme::ACCENT)
         .stroke(egui::Stroke::NONE)
         .corner_radius(egui::CornerRadius::same(10))
         .min_size(min),
@@ -453,14 +368,14 @@ fn primary_button(ui: &mut egui::Ui, text: &str, min: egui::Vec2) -> egui::Respo
 /// exact content size — a Frame would stretch to the column width here.
 fn status_chip(ui: &mut egui::Ui, text: &str) {
     let galley = ui.fonts(|f| {
-        f.layout_no_wrap(text.to_uppercase(), theme::mono_medium(10.5), theme::MINT)
+        f.layout_no_wrap(text.to_uppercase(), theme::mono_medium(10.5), theme::ACCENT)
     });
     let pad = egui::vec2(10.0, 5.0);
     let (rect, _) =
         ui.allocate_exact_size(galley.size() + pad * 2.0, egui::Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, egui::CornerRadius::same(4), theme::tint(theme::MINT));
-    p.galley(rect.min + pad, galley, theme::MINT);
+    p.rect_filled(rect, egui::CornerRadius::same(4), theme::tint(theme::ACCENT));
+    p.galley(rect.min + pad, galley, theme::ACCENT);
 }
 
 /// Error state: tinted panel, error text, optional recovery hint.
@@ -488,9 +403,9 @@ fn hotkey_line(ui: &mut egui::Ui, key_label: &str) {
         ui.fonts(|f| f.layout_no_wrap("and speak. Release to type.".into(), body, theme::TEXT_2));
     let key = ui.fonts(|f| {
         f.layout_no_wrap(
-            key_label.to_uppercase(),
+            key_label.to_string(),
             theme::mono_medium(12.0),
-            theme::AMBER,
+            theme::FG,
         )
     });
 
@@ -513,22 +428,15 @@ fn hotkey_line(ui: &mut egui::Ui, key_label: &str) {
         egui::pos2(x, cy - chip_size.y / 2.0 - 1.0),
         chip_size,
     );
-    p.rect_filled(chip, egui::CornerRadius::same(5), theme::tint(theme::AMBER));
+    p.rect_filled(chip.translate(egui::vec2(0.0, 2.0)), egui::CornerRadius::same(6), egui::Color32::from_rgb(4, 4, 4));
+    p.rect_filled(chip, egui::CornerRadius::same(6), theme::SURFACE_3);
     p.rect_stroke(
         chip,
-        egui::CornerRadius::same(5),
+        egui::CornerRadius::same(6),
         egui::Stroke::new(1.0, theme::RING),
         egui::StrokeKind::Inside,
     );
-    // the "key" bottom edge
-    p.line_segment(
-        [
-            egui::pos2(chip.left() + 5.0, chip.bottom() + 1.5),
-            egui::pos2(chip.right() - 5.0, chip.bottom() + 1.5),
-        ],
-        egui::Stroke::new(2.0, theme::RING),
-    );
-    p.galley(chip.min + pad, key, theme::AMBER);
+    p.galley(chip.min + pad, key, theme::FG);
     x += chip_size.x + gap;
 
     p.galley(egui::pos2(x, cy - post.size().y / 2.0), post, theme::TEXT_2);
@@ -546,6 +454,8 @@ impl eframe::App for Wizard {
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
                 WINDOW_W, WINDOW_H,
             )));
+            #[cfg(target_os = "macos")]
+            crate::permissions::mac::bring_to_front(ctx);
         }
         self.shot.tick(ctx);
         // poll background work
@@ -608,8 +518,7 @@ impl eframe::App for Wizard {
                             // Show the checklist unless every switch we can read is
                             // already on.
                             #[cfg(target_os = "macos")]
-                            let all_set = wc_hotkey::keyboard_accessible()
-                                && wc_hotkey::input_monitoring_granted();
+                            let all_set = crate::permissions::all_granted();
                             #[cfg(not(target_os = "macos"))]
                             let all_set = wc_hotkey::keyboard_accessible();
                             next = Some(if all_set {
@@ -646,7 +555,7 @@ impl eframe::App for Wizard {
                         #[cfg(not(target_os = "macos"))]
                         {
                             if *granting {
-                                ui.add(egui::Spinner::new().size(20.0).color(theme::AMBER));
+                                ui.add(egui::Spinner::new().size(20.0).color(theme::ACCENT));
                                 ui.add_space(4.0);
                                 ui.label(
                                     egui::RichText::new("Waiting for authorization…")
@@ -685,7 +594,16 @@ impl eframe::App for Wizard {
                     Step::Done => {
                         if primary_button(ui, "Start dictating", egui::vec2(220.0, 44.0)).clicked()
                         {
-                            *self.outcome.lock().unwrap() = Outcome::Ready;
+                            #[cfg(target_os = "macos")]
+                            let relaunch = self.saw_permissions
+                                && crate::permissions::relaunch_after_exit();
+                            #[cfg(not(target_os = "macos"))]
+                            let relaunch = false;
+                            *self.outcome.lock().unwrap() = if relaunch {
+                                Outcome::Relaunching
+                            } else {
+                                Outcome::Ready
+                            };
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     }
@@ -715,8 +633,20 @@ impl eframe::App for Wizard {
                         Step::Download { .. } => StepIcon::Download,
                         Step::Done => StepIcon::Check,
                     };
-                    icon_plate(ui, icon);
-                    ui.add_space(24.0);
+                    match self.step {
+                        Step::Welcome => {
+                            theme::logo(ui, 80.0);
+                            ui.add_space(24.0);
+                        }
+                        // the checklist needs the height more than the step
+                        // needs a picture (macOS has four rows)
+                        #[cfg(target_os = "macos")]
+                        Step::Permission { .. } => ui.add_space(4.0),
+                        _ => {
+                            icon_plate(ui, icon);
+                            ui.add_space(24.0);
+                        }
+                    }
 
                     match &mut self.step {
                         Step::Welcome => {
@@ -728,13 +658,15 @@ impl eframe::App for Wizard {
                                      speak, and your words are typed wherever your cursor is.",
                                 ));
                             });
-                            ui.add_space(16.0);
+                            ui.add_space(18.0);
+                            hotkey_line(ui, &self.key_label);
+                            ui.add_space(18.0);
                             status_chip(ui, "Everything stays on this device");
                             ui.add_space(16.0);
                             step_body(ui, |ui| {
                                 ui.label(
                                     egui::RichText::new(
-                                        "Two quick steps: keyboard access, then the speech \
+                                        "Two quick steps: permissions, then the speech \
                                          model. You won't see this window again.",
                                     )
                                     .small()
@@ -745,33 +677,22 @@ impl eframe::App for Wizard {
                         Step::Permission { error, .. } => {
                             #[cfg(target_os = "macos")]
                             {
-                                title(ui, "Three ", "permissions.");
-                                ui.add_space(12.0);
+                                self.saw_permissions = true;
+                                title(ui, "Grant ", "access.");
+                                ui.add_space(10.0);
                                 step_body(ui, |ui| {
                                     ui.label(body_text(
-                                        "macOS keeps these switches to itself. Flip each one \
-                                         on for WhisprCatch and this list turns mint.",
+                                        "Click Grant, then drag the app icon into the list \
+                                         that opens. Each row turns orange when it is done.",
                                     ));
                                 });
-                                ui.add_space(20.0);
+                                ui.add_space(18.0);
                                 // Wider than the prose column: these are controls, not copy.
-                                let w = ui.available_width().min(400.0);
+                                let w = ui.available_width().min(500.0);
                                 ui.allocate_ui_with_layout(
                                     egui::vec2(w, 0.0),
                                     egui::Layout::top_down(egui::Align::Min),
-                                    |ui| {
-                                        ui.spacing_mut().item_spacing.y = 8.0;
-                                        for (name, why, granted, pane) in permissions() {
-                                            if perm_row(ui, name, why, granted) {
-                                                // Accessibility is the one macOS will
-                                                // prompt for; the others just need the pane.
-                                                if pane == "Privacy_Accessibility" {
-                                                    wc_hotkey::request_accessibility();
-                                                }
-                                                open_pane(pane);
-                                            }
-                                        }
-                                    },
+                                    crate::permissions::checklist,
                                 );
                             }
                             #[cfg(not(target_os = "macos"))]
@@ -849,12 +770,7 @@ impl eframe::App for Wizard {
                             );
                             let err = error.clone();
                             step_body(ui, |ui| {
-                                ui.add(
-                                    egui::ProgressBar::new(frac)
-                                        .desired_height(6.0)
-                                        .fill(theme::MINT)
-                                        .corner_radius(egui::CornerRadius::same(4)),
-                                );
+                                theme::progress(ui, frac);
                                 ui.add_space(8.0);
                                 ui.label(theme::mono_upper(&mb_line, 10.0, theme::MUTED));
                                 if let Some(e) = err {
@@ -876,14 +792,14 @@ impl eframe::App for Wizard {
                             hotkey_line(ui, &self.key_label);
                             ui.add_space(20.0);
                             ui.allocate_ui_with_layout(
-                                egui::vec2(300.0, 0.0),
+                                egui::vec2(380.0, 0.0),
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
                                     ui.spacing_mut().item_spacing.y = 8.0;
                                     for (dot, line) in [
-                                        (theme::MINT, "Text lands wherever your cursor is."),
-                                        (theme::RED, "A small pill shows while it listens."),
-                                        (theme::AMBER, "History and settings live in the tray."),
+                                        (theme::ACCENT, "Text lands wherever your cursor is."),
+                                        (theme::ACCENT, "The pill at the bottom of the screen grows while it listens."),
+                                        (theme::ACCENT, "History and settings live in the menu bar."),
                                     ] {
                                         ui.horizontal(|ui| {
                                             theme::led(ui, dot, false);
@@ -893,14 +809,15 @@ impl eframe::App for Wizard {
                                 },
                             );
                             ui.add_space(20.0);
-                            ui.label(
-                                egui::RichText::new(
-                                    "Built for people who think faster than they type.",
-                                )
-                                .small()
-                                .color(theme::MUTED)
-                                .italics(),
-                            );
+                            step_body(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Built for people who think faster than they type.",
+                                    )
+                                    .small()
+                                    .color(theme::MUTED),
+                                );
+                            });
                         }
                     }
                 });

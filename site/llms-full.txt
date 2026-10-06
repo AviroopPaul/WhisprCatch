@@ -13,8 +13,8 @@ free alternative to Wispr Flow.
 
 ## How it works
 
-1. Hold the push-to-talk key. Right Command on macOS, Right Alt on Linux, both
-   reconfigurable to keys such as Left Command, Right Control, Super, F13 or Scroll Lock.
+1. Hold the push-to-talk key. fn on macOS, Right Alt on Linux, both reconfigurable
+   to keys such as Right Command, Right Control, Super, F13 or Scroll Lock.
    A small floating pill appears to show the app is listening.
 2. Speak normally. You never say "period" or "new paragraph"; punctuation and capitalisation
    come from the model. The microphone keeps a 300 ms pre-roll so the first syllable is not
@@ -52,8 +52,9 @@ free alternative to Wispr Flow.
 ## macOS permissions, in order
 
 WhisprCatch needs Accessibility, Input Monitoring and Microphone access. The first-run
-wizard opens each System Settings pane. macOS only re-reads permission grants when an
-application starts, so the app must be quit and reopened once after granting them. Running
+setup asks for the Microphone directly, opens each System Settings pane and floats the
+app icon to drag into the list, and restarts the app when it is done, because macOS only
+applies some grants to a fresh launch. Running
 `whisper-catch doctor` prints which grants are live and which model is loaded.
 
 Release builds are signed with a stable self-signed certificate rather than ad-hoc, because
