@@ -4,39 +4,38 @@
 <meta charset="utf-8">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Fragment+Mono&family=Newsreader:ital,opsz,wght@0,6..72,300..500;1,6..72,300..500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,300..500;1,6..72,300..500&display=swap" rel="stylesheet">
 <style>
-  /* Tokens mirror docs/DESIGN.md Part A ("warm paper"). Render at 1200x630. */
+  /* Tokens mirror docs/DESIGN.md Part A ("black + orange"). Render at 1200x630. */
   :root {
-    --paper: #fcfbec;
-    --paper-2: #fffef7;
-    --paper-3: #f3f1de;
-    --ink: #16191b;
-    --ink-2: #545b57;
-    --ink-3: #878d86;
-    --rule: rgba(22, 25, 27, .12);
-    --forest: #063c34;
-    --on-forest: #eaf6f2;
-    --mint: #5de8cd;
-    --ember: #e4572e;
-    --sans: "Figtree", sans-serif;
+    --bg: #0a0a0a;
+    --sheet: #121212;
+    --fg: #fafafa;
+    --fg-2: #a3a3a3;
+    --muted: #8c8c8c;
+    --border: #242424;
+    --accent: #f97316;
+    --on-accent: #140a02;
+    --accent-glow: rgba(249, 115, 22, .30);
+    --red: #ef4444;
+    --sans: "Geist", sans-serif;
     --serif: "Newsreader", Georgia, serif;
-    --mono: "Fragment Mono", monospace;
+    --mono: "Geist Mono", monospace;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 1200px; height: 630px; overflow: hidden; }
   body {
-    background: var(--paper);
-    color: var(--ink);
+    background: var(--bg);
+    color: var(--fg);
     font-family: var(--sans);
     -webkit-font-smoothing: antialiased;
     position: relative;
   }
 
-  /* the same mint bloom the hero has */
+  /* the same orange bloom the hero has */
   .glow {
     position: absolute; inset: 0;
-    background: radial-gradient(46% 58% at 82% 8%, rgba(93, 232, 205, .30), transparent 70%);
+    background: radial-gradient(46% 58% at 82% 8%, var(--accent-glow), transparent 70%);
   }
 
   .card {
@@ -49,7 +48,7 @@
     display: flex; align-items: center; gap: 12px;
     font-weight: 700; font-size: 27px; letter-spacing: -.02em;
   }
-  .brand svg { color: var(--forest); }
+  .brand svg { color: var(--accent); }
 
   h1 {
     font-family: var(--serif); font-weight: 400;
@@ -57,25 +56,25 @@
   }
   h1 .it { font-style: italic; }
   .sub {
-    margin-top: 22px; font-size: 25px; color: var(--ink-2); letter-spacing: -.01em;
+    margin-top: 22px; font-size: 25px; color: var(--fg-2); letter-spacing: -.01em;
   }
 
   .foot { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
 
   .pricetag {
     display: inline-flex; align-items: center; gap: 14px;
-    background: var(--paper-2); border: 1px solid var(--rule);
+    background: var(--sheet); border: 1px solid var(--border);
     border-radius: 999px; padding: 10px 10px 10px 24px;
-    font-size: 20px; color: var(--ink-2);
+    font-size: 20px; color: var(--fg-2);
   }
-  .pricetag s { color: var(--ink-3); text-decoration-color: var(--ember); text-decoration-thickness: 2px; }
+  .pricetag s { color: var(--muted); text-decoration-color: var(--red); text-decoration-thickness: 2px; }
   .pricetag b {
-    background: var(--forest); color: var(--on-forest); font-weight: 600;
+    background: var(--accent); color: var(--on-accent); font-weight: 600;
     padding: 10px 20px; border-radius: 999px; font-size: 20px;
   }
 
-  .meta { font-family: var(--mono); font-size: 18px; color: var(--ink-3); text-align: right; line-height: 1.7; }
-  .meta b { color: var(--ink-2); font-weight: 400; }
+  .meta { font-family: var(--mono); font-size: 18px; color: var(--muted); text-align: right; line-height: 1.7; }
+  .meta b { color: var(--fg-2); font-weight: 400; }
 </style>
 </head>
 <body>

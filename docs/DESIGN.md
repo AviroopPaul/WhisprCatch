@@ -17,10 +17,12 @@ The two surfaces now speak **two deliberate languages**:
 
 ---
 
-# Part A — Website ("warm paper")
+# Part A — Website ("black + orange")
 
-Tokens live in **`site/assets/site.css`** and are shared by every page under `site/`.
-Pages never hand-pick a colour. `docs/og-card.html` mirrors the same tokens.
+Tokens live in **`site/assets/site.css`** `:root` and are shared by every page under `site/`.
+Pages never hand-pick a colour. `docs/og-card.html` mirrors the same tokens; render it at
+1200x630 into `site/assets/og-card.png`. The site is dark only (`color-scheme: dark`,
+`theme-color` `#0a0a0a`) and derives from the app palette in Part B.
 
 ## A1. Typography
 
@@ -28,62 +30,66 @@ Three hosted families via a single Google Fonts `<link>`:
 
 - **Newsreader** (400, roman + italic, variable optical size) — all display type. The
   italic carries the emphasis in every headline ("You talk. *It types.*").
-- **Figtree** (400/500/600/700) — UI and body text.
-- **Fragment Mono** (400) — commands, terminal blocks, numeric readouts.
+- **Geist** (400/500/600/700) — UI and body text.
+- **Geist Mono** (400/500) — commands, terminal blocks, numeric readouts.
 
-`kbd` uses `system-ui` first, because Fragment Mono has no ⌘ or ⌥ glyph.
+`kbd` uses `system-ui` first, because Geist Mono has no ⌘ or ⌥ glyph.
 
 | Token      | Size (px)               | Family    | Weight | Line height | Tracking            | Use |
 |------------|-------------------------|-----------|--------|-------------|---------------------|-----|
 | `display`  | clamp(46, 8.4vw, 108)   | Newsreader| 400    | 0.95        | -0.032em            | Hero h1, closer |
 | `h2`       | clamp(33, 5vw, 60)      | Newsreader| 400    | 1.03        | -0.026em            | Section titles |
 | `h3`       | clamp(23, 2.3vw, 28)    | Newsreader| 400    | 1.16        | -0.018em            | Card titles |
-| `body-lg`  | clamp(17, 1.55vw, 20.5) | Figtree   | 400    | 1.55        | 0                   | Section intros (`.lede`) |
-| `body`     | 16.5                    | Figtree   | 400    | 1.62        | 0                   | Default |
-| `small`    | 13.5                    | Figtree   | 400    | 1.5         | 0                   | Captions, footnotes |
-| `eyebrow`  | 12                      | Figtree   | 600    | 1           | +0.15em, uppercase  | Kicker above every h2 |
-| `mono`     | 13–14                   | Fragment  | 400    | 1.9         | 0                   | Commands, terminal |
+| `body-lg`  | clamp(17, 1.55vw, 20.5) | Geist     | 400    | 1.55        | 0                   | Section intros (`.lede`) |
+| `body`     | 16.5                    | Geist     | 400    | 1.62        | 0                   | Default |
+| `small`    | 13.5                    | Geist     | 400    | 1.5         | 0                   | Captions, footnotes |
+| `eyebrow`  | 12                      | Geist     | 600    | 1           | +0.15em, uppercase  | Kicker above every h2 |
+| `mono`     | 13–14                   | Geist Mono| 400    | 1.9         | 0                   | Commands, terminal |
 
 ## A2. Colour
 
-Warm cream canvas, near-black ink, deep green for full-bleed blocks, one mint accent.
-
-| Token         | Hex / value              | Use |
+| Token         | Value                    | Use |
 |---------------|--------------------------|-----|
-| `paper`       | `#fcfbec`                | Page canvas |
-| `paper-2`     | `#fffef7`                | Raised cards, nav, command chips |
-| `paper-3`     | `#f3f1de`               | Alternate bands, table head, footer |
-| `ink`         | `#16191b`                | Primary text |
-| `ink-2`       | `#545b57`                | Secondary text |
-| `ink-3`       | `#878d86`                | Eyebrows, captions, muted |
-| `rule`        | `rgba(22,25,27,.12)`     | 1px hairlines |
-| `rule-2`      | `rgba(22,25,27,.22)`     | Hovered borders, strikethroughs |
-| `forest`      | `#063c34`                | Full-bleed dark sections, dark buttons |
-| `forest-2`    | `#0a4f44`                | Cards inside a forest section |
-| `on-forest`   | `#eaf6f2`                | Text on forest |
-| `mint`        | `#5de8cd`                | Primary button fill, ticks, LED bars |
-| `on-mint`     | `#06342c`                | Text on mint fills |
-| `ember`       | `#e4572e`                | The price you are *not* paying, recording LED |
-| `butter`      | `#ffc96b`                | Highlighter marks (sparingly) |
+| `bg`          | `#0a0a0a`                | Page canvas |
+| `sheet`       | `#121212`                | Cards, table, glow bands, footer |
+| `panel`       | `#181818`                | Alternate bands, table head, kbd |
+| `surface-2/3` | `#1a1a1a` / `#262626`    | Cards inside a glow band, active segment |
+| `fg`          | `#fafafa`                | Primary text |
+| `fg-2`        | `#a3a3a3`                | Secondary text |
+| `muted`       | `#8c8c8c`                | Eyebrows, captions (app MUTED `#737373` is lifted to keep 4.5:1) |
+| `border`      | `#242424`                | 1px hairlines |
+| `ring`        | `#3c3c3c`                | Hovered borders, dividers inside glow bands |
+| `accent`      | `#f97316`                | Button fill, ticks, links, focus ring, hero ribbon |
+| `accent-hover`| `#fb8c3c`                | Button hover |
+| `on-accent`   | `#140a02`                | Text on accent fills |
+| `accent-glow/soft/line` | orange at .22 / .12 / .34 | Hero bloom, tinted cells, accent borders |
+| `red`         | `#ef4444`                | The price you are *not* paying |
+| `amber`       | `#f59e0b`                | Reserved |
 
-Rules: mint fills buttons and small marks only, never large areas. Forest sections always
-carry a serif headline. No gradients except the single mint bloom behind the hero.
+Rules: orange fills buttons and small marks, and carries accent text; never large areas
+(the one exception is the hero ribbon band). `band-glow` sections (privacy, and the
+closer on the comparison page) are `sheet` with an orange radial glow from the top edge.
 
-The one exception to "never hand-pick a colour" is third-party app marks. They live in an
-inline `<symbol>` sprite at the top of the page, are referenced with `<use href="#i-name">`,
-and take their brand hex from an inline `style="color:…"` on the `<svg>`. Those hexes belong
-to their owners, so they are not tokens and must not be reused for anything else. The marks
-are shown to say where WhisprCatch types, nothing more.
+## A2b. Page and hero
+
+Home page order: hero, demo video, how it works, privacy, comparison table, install, FAQ,
+footer. No calculators, marquees or app-logo strips; the site shows less, not more.
+
+The hero ribbon (`site/assets/ribbon.js`, `.ribbon` in `site.css`) is inline SVG drawn
+from the stage size: raw speech (`muted` grey text on a looping path) flows into the
+Catcher pill (13 seeded waveform bars), and clean text (`on-accent` on an `accent` band)
+flows out. It pauses off screen and with the tab hidden, and draws one static frame under
+`prefers-reduced-motion`. Keep it decorative (`aria-hidden`).
 
 ## A3. Geometry, elevation, motion
 
 - Content column `1140px`, prose/FAQ column `800px`, page padding `24px`.
 - Section rhythm: `clamp(72px, 9.5vw, 132px)` top and bottom.
 - Radius: `8` chips · `12` command chips · `18` · `26` cards · `34` big cards · `999` pills.
-- Elevation is three warm shadows (`--sh-1/2/3`), softest on cards, deepest under the hero
-  media. Never a hard black shadow.
-- Motion: 16px rise + fade on scroll (`.reveal`, 0.7s), 38–46s linear marquees, 2s LED
-  pulse. Everything collapses under `prefers-reduced-motion`.
+- Elevation on dark is a 1px top hairline plus an orange glow (`--sh-1/2/3`), strongest
+  under the hero media. Never a drop shadow.
+- Motion: 16px rise + fade on scroll (`.reveal`, 0.7s) and the hero ribbon. Everything
+  collapses under `prefers-reduced-motion`.
 
 ## A4. Copy voice
 
