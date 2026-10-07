@@ -33,8 +33,8 @@ Site: https://whisper-catch.vercel.app/ · Licence: MIT · Price: $0, no paid ti
 
 ## Pages
 
-- [Home](https://whisper-catch.vercel.app/): what it is, how it works, pricing argument,
-  privacy details, install instructions, FAQ.
+- [Home](https://whisper-catch.vercel.app/): what it is, how it works, privacy details,
+  comparison table, install instructions, FAQ.
 - [Wispr Flow alternative](https://whisper-catch.vercel.app/wispr-flow-alternative/): full
   feature-by-feature comparison with Wispr Flow, three-year cost maths, who should pick
   which, and switching instructions.
