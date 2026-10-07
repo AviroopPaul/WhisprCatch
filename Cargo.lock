@@ -5086,7 +5086,7 @@ dependencies = [
 
 [[package]]
 name = "wc-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "cpal",
@@ -5102,7 +5102,7 @@ dependencies = [
 
 [[package]]
 name = "wc-hotkey"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "core-foundation 0.10.1",
@@ -5113,7 +5113,7 @@ dependencies = [
 
 [[package]]
 name = "wc-inject"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "core-graphics 0.25.0",
@@ -5125,7 +5125,7 @@ dependencies = [
 
 [[package]]
 name = "wc-models"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "hex",
@@ -5136,7 +5136,7 @@ dependencies = [
 
 [[package]]
 name = "wc-text"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5145,7 +5145,7 @@ dependencies = [
 
 [[package]]
 name = "wc-tray"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "image",
@@ -5323,7 +5323,7 @@ dependencies = [
 
 [[package]]
 name = "whisper-catch"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
