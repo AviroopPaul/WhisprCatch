@@ -11,11 +11,12 @@
 //! and writes `toggle` on stdout when the user clicks to start or finish a
 //! dictation.
 //!
+//! Always the DARK palette, in both modes (it floats over other apps).
 //! Look per docs/DESIGN.md §B5: idle is a 40×9 black capsule with a grey
 //! ring, always visible. Under the pointer it opens into hover controls, a
 //! mic button (click: dictate hands-free) and a gear (Settings), with a label
 //! above whichever is hovered. Listening expands it to 92×30 with a live
-//! waveform; transcribing swaps the waveform for three orange dots.
+//! waveform; transcribing swaps the waveform for three yellow dots.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, Write};
@@ -572,8 +573,8 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from(a * (1.0 - t) + b * t)
 }
 
-/// Near-black fill shared by the open pill, the controls and the label.
-const CHROME: Color32 = Color32::from_rgba_premultiplied(8, 8, 8, 242);
+/// Charcoal fill shared by the open pill, the controls and the label.
+const CHROME: Color32 = Color32::from_rgba_premultiplied(32, 38, 46, 242);
 
 /// The capsule: idle, morphing into the mic button (`controls`), or open for
 /// a dictation (`open`).
@@ -600,23 +601,23 @@ fn paint_pill(
     // as a button or open: deeper black with a faint ring, the content leads
     let lift = controls.max(open);
     let fill = mix(
-        Color32::from_rgba_unmultiplied(16, 16, 16, 220),
+        Color32::from_rgba_unmultiplied(34, 40, 49, 220),
         CHROME,
         lift,
     );
     let fill = mix(
         fill,
-        Color32::from_rgba_unmultiplied(30, 30, 30, 245),
+        Color32::from_rgba_unmultiplied(57, 62, 70, 245),
         mic_hot * controls,
     );
     let ring = mix(
-        Color32::from_rgba_unmultiplied(190, 190, 190, 150),
-        Color32::from_rgba_unmultiplied(255, 255, 255, 38),
+        Color32::from_rgba_unmultiplied(238, 238, 238, 150),
+        Color32::from_rgba_unmultiplied(238, 238, 238, 38),
         lift,
     );
     let ring = mix(
         ring,
-        Color32::from_rgba_unmultiplied(255, 255, 255, 80),
+        Color32::from_rgba_unmultiplied(238, 238, 238, 80),
         mic_hot * controls,
     );
     p.rect_filled(rect, r, fill);
@@ -635,7 +636,7 @@ fn paint_pill(
             egui::Align2::CENTER_CENTER,
             icons::MICROPHONE,
             egui::FontId::proportional(17.0),
-            mix(theme::FG, theme::ACCENT, mic_hot).gamma_multiply(c),
+            mix(theme::DARK.fg, theme::DARK.accent, mic_hot).gamma_multiply(c),
         );
     }
 
@@ -656,12 +657,12 @@ fn paint_pill(
                 p.rect_filled(
                     egui::Rect::from_center_size(egui::pos2(x, cy), egui::vec2(w, h)),
                     w / 2.0,
-                    theme::FG.gamma_multiply(a * (0.55 + 0.45 * v.min(1.0))),
+                    theme::DARK.fg.gamma_multiply(a * (0.55 + 0.45 * v.min(1.0))),
                 );
             }
         }
         Mode::Transcribing => {
-            // three orange dots, pulsing in sequence
+            // three yellow dots, pulsing in sequence
             for k in 0..3 {
                 let phase = ((now * 2.4 - k as f64 * 0.22).rem_euclid(1.0)) as f32;
                 let lift = (phase * std::f32::consts::TAU).sin().max(0.0);
@@ -669,7 +670,7 @@ fn paint_pill(
                 p.circle_filled(
                     c,
                     3.2,
-                    theme::ACCENT.gamma_multiply(a * (0.45 + 0.55 * lift)),
+                    theme::DARK.accent.gamma_multiply(a * (0.45 + 0.55 * lift)),
                 );
             }
         }
@@ -692,7 +693,7 @@ fn paint_side_button(
     let p = ui.painter();
     let fill = mix(
         CHROME,
-        Color32::from_rgba_unmultiplied(30, 30, 30, 245),
+        Color32::from_rgba_unmultiplied(57, 62, 70, 245),
         hot,
     );
     p.circle_filled(rect.center(), r, fill.gamma_multiply(t));
@@ -702,8 +703,8 @@ fn paint_side_button(
         egui::Stroke::new(
             1.0,
             mix(
-                Color32::from_rgba_unmultiplied(255, 255, 255, 38),
-                Color32::from_rgba_unmultiplied(255, 255, 255, 80),
+                Color32::from_rgba_unmultiplied(238, 238, 238, 38),
+                Color32::from_rgba_unmultiplied(238, 238, 238, 80),
                 hot,
             )
             .gamma_multiply(t),
@@ -714,7 +715,7 @@ fn paint_side_button(
         egui::Align2::CENTER_CENTER,
         icon,
         egui::FontId::proportional(16.0 * (0.6 + 0.4 * t)),
-        mix(theme::TEXT_2, theme::ACCENT, hot).gamma_multiply(t),
+        mix(theme::DARK.text_2, theme::DARK.accent, hot).gamma_multiply(t),
     );
 }
 
@@ -722,9 +723,9 @@ fn paint_side_button(
 /// finish". A pill of `CHROME` with the key in SemiBold, rising 4pt in.
 fn paint_label(ui: &mut egui::Ui, over: egui::Rect, t: f32, text: &str, key: Option<&str>) {
     let p = ui.painter();
-    let body = ui.fonts(|f| f.layout_no_wrap(text.into(), theme::medium(13.0), theme::FG));
+    let body = ui.fonts(|f| f.layout_no_wrap(text.into(), theme::medium(13.0), theme::DARK.fg));
     let key_g =
-        key.map(|k| ui.fonts(|f| f.layout_no_wrap(k.into(), theme::semibold(13.0), theme::FG)));
+        key.map(|k| ui.fonts(|f| f.layout_no_wrap(k.into(), theme::semibold(13.0), theme::DARK.fg)));
     let gap = 6.0;
     let w = body.size().x + key_g.as_ref().map(|g| gap + g.size().x).unwrap_or(0.0) + 28.0;
     let h = 28.0;
@@ -742,7 +743,7 @@ fn paint_label(ui: &mut egui::Ui, over: egui::Rect, t: f32, text: &str, key: Opt
         h / 2.0,
         egui::Stroke::new(
             1.0,
-            Color32::from_rgba_unmultiplied(255, 255, 255, 38).gamma_multiply(t),
+            Color32::from_rgba_unmultiplied(238, 238, 238, 38).gamma_multiply(t),
         ),
         egui::StrokeKind::Inside,
     );
@@ -751,14 +752,14 @@ fn paint_label(ui: &mut egui::Ui, over: egui::Rect, t: f32, text: &str, key: Opt
     p.galley(
         egui::pos2(x, cy - body.size().y / 2.0),
         body.clone(),
-        theme::FG.gamma_multiply(t),
+        theme::DARK.fg.gamma_multiply(t),
     );
     x += body.size().x + gap;
     if let Some(g) = key_g {
         p.galley(
             egui::pos2(x, cy - g.size().y / 2.0),
             g,
-            theme::FG.gamma_multiply(t),
+            theme::DARK.fg.gamma_multiply(t),
         );
     }
 }

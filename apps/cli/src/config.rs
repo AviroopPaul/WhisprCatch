@@ -125,14 +125,6 @@ pub fn modified() -> Option<std::time::SystemTime> {
     std::fs::metadata(config_path()).ok()?.modified().ok()
 }
 
-/// Loads, sets `catcher_notes`, saves. Touches only that field, so the Notes
-/// page can flip it without carrying the rest of Settings' unsaved edits.
-pub fn set_catcher_notes(on: bool) -> Result<()> {
-    let mut cfg = load()?;
-    cfg.catcher_notes = on;
-    save(&cfg)
-}
-
 pub fn save(cfg: &Config) -> Result<()> {
     let path = config_path();
     std::fs::create_dir_all(path.parent().unwrap())?;

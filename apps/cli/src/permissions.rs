@@ -173,12 +173,12 @@ fn row_ui(ui: &mut egui::Ui, row: &Row) {
     let w = ui.available_width();
     let text_x = 36.0 + 14.0;
     let text_w = (w - text_x - CONTROL_W).max(120.0);
-    let title = ui.fonts(|f| f.layout_no_wrap(row.title.into(), theme::medium(14.0), theme::FG));
+    let title = ui.fonts(|f| f.layout_no_wrap(row.title.into(), theme::medium(14.0), theme::fg()));
     let why = ui.fonts(|f| {
         f.layout(
             row.why.into(),
             egui::FontId::proportional(12.5),
-            theme::MUTED,
+            theme::muted(),
             text_w,
         )
     });
@@ -197,12 +197,12 @@ fn row_ui(ui: &mut egui::Ui, row: &Row) {
     p.galley(
         egui::pos2(rect.left() + text_x, ty),
         title.clone(),
-        theme::FG,
+        theme::fg(),
     );
     p.galley(
         egui::pos2(rect.left() + text_x, ty + title.size().y + 3.0),
         why,
-        theme::MUTED,
+        theme::muted(),
     );
 
     let ctrl = egui::Rect::from_min_max(egui::pos2(rect.right() - CONTROL_W, rect.top()), rect.max);
@@ -235,12 +235,12 @@ fn row_ui(ui: &mut egui::Ui, row: &Row) {
 fn paint_plate(p: &egui::Painter, rect: egui::Rect, icon: &str, ok: bool) {
     let (fill, ring, ink) = if ok {
         (
-            theme::tint(theme::ACCENT),
-            theme::tint_strong(theme::ACCENT),
-            theme::ACCENT,
+            theme::tint(theme::accent_ink()),
+            theme::tint_strong(theme::accent_ink()),
+            theme::accent_ink(),
         )
     } else {
-        (theme::SURFACE_2, theme::BORDER, theme::TEXT_2)
+        (theme::surface_2(), theme::border(), theme::text_2())
     };
     p.rect_filled(rect, 9.0, fill);
     p.rect_stroke(
@@ -302,7 +302,7 @@ pub fn panel(ui: &mut egui::Ui) {
                      only after the app restarts.",
                 )
                 .size(12.5)
-                .color(theme::MUTED),
+                .color(theme::muted()),
             );
         });
         ui.add_space(6.0);
@@ -378,13 +378,13 @@ pub fn fn_key_notice(ui: &mut egui::Ui, key_slug: &str) {
             ui.label(
                 egui::RichText::new(format!("{}  fn is free for dictation", icons::CHECK))
                     .size(12.5)
-                    .color(theme::ACCENT),
+                    .color(theme::accent_ink()),
             );
             return;
         }
         egui::Frame::default()
-            .fill(theme::SURFACE_2)
-            .stroke(egui::Stroke::new(1.0, theme::tint_strong(theme::AMBER)))
+            .fill(theme::surface_2())
+            .stroke(egui::Stroke::new(1.0, theme::tint_strong(theme::amber())))
             .corner_radius(egui::CornerRadius::same(8))
             .inner_margin(egui::Margin::symmetric(12, 10))
             .show(ui, |ui| {
@@ -393,7 +393,7 @@ pub fn fn_key_notice(ui: &mut egui::Ui, key_slug: &str) {
                     ui.label(
                         egui::RichText::new(icons::WARNING)
                             .size(14.0)
-                            .color(theme::AMBER),
+                            .color(theme::amber()),
                     );
                     ui.label(
                         egui::RichText::new(
@@ -401,7 +401,7 @@ pub fn fn_key_notice(ui: &mut egui::Ui, key_slug: &str) {
                              Set it to Do Nothing so holding fn dictates.",
                         )
                         .size(12.5)
-                        .color(theme::FG),
+                        .color(theme::fg()),
                     );
                 });
                 ui.add_space(6.0);
@@ -1073,17 +1073,18 @@ pub mod mac {
             );
             unsafe { panel.setReleasedWhenClosed(false) };
 
-            // the card: #141414, hairline, radius 14 (theme SURFACE / RING)
+            // the card: #30353e, hairline, radius 14 (theme DARK surface / ring; it
+            // floats over System Settings, so it stays dark in both modes)
             let card = NSBox::new(mtm);
             card.setBoxType(NSBoxType::Custom);
             card.setTitlePosition(NSTitlePosition::NoTitle);
             card.setCornerRadius(14.0);
             card.setBorderWidth(1.0);
             card.setFillColor(&NSColor::colorWithSRGBRed_green_blue_alpha(
-                0.078, 0.078, 0.078, 0.98,
+                0.188, 0.208, 0.243, 0.98,
             ));
             card.setBorderColor(&NSColor::colorWithSRGBRed_green_blue_alpha(
-                0.235, 0.235, 0.235, 1.0,
+                0.408, 0.424, 0.447, 1.0,
             ));
             card.setContentViewMargins(NSSize::new(0.0, 0.0));
             card.setFrame(frame);
@@ -1104,7 +1105,7 @@ pub mod mac {
                 &format!("Drag {} into the list", crate::app_name()),
                 13.5,
                 true,
-                (0.98, 0.98, 0.98),
+                (0.933, 0.933, 0.933),
             );
             title.setFrame(NSRect::new(
                 NSPoint::new(86.0, 48.0),
@@ -1116,7 +1117,7 @@ pub mod mac {
                 &needs_text(list_name).unwrap_or_default(),
                 11.5,
                 false,
-                (0.64, 0.64, 0.64),
+                (0.722, 0.725, 0.737),
             );
             sub.setFrame(NSRect::new(
                 NSPoint::new(86.0, 14.0),
@@ -1124,8 +1125,8 @@ pub mod mac {
             ));
             card.addSubview(&sub);
 
-            // orange "drag me" arrow beside the icon
-            let arrow = label(mtm, "↑", 15.0, true, (0.976, 0.451, 0.086));
+            // yellow "drag me" arrow beside the icon
+            let arrow = label(mtm, "↑", 15.0, true, (1.0, 0.827, 0.412));
             arrow.setFrame(NSRect::new(
                 NSPoint::new(66.0, 56.0),
                 NSSize::new(16.0, 20.0),

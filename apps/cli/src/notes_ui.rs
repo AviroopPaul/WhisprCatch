@@ -107,8 +107,8 @@ impl Editor {
                         .id(id)
                         .frame(false)
                         .font(font)
-                        .text_color(theme::FG)
-                        .hint_text(egui::RichText::new(if key.is_some() { "" } else { HINT }).color(theme::MUTED))
+                        .text_color(theme::fg())
+                        .hint_text(egui::RichText::new(if key.is_some() { "" } else { HINT }).color(theme::muted()))
                         .desired_width(f32::INFINITY)
                         .min_size(min)
                         .lock_focus(true),
@@ -131,7 +131,7 @@ impl Editor {
             cap.label(
                 egui::RichText::new("to dictate")
                     .size(size)
-                    .color(theme::MUTED),
+                    .color(theme::muted()),
             );
         }
         if resp.changed() {
@@ -176,7 +176,7 @@ impl Editor {
             ui.label(
                 egui::RichText::new("Delete this note?")
                     .size(13.0)
-                    .color(theme::TEXT_2),
+                    .color(theme::text_2()),
             );
             return deleted;
         }
@@ -199,10 +199,10 @@ impl Editor {
             crate::settings_app::open_folder(self.store.dir());
         }
         let (text, color) = match (&self.error, self.dirty(), self.text.is_empty()) {
-            (Some(e), _, _) => (e.as_str(), theme::RED),
-            (None, true, _) => ("Saving", theme::MUTED),
-            (None, false, false) => ("Saved", theme::MUTED),
-            (None, false, true) => ("", theme::MUTED),
+            (Some(e), _, _) => (e.as_str(), theme::red()),
+            (None, true, _) => ("Saving", theme::muted()),
+            (None, false, false) => ("Saved", theme::muted()),
+            (None, false, true) => ("", theme::muted()),
         };
         ui.label(egui::RichText::new(text).size(12.5).color(color));
         deleted

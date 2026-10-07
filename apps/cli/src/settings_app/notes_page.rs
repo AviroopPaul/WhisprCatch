@@ -7,7 +7,6 @@ use eframe::egui;
 use egui_phosphor::regular as icons;
 
 use super::{centered_col, list_time, App, PAGE_COL};
-use crate::config;
 use crate::notes::{NoteMeta, Store};
 use crate::notes_ui::Editor;
 use crate::theme;
@@ -102,15 +101,12 @@ impl App {
             ui.label(
                 egui::RichText::new("Add to Catcher")
                     .size(14.0)
-                    .color(theme::TEXT_2),
+                    .color(theme::text_2()),
             );
         });
         if toggled {
+            // Autosave writes it this frame; the Catcher re-reads the config.
             self.cfg.catcher_notes = on;
-            // Just this field: the Catcher re-reads the config on its own.
-            if let Err(e) = config::set_catcher_notes(on) {
-                log::warn!("could not save the Catcher setting: {e:#}");
-            }
         }
         ui.add_space(20.0);
 
@@ -133,7 +129,7 @@ impl App {
             ui.label(
                 egui::RichText::new("Recents")
                     .font(theme::semibold(17.0))
-                    .color(theme::FG),
+                    .color(theme::fg()),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
@@ -175,7 +171,7 @@ impl App {
                 "No matching notes"
             };
             ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new(msg).size(15.0).color(theme::MUTED));
+                ui.label(egui::RichText::new(msg).size(15.0).color(theme::muted()));
             });
             ui.add_space(72.0);
         }
@@ -225,7 +221,7 @@ impl App {
                 egui::Label::new(
                     egui::RichText::new(editor.title())
                         .font(theme::semibold(24.0))
-                        .color(theme::FG),
+                        .color(theme::fg()),
                 )
                 .truncate(),
             );
@@ -253,18 +249,18 @@ fn note_row(ui: &mut egui::Ui, n: &NoteMeta) -> bool {
     );
     let resp = ui.interact(rect, ui.id().with(("note-row", &n.id)), egui::Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(rect.shrink2(egui::vec2(0.0, 2.0)), 8.0, theme::SURFACE);
+        ui.painter().rect_filled(rect.shrink2(egui::vec2(0.0, 2.0)), 8.0, theme::surface());
     }
     let time = list_time(n.modified);
     let time_g = ui.fonts(|f| {
-        f.layout_no_wrap(time, egui::FontId::monospace(11.5), theme::MUTED)
+        f.layout_no_wrap(time, egui::FontId::monospace(11.5), theme::muted())
     });
     let pad = 12.0;
     let right = rect.right() - pad;
     ui.painter().galley(
         egui::pos2(right - time_g.size().x, rect.center().y - time_g.size().y / 2.0),
         time_g.clone(),
-        theme::MUTED,
+        theme::muted(),
     );
     let left = egui::Rect::from_min_max(
         egui::pos2(rect.left() + pad, rect.top() + 9.0),
@@ -280,14 +276,14 @@ fn note_row(ui: &mut egui::Ui, n: &NoteMeta) -> bool {
         egui::Label::new(
             egui::RichText::new(&n.title)
                 .font(theme::medium(14.5))
-                .color(theme::FG),
+                .color(theme::fg()),
         )
         .truncate()
         .selectable(false),
     );
     if !n.preview.is_empty() {
         text.add(
-            egui::Label::new(egui::RichText::new(&n.preview).size(13.0).color(theme::MUTED))
+            egui::Label::new(egui::RichText::new(&n.preview).size(13.0).color(theme::muted()))
                 .truncate()
                 .selectable(false),
         );

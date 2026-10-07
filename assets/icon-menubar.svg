@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" width="36" height="36">
   <!-- macOS menu-bar template glyph: the app mark as a black silhouette. AppKit
        recolours template images for light/dark menu bars, so keep one flat colour. -->
-  <g transform="translate(18 18) scale(0.118) translate(-256 -242)">
-    <path fill="#000" fill-rule="evenodd" d="M256 98a50 50 0 0 1 50 50v76a50 50 0 0 1-100 0v-76a50 50 0 0 1 50-50ZM233 164a6 6 0 0 0-6 6v32a6 6 0 0 0 12 0v-32a6 6 0 0 0-6-6ZM256 148a6 6 0 0 0-6 6v64a6 6 0 0 0 12 0v-64a6 6 0 0 0-6-6ZM279 164a6 6 0 0 0-6 6v32a6 6 0 0 0 12 0v-32a6 6 0 0 0-6-6Z"/>
-    <path d="M154 222v22a102 102 0 0 0 204 0v-22M256 346v40" fill="none" stroke="#000" stroke-width="32" stroke-linecap="round"/>
+  <g transform="translate(18 18) scale(0.0833) translate(-256 -256)" fill="none" stroke="#000" stroke-width="48" stroke-linecap="round">
+    <path d="M76 222v68M146 180v152M366 180v152M436 222v68"/>
+    <path d="M256 116v280M216 116h80M216 396h80"/>
   </g>
 </svg>

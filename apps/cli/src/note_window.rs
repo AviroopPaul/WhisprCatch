@@ -128,6 +128,7 @@ impl eframe::App for NoteApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        theme::begin_frame(ctx);
         if self.first {
             self.first = false;
             #[cfg(target_os = "macos")]
@@ -147,11 +148,11 @@ impl eframe::App for NoteApp {
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 let full = ui.max_rect();
-                ui.painter().rect_filled(full, RADIUS, theme::BG);
+                ui.painter().rect_filled(full, RADIUS, theme::bg());
                 ui.painter().rect_stroke(
                     full.shrink(0.5),
                     RADIUS,
-                    egui::Stroke::new(1.0, theme::BORDER),
+                    egui::Stroke::new(1.0, theme::border()),
                     egui::StrokeKind::Inside,
                 );
                 let bar = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), BAR_H));
@@ -187,14 +188,14 @@ impl eframe::App for NoteApp {
 fn icon_btn(ui: &mut egui::Ui, rect: egui::Rect, id: &str, icon: &str, tip: &str) -> egui::Response {
     let resp = ui.interact(rect, egui::Id::new(id), egui::Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 8.0, theme::SURFACE_2);
+        ui.painter().rect_filled(rect, 8.0, theme::surface_2());
     }
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         icon,
         egui::FontId::proportional(18.0),
-        if resp.hovered() { theme::FG } else { theme::TEXT_2 },
+        if resp.hovered() { theme::fg() } else { theme::text_2() },
     );
     resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -204,9 +205,9 @@ fn side_row(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id, icon: Option<&str
     let resp = ui.interact(rect, id, egui::Sense::click());
     let p = ui.painter();
     if selected {
-        p.rect_filled(rect, 8.0, theme::SURFACE_2);
+        p.rect_filled(rect, 8.0, theme::surface_2());
     } else if resp.hovered() {
-        p.rect_filled(rect, 8.0, theme::SURFACE);
+        p.rect_filled(rect, 8.0, theme::surface());
     }
     let hot = selected || resp.hovered();
     let mut x = rect.left() + 12.0;
@@ -216,12 +217,12 @@ fn side_row(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id, icon: Option<&str
             egui::Align2::LEFT_CENTER,
             icon,
             egui::FontId::proportional(18.0),
-            if hot { theme::FG } else { theme::TEXT_2 },
+            if hot { theme::fg() } else { theme::text_2() },
         );
         x += 28.0;
     }
     // A long title ends in "…" rather than being cut mid-letter.
-    let color = if hot { theme::FG } else { theme::TEXT_2 };
+    let color = if hot { theme::fg() } else { theme::text_2() };
     let mut job = egui::text::LayoutJob::simple_singleline(label.into(), theme::medium(14.0), color);
     job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - 8.0 - x).max(0.0));
     let g = ui.fonts(|f| f.layout_job(job));
@@ -307,7 +308,7 @@ impl NoteApp {
         for (i, t) in self.tabs.iter().enumerate() {
             let active = i == self.active;
             let title = short(&t.title(), 16);
-            let g = ui.fonts(|f| f.layout_no_wrap(title, theme::medium(14.0), theme::FG));
+            let g = ui.fonts(|f| f.layout_no_wrap(title, theme::medium(14.0), theme::fg()));
             let w = 12.0 + g.size().x + 8.0 + 16.0 + 8.0;
             if x + w > limit {
                 break;
@@ -319,7 +320,7 @@ impl NoteApp {
             p.galley(
                 egui::pos2(rect.left() + 12.0, rect.center().y - g.size().y / 2.0),
                 g,
-                if hot { theme::FG } else { theme::TEXT_2 },
+                if hot { theme::fg() } else { theme::text_2() },
             );
             if active {
                 p.rect_filled(
@@ -328,7 +329,7 @@ impl NoteApp {
                         egui::pos2(rect.right() - 4.0, rect.bottom()),
                     ),
                     1.0,
-                    theme::ACCENT,
+                    theme::accent_ink(),
                 );
             }
             if resp.clicked() {
@@ -404,7 +405,7 @@ impl NoteApp {
                 egui::Align2::LEFT_CENTER,
                 icons::MAGNIFYING_GLASS,
                 egui::FontId::proportional(17.0),
-                theme::TEXT_2,
+                theme::text_2(),
             );
             let field = egui::Rect::from_min_max(egui::pos2(sr.left() + 40.0, sr.top()), sr.max);
             let mut f = ui.new_child(
@@ -416,7 +417,7 @@ impl NoteApp {
                 egui::TextEdit::singleline(&mut self.search)
                     .id(search_id)
                     .frame(false)
-                    .hint_text(egui::RichText::new("Search notes...").color(theme::MUTED))
+                    .hint_text(egui::RichText::new("Search notes...").color(theme::muted()))
                     .font(theme::medium(14.0))
                     .desired_width(field.width()),
             );
@@ -427,7 +428,7 @@ impl NoteApp {
             ui.painter().hline(
                 side.left() + 6.0..=side.right() - 6.0,
                 line_y,
-                egui::Stroke::new(1.0, theme::BORDER),
+                egui::Stroke::new(1.0, theme::border()),
             );
 
             // the list
@@ -449,7 +450,7 @@ impl NoteApp {
                     egui::Align2::CENTER_CENTER,
                     if self.list.is_empty() { "No notes yet" } else { "No matches" },
                     egui::FontId::proportional(14.0),
-                    theme::MUTED,
+                    theme::muted(),
                 );
             } else {
                 let mut lu = ui.new_child(egui::UiBuilder::new().max_rect(list).layout(egui::Layout::top_down(egui::Align::Min)));
@@ -486,11 +487,11 @@ impl NoteApp {
 
     /// The rounded editor card with the Copy pill floating bottom-right.
     fn editor_card(&mut self, ui: &mut egui::Ui, card: egui::Rect) {
-        ui.painter().rect_filled(card, 14.0, theme::PANEL);
+        ui.painter().rect_filled(card, 14.0, theme::panel());
         ui.painter().rect_stroke(
             card,
             14.0,
-            egui::Stroke::new(1.0, theme::BORDER),
+            egui::Stroke::new(1.0, theme::border()),
             egui::StrokeKind::Inside,
         );
         let inner = egui::Rect::from_min_max(
