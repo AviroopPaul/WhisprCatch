@@ -3,19 +3,19 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=1920, height=1080">
-    <title>WhisprCatch hero demo — dictating into Slack on Linux</title>
+    <title>WhisprCatch hero demo: dictating an email on macOS</title>
     <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
     <style>
+      /* Everything is drawn at 1.5x macOS points (1920px = 1280pt), so the pill
+         and its controls match the real app: idle 40x9pt, listening 92x30pt,
+         mic button 72x32pt, gear 32pt. Colours are the app's tokens
+         (docs/DESIGN.md Part B). */
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body {
-        width: 1920px; height: 1080px; overflow: hidden; background: #000;
-      }
+      html, body { width: 1920px; height: 1080px; overflow: hidden; background: #000; }
       body {
-        font-family: -apple-system, "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
-        -webkit-font-smoothing: antialiased;
+        font-family: -apple-system, "SF Pro Text", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased; color: #e8e8ea;
       }
-      .mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace; }
-
       #root { position: relative; width: 1920px; height: 1080px; overflow: hidden; }
       .clip { position: absolute; inset: 0; }
 
@@ -23,346 +23,262 @@
       #wallpaper {
         position: absolute; inset: 0;
         background:
-          radial-gradient(52% 44% at 76% 88%, rgba(45, 145, 130, .20), transparent 70%),
-          radial-gradient(46% 40% at 12% 6%, rgba(84, 56, 110, .28), transparent 72%),
-          linear-gradient(160deg, #16121e 0%, #0d1117 52%, #0a0e13 100%);
+          radial-gradient(48% 42% at 82% 92%, rgba(249, 115, 22, .20), transparent 70%),
+          radial-gradient(44% 40% at 10% 4%, rgba(92, 64, 140, .30), transparent 72%),
+          radial-gradient(40% 36% at 40% 60%, rgba(30, 30, 40, .55), transparent 75%),
+          linear-gradient(160deg, #15131c 0%, #0d0d12 55%, #09090c 100%);
       }
 
-      #topbar {
-        position: absolute; top: 0; left: 0; right: 0; height: 34px;
-        background: rgba(5, 5, 8, .82);
+      #menubar {
+        position: absolute; top: 0; left: 0; right: 0; height: 36px;
+        background: rgba(14, 14, 18, .62); border-bottom: 1px solid rgba(255, 255, 255, .05);
         display: flex; align-items: center; justify-content: space-between;
-        padding: 0 14px; color: #e6e6e6; font-size: 13.5px; font-weight: 500;
+        padding: 0 18px; font-size: 15px; color: #ececee;
       }
-      #topbar .tb-left, #topbar .tb-right { display: flex; align-items: center; gap: 14px; width: 260px; }
-      #topbar .tb-right { justify-content: flex-end; }
-      #topbar .tb-clock { letter-spacing: .01em; }
-      #topbar svg { display: block; opacity: .92; }
-      #tb-mic { color: #5de8cd; }
+      #menubar .mb-left { display: flex; gap: 26px; align-items: center; }
+      #menubar .mb-left b { font-weight: 700; }
+      #menubar .mb-left span { opacity: .92; }
+      #menubar .mb-right { display: flex; gap: 20px; align-items: center; }
+      #menubar svg { display: block; }
+      #menubar .mb-clock { font-weight: 500; letter-spacing: .01em; }
 
       #dock {
-        position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
-        width: 62px; padding: 10px 0; border-radius: 16px;
-        background: rgba(8, 8, 12, .62); border: 1px solid rgba(255, 255, 255, .06);
-        display: flex; flex-direction: column; align-items: center; gap: 12px;
+        position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+        height: 76px; padding: 0 12px; border-radius: 24px;
+        background: rgba(34, 34, 40, .48); border: 1px solid rgba(255, 255, 255, .12);
+        display: flex; align-items: center; gap: 12px;
       }
-      .dk { width: 42px; height: 42px; border-radius: 11px; position: relative;
+      .dk { width: 56px; height: 56px; border-radius: 14px; position: relative;
             display: flex; align-items: center; justify-content: center; }
-      .dk-files    { background: linear-gradient(150deg, #f0a63c, #d97b1f); }
-      .dk-browser  { background: radial-gradient(circle at 34% 30%, #ff9e5e, #e0552b 62%, #b23a1d); }
-      .dk-terminal { background: #2d2833; border: 1px solid rgba(255,255,255,.14); }
-      .dk-editor   { background: linear-gradient(150deg, #3b9cdf, #1f6fb0); }
-      .dk-slack    { background: #3f0e40; }
-      .dk-active::after {
-        content: ""; position: absolute; left: -13px; top: 50%; margin-top: -3px;
-        width: 5px; height: 6px; border-radius: 3px; background: #e6e6e6;
-      }
       .dk svg { display: block; }
+      .dk-folder  { background: linear-gradient(160deg, #5aa8f0, #2f74c8); }
+      .dk-browser { background: radial-gradient(circle at 34% 30%, #ffb27a, #ef6a2c 62%, #c2461c); }
+      .dk-mail    { background: linear-gradient(160deg, #6fb7ff, #2b6fe0); }
+      .dk-notes   { background: linear-gradient(160deg, #ffe07a, #f6c13a); }
+      .dk-term    { background: #232227; border: 1px solid rgba(255, 255, 255, .14); }
+      .dk-wc      { background: transparent; }
+      .dk-on::after {
+        content: ""; position: absolute; bottom: -9px; left: 50%; margin-left: -2.5px;
+        width: 5px; height: 5px; border-radius: 50%; background: rgba(255, 255, 255, .8);
+      }
+      .dk-sep { width: 1px; height: 46px; background: rgba(255, 255, 255, .16); margin: 0 2px; }
 
-      /* ============ slack window ============ */
+      /* ============ compose window ============ */
       #win {
-        position: absolute; left: 170px; top: 80px; width: 1580px; height: 920px;
-        border-radius: 12px; overflow: hidden;
-        background: #1a1d21; border: 1px solid rgba(255, 255, 255, .09);
-        box-shadow: 0 32px 90px -18px rgba(0, 0, 0, .75), 0 6px 22px rgba(0, 0, 0, .5);
+        position: absolute; left: 300px; top: 210px; width: 1320px; height: 560px;
+        border-radius: 14px; overflow: hidden;
+        background: #1e1e22; border: 1px solid rgba(255, 255, 255, .10);
+        box-shadow: 0 40px 100px -20px rgba(0, 0, 0, .8), 0 8px 24px rgba(0, 0, 0, .5);
         display: flex; flex-direction: column;
       }
-      #win-nav {
-        height: 44px; flex: none; background: #121016;
-        display: flex; align-items: center; padding: 0 14px; gap: 12px;
+      #titlebar {
+        height: 54px; flex: none; background: #26262b;
+        border-bottom: 1px solid rgba(255, 255, 255, .07);
+        display: flex; align-items: center; padding: 0 18px; gap: 18px;
       }
-      #win-nav .nav-arrows { display: flex; gap: 10px; color: #9a969e; width: 240px; align-items: center; }
-      #win-nav .search {
-        flex: 1; max-width: 620px; margin: 0 auto; height: 26px; border-radius: 6px;
-        background: rgba(255, 255, 255, .13); color: #c9c5cd;
-        font-size: 12.5px; display: flex; align-items: center; justify-content: center; gap: 7px;
-      }
-      #win-nav .nav-right { width: 240px; display: flex; justify-content: flex-end; align-items: center; gap: 14px; }
-      .wbtn { width: 12px; height: 12px; border-radius: 50%; background: #4a4550; }
-      #win-nav .me {
-        width: 26px; height: 26px; border-radius: 7px;
-        background: linear-gradient(150deg, #2dd4b8, #0d9488);
-        color: #052e2a; font-size: 12px; font-weight: 700;
-        display: flex; align-items: center; justify-content: center;
-      }
-      #win-body { flex: 1; display: flex; min-height: 0; }
-
-      #sidebar {
-        width: 260px; flex: none; background: #19161d;
-        border-right: 1px solid rgba(255, 255, 255, .06);
-        padding: 14px 0; color: #b9b3bd; font-size: 15px;
-      }
-      #sidebar .ws {
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 2px 16px 14px; color: #fff; font-weight: 800; font-size: 17px;
-        border-bottom: 1px solid rgba(255, 255, 255, .07); margin-bottom: 12px;
-      }
-      #sidebar .sec { padding: 10px 16px 6px; font-size: 13px; color: #877f8c; }
-      .chan { display: flex; align-items: center; gap: 9px; padding: 5px 16px; }
-      .chan .hash { opacity: .65; font-weight: 400; width: 12px; text-align: center; }
-      .chan-active { background: #1164a3; color: #fff; }
-      .dm-dot { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid #877f8c; }
-      .dm-dot.on { background: #2bac76; border-color: #2bac76; }
-
-      #main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: #1a1d21; }
-      #chan-head {
-        height: 52px; flex: none; border-bottom: 1px solid rgba(255, 255, 255, .07);
-        display: flex; align-items: center; padding: 0 22px; gap: 12px;
-      }
-      #chan-head .cname { color: #fff; font-weight: 800; font-size: 17.5px; }
-      #chan-head .ctopic { color: #9d9aa3; font-size: 13.5px; padding-left: 12px;
-        border-left: 1px solid rgba(255, 255, 255, .12); }
-      #chan-head .members {
-        margin-left: auto; display: flex; align-items: center; gap: 7px;
-        background: rgba(255, 255, 255, .05); border: 1px solid rgba(255, 255, 255, .1);
-        border-radius: 6px; padding: 4px 10px; color: #b9b3bd; font-size: 13px;
-      }
-
-      #msgs { flex: 1; padding: 18px 26px 8px; display: flex; flex-direction: column; justify-content: flex-end; gap: 4px; }
-      #chan-intro { margin-bottom: auto; padding: 10px 2px 26px; }
-      #chan-intro .ci-title { color: #fff; font-size: 30px; font-weight: 800; letter-spacing: -.02em; }
-      #chan-intro .ci-sub { color: #9d9aa3; font-size: 14.5px; margin-top: 10px; max-width: 640px; line-height: 1.5; }
-      #chan-intro .ci-sub b { color: #d1d2d3; font-weight: 600; }
-      .day-div { display: flex; align-items: center; gap: 14px; margin: 6px 0 14px; }
-      .day-div i { flex: 1; height: 1px; background: rgba(255, 255, 255, .09); }
-      .day-div span {
-        font-size: 12.5px; font-weight: 700; color: #d1d2d3;
-        border: 1px solid rgba(255, 255, 255, .12); border-radius: 999px; padding: 4px 12px;
-      }
-      .msg { display: flex; gap: 12px; padding: 7px 0; }
-      .avatar {
-        width: 38px; height: 38px; border-radius: 9px; flex: none;
-        color: rgba(255, 255, 255, .94); font-size: 15px; font-weight: 700;
-        display: flex; align-items: center; justify-content: center;
-      }
-      .av-1 { background: linear-gradient(150deg, #9d6bd6, #6d3fa8); }
-      .av-2 { background: linear-gradient(150deg, #e08a3c, #b85f18); }
-      .av-me { background: linear-gradient(150deg, #2dd4b8, #0d9488); color: #052e2a; }
-      .msg .mline { min-width: 0; }
-      .msg .mhead { display: flex; align-items: baseline; gap: 8px; }
-      .msg .mname { color: #fff; font-weight: 800; font-size: 15px; }
-      .msg .mtime { color: #9d9aa3; font-size: 12px; }
-      .msg .mtext { color: #d1d2d3; font-size: 15px; line-height: 1.48; margin-top: 2px; }
-
-      #composer {
-        flex: none; margin: 6px 22px 22px;
-        border: 1px solid #565856; border-radius: 9px; background: #222529;
-        position: relative;
-      }
-      #comp-input { min-height: 52px; padding: 15px 16px 6px; font-size: 15px; line-height: 1.5; position: relative; }
-      #comp-placeholder { color: #7a7d81; position: absolute; top: 15px; left: 16px; }
-      #comp-stream { color: #9ba0a8; }
-      #comp-stream .sw { display: inline; }
-      #comp-final { color: #d1d2d3; position: absolute; top: 15px; left: 16px; right: 16px; }
-      .caret-wrap { display: inline-block; }
-      #caret-start-wrap { position: absolute; left: 16px; top: 15px; }
-      #comp-caret-start, #comp-caret-2 {
-        display: inline-block; width: 2px; height: 17px; background: #d1d2d3;
-        vertical-align: text-bottom; margin-left: 1px;
-        animation: blink 1.06s steps(1) 14;
-      }
-      @keyframes blink { 50% { opacity: 0; } }
-      #comp-tools {
-        display: flex; align-items: center; gap: 14px; padding: 6px 10px 8px; color: #9d9aa3;
-      }
-      #comp-tools .plus {
-        width: 24px; height: 24px; border-radius: 50%; background: rgba(255, 255, 255, .06);
-        display: flex; align-items: center; justify-content: center;
-      }
-      #comp-tools svg { display: block; }
+      .lights { display: flex; gap: 9px; }
+      .lights i { width: 13px; height: 13px; border-radius: 50%; display: block; }
+      .lights i:nth-child(1) { background: #ff5f57; }
+      .lights i:nth-child(2) { background: #febc2e; }
+      .lights i:nth-child(3) { background: #28c840; }
+      #titlebar .ttl { font-weight: 600; font-size: 15.5px; color: #d9d9dd; }
+      #titlebar .tools { margin-left: auto; display: flex; align-items: center; gap: 20px; color: #a3a3aa; }
       #send {
-        margin-left: auto; width: 34px; height: 27px; border-radius: 6px;
-        background: rgba(255, 255, 255, .05); color: #7a7d81;
+        display: flex; align-items: center; gap: 8px;
+        height: 34px; padding: 0 16px; border-radius: 9px;
+        background: rgba(255, 255, 255, .07); color: #8d8d95;
+        font-size: 14.5px; font-weight: 600;
+      }
+      .field {
+        height: 48px; flex: none; display: flex; align-items: center; gap: 12px;
+        padding: 0 26px; border-bottom: 1px solid rgba(255, 255, 255, .07);
+        font-size: 16.5px; color: #e8e8ea;
+      }
+      .field .lbl { color: #8d8d95; width: 70px; }
+      .chip {
+        display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px 4px 4px;
+        border-radius: 999px; background: rgba(255, 255, 255, .08); font-size: 15px;
+      }
+      .chip .av {
+        width: 24px; height: 24px; border-radius: 50%;
+        background: linear-gradient(150deg, #9d6bd6, #6d3fa8);
+        color: #fff; font-size: 11px; font-weight: 700;
         display: flex; align-items: center; justify-content: center;
       }
+      #body {
+        flex: 1; position: relative; padding: 30px 30px;
+        font-size: 21px; line-height: 1.6; color: #ececef;
+      }
+      #stream { color: #8f949c; }
+      #stream .sw { display: inline-block; margin-right: .26em; }
+      #final { position: absolute; left: 30px; right: 30px; top: 30px; }
+      .caret {
+        display: inline-block; width: 2px; height: 24px; background: #ececef;
+        vertical-align: text-bottom; margin-left: 1px;
+      }
+      #caret-start { position: absolute; left: 30px; top: 34px; }
 
-      /* ============ overlays ============ */
+      /* ============ the pill (as the app draws it) ============ */
       #pill {
-        position: absolute; left: 960px; top: 1008px;
-        display: inline-flex; align-items: center; gap: 11px;
-        background: rgba(13, 16, 24, .96);
-        border: 1px solid rgba(93, 232, 205, .30);
-        border-radius: 999px; padding: 12px 20px;
-        color: #e8ebf1; font-size: 15px; font-weight: 600; white-space: nowrap;
-        box-shadow: 0 14px 44px -10px rgba(0, 0, 0, .7);
-        opacity: 0;
+        position: absolute; left: 960px; bottom: 95px;
+        width: 60px; height: 14px; border-radius: 999px;
+        background: rgba(16, 16, 16, .86);
+        border: 1.6px solid rgba(190, 190, 190, .6);
+        display: flex; align-items: center; justify-content: center;
+        overflow: hidden; z-index: 40;
       }
-      #pill .dot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444;
-        animation: pulse 1s ease-in-out 8; }
-      @keyframes pulse { 0%, 100% { transform: scale(.8); opacity: .6; } 50% { transform: scale(1.15); opacity: 1; } }
-      #pill .plabel { position: relative; display: inline-block; min-width: 116px; }
-      #pill .pl-a { display: inline-block; }
-      #pill .pl-b { position: absolute; left: 0; top: 0; opacity: 0; color: #5de8cd; }
-      #pill .bars { display: flex; align-items: center; gap: 3px; height: 18px; }
-      #pill .bars i { display: block; width: 3px; height: 16px; border-radius: 2px; background: #5de8cd;
-        animation: level .8s ease-in-out 8; }
-      #pill .bars i:nth-child(1) { animation-delay: 0s; }
-      #pill .bars i:nth-child(2) { animation-delay: .14s; }
-      #pill .bars i:nth-child(3) { animation-delay: .28s; }
-      #pill .bars i:nth-child(4) { animation-delay: .42s; }
-      #pill .bars i:nth-child(5) { animation-delay: .56s; }
-      @keyframes level { 0%, 100% { transform: scaleY(.28); opacity: .7; } 50% { transform: scaleY(1); opacity: 1; } }
+      #bars { display: flex; align-items: center; gap: 6px; height: 40px; opacity: 0; }
+      #bars i { display: block; width: 4.5px; height: 32px; border-radius: 3px; background: #fafafa;
+                transform: scaleY(.15); }
+      #dots { position: absolute; display: flex; gap: 12px; opacity: 0; }
+      #dots i { display: block; width: 9.6px; height: 9.6px; border-radius: 50%; background: #f97316; }
+      #pmic { position: absolute; opacity: 0; color: #fafafa; }
+      #gear {
+        position: absolute; left: 1023px; bottom: 95px; width: 48px; height: 48px;
+        border-radius: 50%; background: rgba(8, 8, 8, .95);
+        border: 1.5px solid rgba(255, 255, 255, .15);
+        display: flex; align-items: center; justify-content: center; color: #a3a3a3;
+        opacity: 0; z-index: 40;
+      }
+      #tip {
+        position: absolute; left: 960px; bottom: 155px; height: 42px; padding: 0 21px;
+        border-radius: 999px; background: rgba(8, 8, 8, .95);
+        border: 1.5px solid rgba(255, 255, 255, .15);
+        display: flex; align-items: center; gap: 9px; white-space: nowrap;
+        font-size: 19.5px; font-weight: 500; color: #fafafa; opacity: 0; z-index: 41;
+      }
+      #tip b { font-weight: 700; }
 
-
+      /* ============ narration ============ */
       #statchip {
-        position: absolute; left: 960px; top: 1012px;
-        font: 500 14px/1 ui-monospace, "SF Mono", monospace; color: #5de8cd;
-        background: rgba(13, 16, 24, .94); border: 1px solid rgba(93, 232, 205, .22);
-        border-radius: 999px; padding: 11px 18px; white-space: nowrap; opacity: 0;
+        position: absolute; left: 960px; bottom: 132px; white-space: nowrap;
+        font: 500 17px/1 ui-monospace, "SF Mono", monospace; color: #fafafa;
+        background: rgba(8, 8, 8, .92); border: 1.5px solid rgba(255, 255, 255, .14);
+        border-radius: 999px; padding: 13px 22px; opacity: 0; z-index: 42;
       }
-      #statchip b { color: #e8ebf1; font-weight: 600; }
+      #statchip b { color: #f97316; font-weight: 600; }
+      #toast {
+        position: absolute; left: 960px; top: 92px; white-space: nowrap;
+        display: flex; align-items: center; gap: 10px;
+        background: rgba(30, 30, 34, .94); border: 1px solid rgba(255, 255, 255, .12);
+        border-radius: 999px; padding: 12px 22px; font-size: 16px; font-weight: 600;
+        color: #ececef; opacity: 0; z-index: 42;
+      }
+      #toast svg { color: #f97316; display: block; }
 
-      #cursor { position: absolute; left: 0; top: 0; width: 26px; opacity: 0; z-index: 60; }
+      #cursor { position: absolute; left: 0; top: 0; width: 28px; opacity: 0; z-index: 60; }
       .ripple {
-        position: absolute; width: 40px; height: 40px; border-radius: 50%;
+        position: absolute; width: 42px; height: 42px; border-radius: 50%;
         border: 2px solid rgba(255, 255, 255, .75); opacity: 0;
-        margin: -20px 0 0 -20px; transform: scale(.3);
+        margin: -21px 0 0 -21px; transform: scale(.3); z-index: 59;
       }
-      #ripple-1 { left: 700px; top: 938px; }
-      #ripple-2 { left: 1692px; top: 950px; }
-
+      #ripple-1 { left: 640px; top: 470px; }
+      #ripple-2 { left: 1556px; top: 238px; }
       #veil { position: absolute; inset: 0; background: #000; opacity: 1; z-index: 90; }
     </style>
   </head>
   <body>
-    <div data-hf-id="hf-xnzj" id="root" data-composition-id="main" data-start="0" data-duration="15.5" data-width="1920" data-height="1080">
-      <!-- ============ scene: desktop + slack ============ -->
-      <section data-hf-id="hf-mgk0" id="scene" class="clip" data-start="0" data-duration="15.5" data-track-index="1">
-        <div data-hf-id="hf-649p" id="wallpaper"></div>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="15.5" data-width="1920" data-height="1080">
+      <!-- ============ scene: desktop + compose window ============ -->
+      <section id="scene" class="clip" data-start="0" data-duration="15.5" data-track-index="1">
+        <div id="wallpaper"></div>
 
-        <div data-hf-id="hf-ysdh" id="topbar">
-          <div data-hf-id="hf-cyyw" class="tb-left"><span data-hf-id="hf-7h4k">Activities</span></div>
-          <div data-hf-id="hf-d4d8" class="tb-clock">Jul 3&#160;&#160;20:14</div>
-          <div data-hf-id="hf-sxp3" class="tb-right">
-            <svg data-hf-id="hf-wwa3" id="tb-mic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect data-hf-id="hf-cvlk" x="9" y="2.5" width="6" height="11" rx="3" /><path data-hf-id="hf-vef1" d="M5.5 11.5a6.5 6.5 0 0 0 13 0" /><path data-hf-id="hf-6czf" d="M12 18v3.5" /></svg>
-            <svg data-hf-id="hf-inpv" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path data-hf-id="hf-orfu" d="M4.5 9.5C8.7 5.5 15.3 5.5 19.5 9.5" /><path data-hf-id="hf-sqfl" d="M7.5 13c2.6-2.4 6.4-2.4 9 0" /><circle data-hf-id="hf-jr3b" cx="12" cy="17" r="1.4" fill="currentColor" stroke="none" /></svg>
-            <svg data-hf-id="hf-0kcv" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-yw4d" d="M11 5 6.5 8.5H3v7h3.5L11 19z" fill="currentColor" stroke="none" /><path data-hf-id="hf-x3ms" d="M15 9.5a4.2 4.2 0 0 1 0 5" /></svg>
-            <svg data-hf-id="hf-p8qm" width="21" height="13" viewBox="0 0 28 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect data-hf-id="hf-tack" x="1" y="1.5" width="22" height="13" rx="3.5" /><rect data-hf-id="hf-gexs" x="3.4" y="3.9" width="13" height="8.2" rx="1.6" fill="currentColor" stroke="none" /><path data-hf-id="hf-lg0g" d="M25.5 5.5v5" stroke-linecap="round" stroke-width="2.4" /></svg>
+        <div id="menubar">
+          <div class="mb-left">
+            <b>Mail</b><span>File</span><span>Edit</span><span>View</span><span>Message</span><span>Format</span><span>Window</span><span>Help</span>
           </div>
-        </div>
-
-        <div data-hf-id="hf-3m2w" id="dock">
-          <div data-hf-id="hf-wde4" class="dk dk-files"><svg data-hf-id="hf-gx1y" width="22" height="22" viewBox="0 0 24 24" fill="rgba(255,255,255,.92)"><path data-hf-id="hf-zo5e" d="M3 6.5A2.5 2.5 0 0 1 5.5 4h4l2 2.5h7A2.5 2.5 0 0 1 21 9v8.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z" /></svg></div>
-          <div data-hf-id="hf-jzy9" class="dk dk-browser"><svg data-hf-id="hf-wbn4" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.9)" stroke-width="1.8"><circle data-hf-id="hf-fdji" cx="12" cy="12" r="8.2" /><path data-hf-id="hf-t5ex" d="M4 12h16M12 4c2.6 2.2 2.6 13.8 0 16-2.6-2.2-2.6-13.8 0-16z" /></svg></div>
-          <div data-hf-id="hf-vdov" class="dk dk-terminal"><svg data-hf-id="hf-j3ha" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8be0cf" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-7ou0" d="m6 8 4 4-4 4" /><path data-hf-id="hf-d4j0" d="M12.5 16.5H18" /></svg></div>
-          <div data-hf-id="hf-70as" class="dk dk-editor"><svg data-hf-id="hf-fxky" width="20" height="20" viewBox="0 0 24 24" fill="rgba(255,255,255,.92)"><path data-hf-id="hf-e2iv" d="M17 3 8 12l9 9 4-2V5zM3 9.5v5L8 12z" /></svg></div>
-          <div data-hf-id="hf-5q73" class="dk dk-slack dk-active">
-            <svg data-hf-id="hf-rvxa" width="22" height="22" viewBox="0 0 24 24">
-              <path data-hf-id="hf-70t3" fill="#36C5F0" d="M9.1 3.5a1.9 1.9 0 1 1 1.9 1.9H9.1zM9.1 6.9a1.9 1.9 0 0 1 1.9 1.9v4.7a1.9 1.9 0 1 1-3.8 0V8.8a1.9 1.9 0 0 1 1.9-1.9z" />
-              <path data-hf-id="hf-4ode" fill="#2EB67D" d="M20.5 9.1a1.9 1.9 0 1 1-1.9 1.9V9.1zM17.1 9.1a1.9 1.9 0 0 1-1.9 1.9H10.5a1.9 1.9 0 1 1 0-3.8h4.7a1.9 1.9 0 0 1 1.9 1.9z" />
-              <path data-hf-id="hf-mpbl" fill="#ECB22E" d="M14.9 20.5a1.9 1.9 0 1 1-1.9-1.9h1.9zM14.9 17.1a1.9 1.9 0 0 1-1.9-1.9v-4.7a1.9 1.9 0 1 1 3.8 0v4.7a1.9 1.9 0 0 1-1.9 1.9z" />
-              <path data-hf-id="hf-nhbl" fill="#E01E5A" d="M3.5 14.9a1.9 1.9 0 1 1 1.9-1.9v1.9zM6.9 14.9a1.9 1.9 0 0 1 1.9-1.9h4.7a1.9 1.9 0 1 1 0 3.8H8.8a1.9 1.9 0 0 1-1.9-1.9z" />
+          <div class="mb-right">
+            <!-- WhisprCatch in the menu bar: the app mark as a template glyph -->
+            <svg width="24" height="24" viewBox="0 0 36 36" aria-label="WhisprCatch">
+              <g transform="translate(18 18) scale(0.118) translate(-256 -242)">
+                <path fill="#fff" fill-rule="evenodd" d="M256 98a50 50 0 0 1 50 50v76a50 50 0 0 1-100 0v-76a50 50 0 0 1 50-50ZM233 164a6 6 0 0 0-6 6v32a6 6 0 0 0 12 0v-32a6 6 0 0 0-6-6ZM256 148a6 6 0 0 0-6 6v64a6 6 0 0 0 12 0v-64a6 6 0 0 0-6-6ZM279 164a6 6 0 0 0-6 6v32a6 6 0 0 0 12 0v-32a6 6 0 0 0-6-6Z"/>
+                <path d="M154 222v22a102 102 0 0 0 204 0v-22M256 346v40" fill="none" stroke="#fff" stroke-width="32" stroke-linecap="round"/>
+              </g>
             </svg>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M4.5 9.5C8.7 5.5 15.3 5.5 19.5 9.5"/><path d="M7.5 13c2.6-2.4 6.4-2.4 9 0"/><circle cx="12" cy="17" r="1.4" fill="#fff" stroke="none"/></svg>
+            <svg width="26" height="15" viewBox="0 0 28 16" fill="none" stroke="#fff" stroke-width="1.6"><rect x="1" y="1.5" width="22" height="13" rx="3.5"/><rect x="3.4" y="3.9" width="15" height="8.2" rx="1.6" fill="#fff" stroke="none"/><path d="M25.5 5.5v5" stroke-linecap="round" stroke-width="2.4"/></svg>
+            <span class="mb-clock">Tue 6 Oct&#160;&#160;20:14</span>
           </div>
         </div>
 
-        <div data-hf-id="hf-7on1" id="win">
-          <div data-hf-id="hf-alvx" id="win-nav">
-            <div data-hf-id="hf-k6cy" class="nav-arrows">
-              <svg data-hf-id="hf-63vf" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-4wxd" d="m14 6-6 6 6 6" /></svg>
-              <svg data-hf-id="hf-aur6" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity=".45"><path data-hf-id="hf-we71" d="m10 6 6 6-6 6" /></svg>
-              <svg data-hf-id="hf-3lrn" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle data-hf-id="hf-o1fd" cx="12" cy="12" r="8.5" /><path data-hf-id="hf-ge4w" d="M12 7.5V12l3 2" /></svg>
-            </div>
-            <div data-hf-id="hf-5lbn" class="search">
-              <svg data-hf-id="hf-8brd" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle data-hf-id="hf-mu0v" cx="11" cy="11" r="6.5" /><path data-hf-id="hf-8q25" d="m20 20-3.8-3.8" /></svg>
-              Search Acme Robotics
-            </div>
-            <div data-hf-id="hf-kj32" class="nav-right">
-              <div data-hf-id="hf-e10j" class="me">AP</div>
-              <span data-hf-id="hf-h8q0" class="wbtn"></span><span data-hf-id="hf-huu8" class="wbtn"></span><span data-hf-id="hf-gnx5" class="wbtn"></span>
+        <div id="win">
+          <div id="titlebar">
+            <div class="lights"><i></i><i></i><i></i></div>
+            <span class="ttl">New Message</span>
+            <div class="tools">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 8.5v5a2 2 0 0 1-4 0v-4.6a3.2 3.2 0 0 1 6.4 0v4.4a5 5 0 0 1-10 0V8"/></svg>
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 7h14M5 12h14M5 17h9"/></svg>
+              <div id="send">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3.4 20.4 20.8 12 3.4 3.6l2.9 6.9 8.2 1.5-8.2 1.5z"/></svg>
+                Send
+              </div>
             </div>
           </div>
-          <div data-hf-id="hf-nrae" id="win-body">
-            <div data-hf-id="hf-tt77" id="sidebar">
-              <div data-hf-id="hf-mota" class="ws">
-                <span data-hf-id="hf-b584">Acme Robotics</span>
-                <svg data-hf-id="hf-yezj" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#c9c5cd" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-ggqc" d="M12 4v16M4 12h16" /></svg>
-              </div>
-              <div data-hf-id="hf-e21r" class="sec">Channels</div>
-              <div data-hf-id="hf-3ks8" class="chan"><span data-hf-id="hf-jici" class="hash">#</span>general</div>
-              <div data-hf-id="hf-hlqe" class="chan"><span data-hf-id="hf-o3gm" class="hash">#</span>design</div>
-              <div data-hf-id="hf-nsd6" class="chan chan-active"><span data-hf-id="hf-ohrn" class="hash">#</span>engineering</div>
-              <div data-hf-id="hf-i7lm" class="chan"><span data-hf-id="hf-ow2o" class="hash">#</span>releases</div>
-              <div data-hf-id="hf-vgme" class="sec">Direct messages</div>
-              <div data-hf-id="hf-55e3" class="chan"><span data-hf-id="hf-n0qh" class="dm-dot on"></span>Priya Nair</div>
-              <div data-hf-id="hf-9j5w" class="chan"><span data-hf-id="hf-1vf1" class="dm-dot on"></span>Sam Kim</div>
-              <div data-hf-id="hf-465d" class="chan"><span data-hf-id="hf-veu2" class="dm-dot"></span>Dana Wolfe</div>
-            </div>
-            <div data-hf-id="hf-j156" id="main">
-              <div data-hf-id="hf-c2ck" id="chan-head">
-                <span data-hf-id="hf-a9ut" class="cname"># engineering</span>
-                <span data-hf-id="hf-6rwn" class="ctopic">ship week — v0.3.1</span>
-                <div data-hf-id="hf-rqpi" class="members">
-                  <svg data-hf-id="hf-m1nd" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle data-hf-id="hf-vdmm" cx="9" cy="8" r="3.4" /><path data-hf-id="hf-jwfw" d="M3.5 19c.8-3 3-4.6 5.5-4.6s4.7 1.6 5.5 4.6" /><path data-hf-id="hf-q8iw" d="M15.5 5.6a3.4 3.4 0 0 1 0 4.8M17.6 14.9c1.6.8 2.6 2.2 2.9 4.1" /></svg>
-                  12
-                </div>
-              </div>
-              <div data-hf-id="hf-72gr" id="msgs">
-                <div data-hf-id="hf-aadw" id="chan-intro">
-                  <div data-hf-id="hf-ubx9" class="ci-title"># engineering</div>
-                  <div data-hf-id="hf-obg7" class="ci-sub">Priya Nair created this channel on May 12. This is the very beginning of the <b data-hf-id="hf-t95l">#engineering</b> channel — ship week coordination lives here.</div>
-                </div>
-                <div data-hf-id="hf-kltc" class="day-div"><i data-hf-id="hf-wt6k"></i><span data-hf-id="hf-f8wa">Today</span><i data-hf-id="hf-zeb8"></i></div>
-                <div data-hf-id="hf-fme3" class="msg">
-                  <div data-hf-id="hf-jgo4" class="avatar av-1">PN</div>
-                  <div data-hf-id="hf-dlsv" class="mline">
-                    <div data-hf-id="hf-d53j" class="mhead"><span data-hf-id="hf-tcyc" class="mname">Priya Nair</span><span data-hf-id="hf-vn54" class="mtime">8:02 PM</span></div>
-                    <div data-hf-id="hf-ls64" class="mtext">pipeline is green again — I quarantined the flaky overlay test</div>
-                  </div>
-                </div>
-                <div data-hf-id="hf-z5gb" class="msg">
-                  <div data-hf-id="hf-3bob" class="avatar av-2">SK</div>
-                  <div data-hf-id="hf-7q5b" class="mline">
-                    <div data-hf-id="hf-ma0f" class="mhead"><span data-hf-id="hf-1rch" class="mname">Sam Kim</span><span data-hf-id="hf-nycp" class="mtime">8:07 PM</span></div>
-                    <div data-hf-id="hf-ol53" class="mtext">nice. are we still good to cut v0.3.1 today?</div>
-                  </div>
-                </div>
-                <div data-hf-id="hf-gajv" class="msg" id="msg-me">
-                  <div data-hf-id="hf-ja9m" class="avatar av-me">AP</div>
-                  <div data-hf-id="hf-7bua" class="mline">
-                    <div data-hf-id="hf-lvpe" class="mhead"><span data-hf-id="hf-vnon" class="mname">Aviroop</span><span data-hf-id="hf-ci0l" class="mtime">8:14 PM</span></div>
-                    <div data-hf-id="hf-vejn" class="mtext">Yes — pushing the fix now. Tag the release, and I'll write the changelog after standup.</div>
-                  </div>
-                </div>
-              </div>
-              <div data-hf-id="hf-m28j" id="composer">
-                <div data-hf-id="hf-nmyz" id="comp-input">
-                  <span data-hf-id="hf-5fhy" id="comp-placeholder">Message #engineering</span>
-                  <span data-hf-id="hf-9nuc" id="comp-stream"><span data-hf-id="hf-buau" class="sw">yes</span> <span data-hf-id="hf-lpy9" class="sw">pushing</span> <span data-hf-id="hf-xt8m" class="sw">the</span> <span data-hf-id="hf-kjam" class="sw">fix</span> <span data-hf-id="hf-vl59" class="sw">now</span> <span data-hf-id="hf-iqg1" class="sw">tag</span> <span data-hf-id="hf-xg0a" class="sw">the</span> <span data-hf-id="hf-u5cg" class="sw">release</span> <span data-hf-id="hf-e2z8" class="sw">and</span> <span data-hf-id="hf-xhv2" class="sw">ill</span> <span data-hf-id="hf-e6dy" class="sw">write</span> <span data-hf-id="hf-xubb" class="sw">the</span> <span data-hf-id="hf-zgnb" class="sw">changelog</span> <span data-hf-id="hf-kryj" class="sw">after</span> <span data-hf-id="hf-x0vc" class="sw">standup</span></span>
-                  <span data-hf-id="hf-q5qq" class="caret-wrap" id="caret-start-wrap"><span data-hf-id="hf-zz1a" id="comp-caret-start"></span></span><span data-hf-id="hf-tx53" id="comp-final">Yes — pushing the fix now. Tag the release, and I'll write the changelog after standup.<span data-hf-id="hf-dj1q" class="caret-wrap" id="caret-wrap-2"><span data-hf-id="hf-bo9c" id="comp-caret-2"></span></span></span>
-                </div>
-                <div data-hf-id="hf-ggn2" id="comp-tools">
-                  <div data-hf-id="hf-htb4" class="plus"><svg data-hf-id="hf-7lsn" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path data-hf-id="hf-1zsu" d="M12 5v14M5 12h14" /></svg></div>
-                  <svg data-hf-id="hf-37gm" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path data-hf-id="hf-k78r" d="M6 4.5h9M6 12h12M6 19.5h7" /></svg>
-                  <svg data-hf-id="hf-2t5l" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle data-hf-id="hf-gcia" cx="12" cy="12" r="8.2" /><path data-hf-id="hf-nrrm" d="M8.8 14c.9 1.2 2 1.8 3.2 1.8s2.3-.6 3.2-1.8" /><circle data-hf-id="hf-iagt" cx="9.2" cy="9.8" r=".8" fill="currentColor" stroke="none" /><circle data-hf-id="hf-dahl" cx="14.8" cy="9.8" r=".8" fill="currentColor" stroke="none" /></svg>
-                  <svg data-hf-id="hf-2euk" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle data-hf-id="hf-gqtb" cx="12" cy="12" r="8.2" /><path data-hf-id="hf-02gy" d="M15.5 8.5v5a2 2 0 0 1-4 0v-4.6a3.2 3.2 0 0 1 6.4 0v4.4" /></svg>
-                  <svg data-hf-id="hf-8g9h" id="tool-mic" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect data-hf-id="hf-xkgg" x="9" y="2.5" width="6" height="11" rx="3" /><path data-hf-id="hf-kgr5" d="M5.5 11.5a6.5 6.5 0 0 0 13 0" /><path data-hf-id="hf-6q63" d="M12 18v3.5" /></svg>
-                  <div data-hf-id="hf-gbnv" id="send"><svg data-hf-id="hf-avx4" width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path data-hf-id="hf-0fci" d="M3.4 20.4 20.8 12 3.4 3.6l2.9 6.9 8.2 1.5-8.2 1.5z" /></svg></div>
-                </div>
-              </div>
-            </div>
+          <div class="field"><span class="lbl">To:</span><span class="chip"><span class="av">PN</span>Priya Nair</span></div>
+          <div class="field"><span class="lbl">Cc:</span></div>
+          <div class="field"><span class="lbl">Subject:</span><span>Release notes for 0.5</span></div>
+          <div id="body">
+            <span id="caret-start" class="caret"></span>
+            <span id="stream"><span class="sw">hi</span><span class="sw">priya</span><span class="sw">the</span><span class="sw">release</span><span class="sw">is</span><span class="sw">tagged</span><span class="sw">and</span><span class="sw">the</span><span class="sw">notes</span><span class="sw">are</span><span class="sw">live</span><span class="sw">could</span><span class="sw">you</span><span class="sw">give</span><span class="sw">the</span><span class="sw">changelog</span><span class="sw">one</span><span class="sw">last</span><span class="sw">read</span><span class="sw">before</span><span class="sw">lunch</span><span class="sw">thanks</span></span>
+            <span id="final">Hi Priya, the release is tagged and the notes are live. Could you give the changelog one last read before lunch? Thanks!<span class="caret" id="caret-end"></span></span>
+          </div>
+        </div>
+
+        <div id="dock">
+          <div class="dk dk-folder"><svg width="28" height="28" viewBox="0 0 24 24" fill="rgba(255,255,255,.95)"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h4l2 2.5h7A2.5 2.5 0 0 1 21 9v8.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/></svg></div>
+          <div class="dk dk-browser"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.95)" stroke-width="1.8"><circle cx="12" cy="12" r="8.2"/><path d="M4 12h16M12 4c2.6 2.2 2.6 13.8 0 16-2.6-2.2-2.6-13.8 0-16z"/></svg></div>
+          <div class="dk dk-mail dk-on"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linejoin="round"><rect x="3" y="5.5" width="18" height="13" rx="2.2" fill="rgba(255,255,255,.18)"/><path d="m3.6 7 8.4 6.2L20.4 7"/></svg></div>
+          <div class="dk dk-notes"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="rgba(80,60,10,.75)" stroke-width="2" stroke-linecap="round"><path d="M6 8h12M6 12h12M6 16h8"/></svg></div>
+          <div class="dk dk-term"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#e6e6e6" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 8 4 4-4 4"/><path d="M12.5 16.5H18"/></svg></div>
+          <div class="dk-sep"></div>
+          <!-- the app icon (assets/icon.svg) -->
+          <div class="dk dk-wc dk-on">
+            <svg width="56" height="56" viewBox="0 0 512 512">
+              <defs>
+                <linearGradient id="wc-bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1a1a1a"/><stop offset="1" stop-color="#050505"/></linearGradient>
+                <radialGradient id="wc-glow" cx="0.5" cy="0.42" r="0.6"><stop offset="0" stop-color="#f97316" stop-opacity="0.22"/><stop offset="1" stop-color="#f97316" stop-opacity="0"/></radialGradient>
+                <linearGradient id="wc-mic" x1="256" y1="96" x2="256" y2="408" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ffa45c"/><stop offset="1" stop-color="#ea580c"/></linearGradient>
+              </defs>
+              <rect width="512" height="512" rx="116" fill="url(#wc-bg)"/>
+              <rect width="512" height="512" rx="116" fill="url(#wc-glow)"/>
+              <g transform="translate(256 252) scale(1.09) translate(-256 -252)">
+                <rect x="206" y="98" width="100" height="176" rx="50" fill="url(#wc-mic)"/>
+                <rect x="227" y="164" width="12" height="44" rx="6" fill="#0a0a0a"/>
+                <rect x="250" y="148" width="12" height="76" rx="6" fill="#0a0a0a"/>
+                <rect x="273" y="164" width="12" height="44" rx="6" fill="#0a0a0a"/>
+                <path d="M154 222v22a102 102 0 0 0 204 0v-22" fill="none" stroke="url(#wc-mic)" stroke-width="32" stroke-linecap="round"/>
+                <path d="M256 346v40" fill="none" stroke="url(#wc-mic)" stroke-width="32" stroke-linecap="round"/>
+              </g>
+            </svg>
           </div>
         </div>
       </section>
 
       <!-- ============ overlays ============ -->
-      <section data-hf-id="hf-nvms" id="overlays" class="clip" data-start="0" data-duration="15.5" data-track-index="2">
-        <div data-hf-id="hf-6cks" id="pill">
-          <span data-hf-id="hf-9gry" class="dot"></span>
-          <span data-hf-id="hf-qeen" class="plabel"><span data-hf-id="hf-nssu" class="pl-a" id="pl-listening">Listening</span><span data-hf-id="hf-eic6" class="pl-b" id="pl-scribing">Transcribing…</span></span>
-          <span data-hf-id="hf-41uz" class="bars"><i data-hf-id="hf-y7e5"></i><i data-hf-id="hf-ylp6"></i><i data-hf-id="hf-0l8b"></i><i data-hf-id="hf-0zjc"></i><i data-hf-id="hf-zsm9"></i></span>
+      <section id="overlays" class="clip" data-start="0" data-duration="15.5" data-track-index="2">
+        <div id="pill">
+          <div id="bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div id="dots"><i></i><i></i><i></i></div>
+          <svg id="pmic" width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v3.5"/></svg>
+        </div>
+        <div id="gear"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg></div>
+        <div id="tip">Dictate <b>fn</b></div>
+
+
+        <div id="statchip">5.5s of speech&#160;&#160;→&#160;&#160;<b>0.34s on the CPU</b>&#160;&#160;·&#160;&#160;0 network calls</div>
+        <div id="toast">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
+          Message sent
         </div>
 
-        <div data-hf-id="hf-xwvf" id="statchip">5.4s speech&#160;&#160;→&#160;&#160;<b data-hf-id="hf-ique">0.22s on-CPU</b>&#160;&#160;·&#160;&#160;0 network calls</div>
+        <div class="ripple" id="ripple-1"></div>
+        <div class="ripple" id="ripple-2"></div>
 
-        <div data-hf-id="hf-qesw" class="ripple" id="ripple-1"></div>
-        <div data-hf-id="hf-z2or" class="ripple" id="ripple-2"></div>
-
-        <svg data-hf-id="hf-ubtd" id="cursor" viewBox="0 0 24 24">
-          <path data-hf-id="hf-cwjp" d="M5.5 3.2 19 12.6l-6.2 1.1 3.4 6.1-2.9 1.6-3.4-6.1-4.4 4.4z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round" />
+        <svg id="cursor" viewBox="0 0 24 24">
+          <path d="M5.5 3.2 19 12.6l-6.2 1.1 3.4 6.1-2.9 1.6-3.4-6.1-4.4 4.4z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round"/>
         </svg>
 
-        <div data-hf-id="hf-fqxx" id="veil"></div>
+        <div id="veil"></div>
       </section>
     </div>
 
@@ -370,84 +286,109 @@
       window.__timelines = window.__timelines || {};
       const tl = gsap.timeline({ paused: true });
 
-      /* ---------- initial states (t=0, both clips live from 0) ---------- */
-      tl.set("#comp-stream", { opacity: 1 }, 0);
-      tl.set(".sw", { opacity: 0, y: 6 }, 0);
-      tl.set("#caret-start-wrap", { opacity: 0 }, 0);
-      tl.set("#comp-final", { opacity: 0 }, 0);
-      tl.set("#msg-me", { opacity: 0, y: 16 }, 0);
-      tl.set("#send", { color: "#7a7d81", backgroundColor: "rgba(255,255,255,.05)" }, 0);
-      tl.set("#cursor", { x: 1240, y: 470, opacity: 0 }, 0);
-      tl.set(["#pill", "#statchip"], { xPercent: -50 }, 0);
+      /* the app's pill states, at 1.5x points */
+      const IDLE = { width: 60, height: 14, backgroundColor: "rgba(16,16,16,.86)", borderColor: "rgba(190,190,190,.6)" };
+      const ACTIVE = { width: 138, height: 45, backgroundColor: "rgba(8,8,8,.95)", borderColor: "rgba(255,255,255,.14)" };
+      const MIC = { width: 108, height: 48, backgroundColor: "rgba(30,30,30,.96)", borderColor: "rgba(255,255,255,.32)" };
 
-      /* ---------- 0.0–0.7 fade in from black ---------- */
+      /* ---------- initial states ---------- */
+      tl.set(["#pill", "#tip", "#statchip", "#toast"], { xPercent: -50 }, 0);
+      tl.set("#pill", IDLE, 0);
+      tl.set(".sw", { opacity: 0, y: 6 }, 0);
+      tl.set("#caret-start", { opacity: 0 }, 0);
+      tl.set("#final", { opacity: 0 }, 0);
+      tl.set("#cursor", { x: 1180, y: 160, opacity: 0 }, 0);
+
+      /* ---------- 0.0–0.7 fade in ---------- */
       tl.to("#veil", { opacity: 0, duration: 0.7, ease: "power2.inOut" }, 0);
 
-      /* ---------- 0.5–1.7 cursor glides to composer, clicks ---------- */
+      /* ---------- 0.5–1.7 cursor into the message body, click ---------- */
       tl.to("#cursor", { opacity: 1, duration: 0.25 }, 0.5);
-      tl.to("#cursor", { x: 688, y: 926, duration: 0.95, ease: "power2.inOut" }, 0.6);
+      tl.to("#cursor", { x: 632, y: 462, duration: 0.95, ease: "power2.inOut" }, 0.6);
       tl.to("#cursor", { scale: 0.88, duration: 0.09, yoyo: true, repeat: 1, transformOrigin: "6px 4px" }, 1.62);
       tl.to("#ripple-1", { opacity: 0.9, duration: 0.05 }, 1.62);
       tl.to("#ripple-1", { scale: 1.25, opacity: 0, duration: 0.45, ease: "power2.out" }, 1.68);
-      /* focus: border + placeholder stays (empty input keeps placeholder in slack) */
-      tl.to("#composer", { borderColor: "#8b8f94", duration: 0.25 }, 1.65);
-      tl.to("#caret-start-wrap", { opacity: 1, duration: 0.12 }, 1.75);
-      tl.to("#caret-start-wrap", { opacity: 0, duration: 0.1 }, 3.18);
-      /* cursor drifts out of the way */
-      tl.to("#cursor", { x: 1300, y: 700, duration: 0.8, ease: "power2.inOut" }, 2.0);
+      tl.to("#caret-start", { opacity: 1, duration: 0.1 }, 1.75);
+      [2.25, 2.78].forEach(t => {
+        tl.to("#caret-start", { opacity: 0, duration: 0.01 }, t);
+        tl.to("#caret-start", { opacity: 1, duration: 0.01 }, t + 0.26);
+      });
+      tl.to("#caret-start", { opacity: 0, duration: 0.1 }, 3.18);
+      tl.to("#cursor", { x: 1380, y: 640, duration: 0.8, ease: "power2.inOut" }, 2.0);
 
-      /* ---------- 2.2 key dock rises; 2.7 key pressed, pill in ---------- */
+      /* ---------- 2.7 fn held: the pill opens ---------- */
+      tl.to("#pill", { ...ACTIVE, duration: 0.33, ease: "power3.out" }, 2.72);
+      tl.to("#bars", { opacity: 1, duration: 0.2 }, 2.88);
 
-      tl.fromTo("#pill", { opacity: 0, y: 12, scale: 0.9 },
-        { opacity: 1, y: 0, scale: 1, duration: 0.45, ease: "back.out(1.6)" }, 2.75);
-      /* placeholder yields to incoming words */
-      tl.to("#comp-placeholder", { opacity: 0, duration: 0.2 }, 3.05);
+      /* camera: in on the message and the pill while dictating */
+      tl.to(["#scene", "#overlays"], { scale: 1.3, transformOrigin: "960px 760px", duration: 0.9, ease: "power2.inOut" }, 2.5);
+      tl.to(["#scene", "#overlays"], { scale: 1.0, duration: 0.85, ease: "power2.inOut" }, 10.35);
 
-      /* ---------- camera: zoom into pill + composer while dictating ---------- */
-      tl.to(["#scene", "#overlays"], { scale: 1.4, transformOrigin: "1240px 1030px", duration: 0.9, ease: "power2.inOut" }, 2.5);
-      tl.to(["#scene", "#overlays"], { scale: 1.0, duration: 0.85, ease: "power2.inOut" }, 10.55);
+      /* ---------- 2.9–8.7 the waveform follows the voice ----------
+         Seeded, so every render is identical; newest level in the centre,
+         older ones rippling outward, as the app draws it. */
+      let seed = 7;
+      const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+      const bars = gsap.utils.toArray("#bars i");
+      for (let t = 2.95; t < 8.45; t += 0.11) {
+        const speech = (t > 3.1 && t < 8.4) ? 1 : 0.25;
+        const v = Math.min(1, (0.55 + 0.45 * rnd()) * speech);
+        bars.forEach((b, i) => {
+          const k = Math.abs(i - 4);
+          const lvl = Math.max(0.12, v * (1 - 0.1 * k) * (0.82 + 0.18 * rnd()));
+          tl.to(b, { scaleY: lvl, duration: 0.1, ease: "sine.inOut" }, t + k * 0.03);
+        });
+      }
 
-      /* ---------- 3.2–8.3 words stream in with ASR-ish cadence ---------- */
-      const gaps = [0, .55, .18, .22, .30, .75, .20, .28, .55, .30, .22, .18, .40, .45, .35];
+      /* ---------- 3.2–8.3 words stream in as they settle ---------- */
+      const gaps = [0, .32, .42, .2, .3, .18, .28, .3, .18, .24, .2, .48, .3, .16, .22, .18, .34, .2, .18, .2, .22, .5];
       let wt = 3.2;
-      const words = gsap.utils.toArray(".sw");
-      words.forEach((w, i) => {
+      gsap.utils.toArray(".sw").forEach((w, i) => {
         wt += gaps[i];
         tl.to(w, { opacity: 1, y: 0, duration: 0.22, ease: "power2.out" }, wt);
       });
 
-      /* ---------- 8.7 key released → transcribing ---------- */
-      tl.to("#pill .dot", { backgroundColor: "#5de8cd", duration: 0.2 }, 8.7);
-      tl.to("#pl-listening", { opacity: 0, duration: 0.18 }, 8.7);
-      tl.to("#pl-scribing", { opacity: 1, duration: 0.18 }, 8.78);
-      tl.to("#pill .bars", { opacity: 0, duration: 0.25 }, 8.72);
+      /* ---------- 8.7 key released: transcribing (three orange dots) ---------- */
+      tl.to(bars, { scaleY: 0.12, duration: 0.15, overwrite: "auto" }, 8.72);
+      tl.to("#bars", { opacity: 0, duration: 0.18 }, 8.72);
+      tl.to("#dots", { opacity: 1, duration: 0.18 }, 8.8);
+      gsap.utils.toArray("#dots i").forEach((d, k) => {
+        for (let t = 8.8; t < 9.9; t += 0.42) {
+          tl.fromTo(d, { y: 0, opacity: 0.45 }, { y: -4, opacity: 1, duration: 0.15, yoyo: true, repeat: 1, ease: "sine.inOut" }, t + k * 0.09);
+        }
+      });
 
-      /* ---------- 9.4 finalize: raw stream → punctuated text ---------- */
-      tl.to("#comp-stream", { opacity: 0, duration: 0.16 }, 9.42);
-      tl.fromTo("#comp-final", { opacity: 0 }, { opacity: 1, duration: 0.2 }, 9.5);
-      tl.to("#send", { backgroundColor: "#007a5a", color: "#ffffff", duration: 0.22 }, 9.6);
+      /* ---------- 9.45 the final pass: punctuated text replaces the draft ---------- */
+      tl.to("#stream", { opacity: 0, duration: 0.16 }, 9.45);
+      tl.fromTo("#final", { opacity: 0 }, { opacity: 1, duration: 0.22 }, 9.52);
+      tl.to("#send", { backgroundColor: "#2f6feb", color: "#ffffff", duration: 0.22 }, 9.65);
 
-      /* ---------- 9.9 pill out, stat chip in ---------- */
-      tl.to("#pill", { opacity: 0, y: 10, scale: 0.94, duration: 0.3, ease: "power2.in" }, 9.9);
-      tl.fromTo("#statchip", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.35, ease: "power2.out" }, 10.25);
+      /* ---------- 9.95 the pill folds back to the idle capsule (it stays) ---------- */
+      tl.to("#dots", { opacity: 0, duration: 0.14 }, 9.9);
+      tl.to("#pill", { ...IDLE, duration: 0.28, ease: "power3.inOut" }, 9.95);
+      tl.fromTo("#statchip", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.35, ease: "power2.out" }, 10.15);
+      tl.to("#statchip", { opacity: 0, y: 6, duration: 0.3 }, 11.55);
 
-      /* ---------- 10.6–11.5 cursor → send, click, message posts ---------- */
-      tl.to("#cursor", { x: 1680, y: 938, duration: 0.75, ease: "power2.inOut" }, 10.6);
+      /* ---------- 10.6–11.5 cursor to Send, click, the message goes ---------- */
+      tl.to("#cursor", { x: 1548, y: 229, duration: 0.8, ease: "power2.inOut" }, 10.6);
       tl.to("#cursor", { scale: 0.88, duration: 0.09, yoyo: true, repeat: 1, transformOrigin: "6px 4px" }, 11.42);
       tl.to("#ripple-2", { opacity: 0.9, duration: 0.05 }, 11.42);
       tl.to("#ripple-2", { scale: 1.25, opacity: 0, duration: 0.45, ease: "power2.out" }, 11.48);
-      tl.to("#send", { scale: 0.9, duration: 0.09, yoyo: true, repeat: 1 }, 11.42);
+      tl.to("#send", { scale: 0.92, duration: 0.09, yoyo: true, repeat: 1 }, 11.42);
+      tl.to("#win", { y: -60, scale: 0.94, opacity: 0, duration: 0.5, ease: "power2.in" }, 11.62);
+      tl.fromTo("#toast", { opacity: 0, y: -8 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 12.0);
+      tl.to("#toast", { opacity: 0, duration: 0.3 }, 12.75);
+      /* camera: in on the pill for the hover controls */
+      tl.to(["#scene", "#overlays"], { scale: 1.75, transformOrigin: "960px 975px", duration: 0.95, ease: "power2.inOut" }, 12.55);
 
-      tl.to("#comp-final", { opacity: 0, duration: 0.12 }, 11.6);
-      tl.to("#msg-me", { opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }, 11.62);
-      tl.to("#send", { backgroundColor: "rgba(255,255,255,.05)", color: "#7a7d81", duration: 0.25 }, 11.75);
-      tl.to("#comp-placeholder", { opacity: 1, duration: 0.3 }, 11.85);
+      /* ---------- 12.3–14.6 hover the pill: mic, gear and "Dictate fn" ---------- */
+      tl.to("#cursor", { x: 954, y: 978, duration: 0.85, ease: "power2.inOut" }, 12.3);
+      tl.to("#pill", { ...MIC, duration: 0.26, ease: "power3.out" }, 13.12);
+      tl.to("#pmic", { opacity: 1, color: "#f97316", duration: 0.2 }, 13.22);
+      tl.fromTo("#gear", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.26, ease: "back.out(1.6)" }, 13.16);
+      tl.fromTo("#tip", { opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: 0.22, ease: "power2.out" }, 13.3);
 
-      /* ---------- 12.6–14.6 settle, cursor drifts ---------- */
-      tl.to("#cursor", { x: 1420, y: 760, duration: 0.9, ease: "power2.inOut" }, 12.3);
-      tl.to("#statchip", { opacity: 0, y: 6, duration: 0.3 }, 11.25);
-
-      /* ---------- 14.8–15.5 fade to black for seamless loop ---------- */
+      /* ---------- 14.85–15.5 fade to black for a seamless loop ---------- */
       tl.to("#veil", { opacity: 1, duration: 0.65, ease: "power2.inOut" }, 14.85);
 
       window.__timelines["main"] = tl;
