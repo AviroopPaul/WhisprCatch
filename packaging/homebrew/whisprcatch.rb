@@ -55,6 +55,6 @@ cask "whisprcatch" do
     macOS only re-reads these when an app starts, so after granting them
     quit WhisprCatch and open it again.
 
-    Hold Right Command, speak, release. Menu bar icon shows the state.
+    Hold fn, speak, release. The Catcher at the bottom of the screen shows the state.
   EOS
 end
