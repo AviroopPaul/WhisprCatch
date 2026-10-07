@@ -16,8 +16,12 @@ pub struct Config {
     pub history: bool,
     /// Type words live while speaking instead of all at once on release
     pub streaming: bool,
-    /// Show the floating recording indicator while dictating
+    /// Show the Catcher (the capsule above the Dock) while dictating
     pub overlay: bool,
+    /// Show a Notes button when the Catcher is hovered. Off until switched on.
+    /// The Catcher process re-reads the config, so this applies live.
+    #[serde(default)]
+    pub catcher_notes: bool,
     /// Deterministic text cleanup (#36). Every transform ships off, so a
     /// config that predates this section behaves exactly as it did.
     ///
@@ -42,6 +46,7 @@ impl Default for Config {
             history: true,
             streaming: true,
             overlay: true,
+            catcher_notes: false,
             polish: wc_text::PolishConfig::default(),
         }
     }
@@ -115,6 +120,19 @@ pub fn load() -> Result<Config> {
     toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
 }
 
+/// When `config.toml` was last written, for callers that poll it cheaply.
+pub fn modified() -> Option<std::time::SystemTime> {
+    std::fs::metadata(config_path()).ok()?.modified().ok()
+}
+
+/// Loads, sets `catcher_notes`, saves. Touches only that field, so the Notes
+/// page can flip it without carrying the rest of Settings' unsaved edits.
+pub fn set_catcher_notes(on: bool) -> Result<()> {
+    let mut cfg = load()?;
+    cfg.catcher_notes = on;
+    save(&cfg)
+}
+
 pub fn save(cfg: &Config) -> Result<()> {
     let path = config_path();
     std::fs::create_dir_all(path.parent().unwrap())?;
@@ -181,6 +199,7 @@ overlay = true
         assert_eq!(cfg.history, def.history);
         assert_eq!(cfg.streaming, def.streaming);
         assert_eq!(cfg.overlay, def.overlay);
+        assert!(!cfg.catcher_notes, "the Notes button ships off");
     }
 
     /// Settings → Save serializes the whole `Config`, so a change that makes

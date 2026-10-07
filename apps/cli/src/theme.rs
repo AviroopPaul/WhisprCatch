@@ -13,6 +13,10 @@ use eframe::egui::{self, Color32, FontFamily, FontId};
 // comes from fill + hairline, never from a shadow.
 
 pub const BG: Color32 = Color32::from_rgb(10, 10, 10); // window
+/// Rounded content sheet the pages sit on, a step above the window.
+pub const SHEET: Color32 = Color32::from_rgb(18, 18, 18);
+/// Cards inside the sheet, a step above it.
+pub const PANEL: Color32 = Color32::from_rgb(24, 24, 24);
 pub const SIDEBAR: Color32 = Color32::from_rgb(14, 14, 14); // nav rail
 pub const SURFACE: Color32 = Color32::from_rgb(19, 19, 19); // cards
 pub const SURFACE_2: Color32 = Color32::from_rgb(26, 26, 26); // inputs, secondary buttons
@@ -37,6 +41,9 @@ pub const RED: Color32 = Color32::from_rgb(239, 68, 68);
 /// Advisories that still work ("note:" problems, the live-typing caveat).
 pub const AMBER: Color32 = Color32::from_rgb(245, 158, 11);
 
+/// Scrim behind modals: black at high alpha.
+pub const SCRIM: Color32 = Color32::from_black_alpha(215);
+
 /// `color` at ~9% alpha: badge fills behind signal-coloured text.
 pub fn tint(color: Color32) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 22)
@@ -47,6 +54,24 @@ pub fn tint_strong(color: Color32) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 46)
 }
 
+/// `a` blended toward `b` by `t` (0 to 1), per channel.
+pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(f(a.r(), b.r()), f(a.g(), b.g()), f(a.b(), b.b()))
+}
+
+/// Heatmap ramp: level 0 is an empty cell (`SURFACE_3`); levels 1 to 4 mix
+/// `ACCENT` toward the card (`PANEL`) the cells sit on, strongest last.
+pub fn heat(level: u8) -> Color32 {
+    match level {
+        0 => SURFACE_3,
+        1 => mix(PANEL, ACCENT, 0.30),
+        2 => mix(PANEL, ACCENT, 0.52),
+        3 => mix(PANEL, ACCENT, 0.76),
+        _ => ACCENT,
+    }
+}
+
 // ------------------------------------------------------------------ fonts
 
 /// Geist (sans) + Geist Mono, embedded; egui-phosphor appended for icons.
@@ -55,7 +80,7 @@ pub fn tint_strong(color: Color32) -> Color32 {
 /// `strong()` only recolors, so weight needs a family switch).
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    let data: [(&str, &[u8]); 5] = [
+    let data: [(&str, &[u8]); 6] = [
         ("geist", include_bytes!("../assets/fonts/Geist-Regular.ttf")),
         (
             "geist-medium",
@@ -72,6 +97,10 @@ pub fn install_fonts(ctx: &egui::Context) {
         (
             "geist-mono-medium",
             include_bytes!("../assets/fonts/GeistMono-Medium.ttf"),
+        ),
+        (
+            "newsreader",
+            include_bytes!("../assets/fonts/Newsreader-Regular.ttf"),
         ),
     ];
     for (name, bytes) in data {
@@ -106,7 +135,18 @@ pub fn install_fonts(ctx: &egui::Context) {
             .families
             .insert(FontFamily::Name(family.into()), chain);
     }
+    // Newsreader: display headlines only (hero banner, modal titles).
+    let mut serif = fonts.families[&FontFamily::Proportional].clone();
+    serif.insert(0, "newsreader".to_owned());
+    fonts
+        .families
+        .insert(FontFamily::Name("Newsreader".into()), serif);
     ctx.set_fonts(fonts);
+}
+
+/// Newsreader Regular: the serif for display headlines.
+pub fn serif(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name("Newsreader".into()))
 }
 
 pub fn medium(size: f32) -> FontId {
@@ -204,10 +244,10 @@ pub fn apply(ctx: &egui::Context) {
 
 // ------------------------------------------------------------- components
 
-/// Card: surface fill, hairline ring, radius 12, 20px inset.
+/// Card: panel fill (a step above the sheet), hairline ring, radius 12, 20px inset.
 pub fn card(_ui: &egui::Ui) -> egui::Frame {
     egui::Frame::default()
-        .fill(SURFACE)
+        .fill(PANEL)
         .stroke(egui::Stroke::new(1.0, BORDER))
         .corner_radius(egui::CornerRadius::same(12))
         .inner_margin(20.0)
@@ -223,13 +263,166 @@ pub fn card_header(ui: &mut egui::Ui, title: &str, desc: &str) {
     ui.spacing_mut().item_spacing.y = 8.0;
 }
 
-/// Page heading: SemiBold 22 title with an optional muted description.
+/// Page heading: SemiBold 28 title with an optional muted description.
 pub fn page_header(ui: &mut egui::Ui, title: &str, desc: &str) {
-    ui.label(egui::RichText::new(title).font(semibold(22.0)).color(FG));
+    ui.label(egui::RichText::new(title).font(semibold(28.0)).color(FG));
     if !desc.is_empty() {
-        ui.add_space(-2.0);
-        ui.label(egui::RichText::new(desc).size(13.5).color(TEXT_2));
+        ui.add_space(2.0);
+        ui.label(egui::RichText::new(desc).size(14.0).color(TEXT_2));
     }
+}
+
+/// Page heading with an optional badge beside the title and controls
+/// right-aligned on the same line. `controls` runs right-to-left (the first
+/// widget added is the rightmost).
+pub fn page_header_with(
+    ui: &mut egui::Ui,
+    title: &str,
+    badge_text: Option<&str>,
+    controls: impl FnOnce(&mut egui::Ui),
+) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        ui.label(egui::RichText::new(title).font(semibold(28.0)).color(FG));
+        if let Some(b) = badge_text {
+            badge(ui, b, Tone::Neutral);
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), controls);
+    });
+}
+
+/// Reusable banner: radius 16, dark gradient with a warm orange glow, serif
+/// headline, TEXT_2 body, and `actions` (buttons) underneath. The gradient is
+/// a vertex-coloured mesh built only from theme tokens; a rounded-rect SDF
+/// fades the mesh at its edge so the corners stay round.
+pub fn hero<R>(
+    ui: &mut egui::Ui,
+    headline: &str,
+    body: &str,
+    actions: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let bg_idx = ui.painter().add(egui::Shape::Noop);
+    let out = egui::Frame::default()
+        .inner_margin(egui::Margin::symmetric(36, 32))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.label(egui::RichText::new(headline).font(serif(36.0)).color(FG));
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new(body).size(14.5).color(TEXT_2));
+            ui.add_space(20.0);
+            actions(ui)
+        });
+    let rect = out.response.rect;
+    let radius = 16.0_f32;
+    let mut mesh = egui::Mesh::default();
+    let step = 6.0;
+    let nx = (rect.width() / step).ceil().max(1.0) as usize;
+    let ny = (rect.height() / step).ceil().max(1.0) as usize;
+    // Glow centre: upper right, so the headline side stays dark.
+    let glow = egui::pos2(
+        rect.right() - rect.width() * 0.2,
+        rect.top() + rect.height() * 0.15,
+    );
+    let reach = rect.width() * 0.55;
+    let half = rect.size() / 2.0;
+    for j in 0..=ny {
+        for i in 0..=nx {
+            let pos = egui::pos2(
+                rect.left() + rect.width() * i as f32 / nx as f32,
+                rect.top() + rect.height() * j as f32 / ny as f32,
+            );
+            let d = ((pos - glow).length() / reach).clamp(0.0, 1.0);
+            let a = ((1.0 - d).powi(2) * 0.55).clamp(0.0, 1.0);
+            let mix = |b: u8, g: u8| (b as f32 * (1.0 - a) + g as f32 * a) as u8;
+            let col = Color32::from_rgb(
+                mix(PANEL.r(), ACCENT.r()),
+                mix(PANEL.g(), ACCENT.g()),
+                mix(PANEL.b(), ACCENT.b()),
+            );
+            // Rounded-rect signed distance: negative inside.
+            // Only the corners fade: along the straight edges the mesh is
+            // coarser than any ramp, so a fade there would show as a band.
+            let q = (pos - rect.center()).abs() - (half - egui::vec2(radius, radius));
+            let cover = if q.x > 0.0 && q.y > 0.0 {
+                ((radius - q.length()) / 3.0 + 0.5).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            mesh.colored_vertex(pos, col.gamma_multiply(cover));
+        }
+    }
+    for j in 0..ny {
+        for i in 0..nx {
+            let a = (j * (nx + 1) + i) as u32;
+            let b = a + 1;
+            let c = a + (nx + 1) as u32;
+            let d = c + 1;
+            mesh.add_triangle(a, b, c);
+            mesh.add_triangle(b, d, c);
+        }
+    }
+    ui.painter().set(
+        bg_idx,
+        egui::Shape::Vec(vec![
+            egui::Shape::mesh(mesh),
+            egui::Shape::rect_stroke(
+                rect,
+                radius,
+                egui::Stroke::new(1.0, BORDER),
+                egui::StrokeKind::Inside,
+            ),
+        ]),
+    );
+    out.inner
+}
+
+fn row_first_id() -> egui::Id {
+    egui::Id::new("wc-row-first")
+}
+
+/// A group of settings rows in one card: panel fill, hairline ring, radius
+/// 12. Rows ([`row`]) are separated by hairlines inside it.
+pub fn group<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.data_mut(|d| d.insert_temp(row_first_id(), true));
+    egui::Frame::default()
+        .fill(PANEL)
+        .stroke(egui::Stroke::new(1.0, BORDER))
+        .corner_radius(egui::CornerRadius::same(12))
+        .inner_margin(egui::Margin::symmetric(24, 0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            add(ui)
+        })
+        .inner
+}
+
+/// One row of a [`group`]: title (medium 15) over a muted description on the
+/// left, the control on the right (right-to-left layout), 16px of air above
+/// and below, and a hairline above every row but the first.
+pub fn row(ui: &mut egui::Ui, title: &str, desc: &str, control: impl FnOnce(&mut egui::Ui)) {
+    let first = ui.data_mut(|d| d.get_temp::<bool>(row_first_id()).unwrap_or(false));
+    if first {
+        ui.data_mut(|d| d.insert_temp(row_first_id(), false));
+    } else {
+        hairline(ui);
+    }
+    ui.add_space(16.0);
+    let full = ui.available_width();
+    let left_w = (full - 220.0).max(full * 0.5);
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.set_max_width(left_w);
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.label(egui::RichText::new(title).font(medium(15.0)).color(FG));
+            if !desc.is_empty() {
+                ui.label(egui::RichText::new(desc).size(13.5).color(TEXT_2));
+            }
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), control);
+    });
+    ui.add_space(16.0);
 }
 
 /// Display heading: SemiBold, with the trailing clause in orange ("Three
@@ -386,6 +579,8 @@ pub enum Variant {
     Ghost,
     /// Red text, red fill on hover: irreversible actions.
     Destructive,
+    /// Light fill, dark text: the button on a hero banner.
+    Light,
 }
 
 /// Button, shadcn `<Button>`, with an optional leading phosphor icon. Height
@@ -404,7 +599,8 @@ pub fn button_with(
         Some(i) => format!("{i}  {text}"),
         None => text.to_string(),
     };
-    let galley = ui.fonts(|f| f.layout_no_wrap(label, font, FG));
+    let ink0 = if variant == Variant::Light { BG } else { FG };
+    let galley = ui.fonts(|f| f.layout_no_wrap(label, font, ink0));
     let pad_x = if text.is_empty() {
         (h - galley.size().x) / 2.0
     } else if small {
@@ -438,6 +634,11 @@ pub fn button_with(
             tint_strong(RED),
             RED,
         ),
+        Variant::Light => (
+            if hov { FG.gamma_multiply(0.88) } else { FG },
+            Color32::TRANSPARENT,
+            BG,
+        ),
     };
     let rect = if down { rect.shrink(0.5) } else { rect };
     let p = ui.painter();
@@ -463,53 +664,62 @@ pub fn primary_button(ui: &mut egui::Ui, text: impl Into<String>) -> egui::Respo
     button(ui, Variant::Primary, &text.into())
 }
 
-/// Sidebar navigation item: icon + label, full width, 34px tall. Selected =
-/// raised fill, orange icon and a 2px orange rail on the left edge.
+/// Sidebar navigation item: icon + label, full width, 38px tall, radius 8.
+/// Selected = raised fill, FG label and orange icon; hover = soft fill.
 pub fn nav_item(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -> egui::Response {
+    nav_item_with_badge(ui, icon, label, selected, None)
+}
+
+/// [`nav_item`] with an optional orange badge ("New") on the right edge.
+pub fn nav_item_with_badge(
+    ui: &mut egui::Ui,
+    icon: &str,
+    label: &str,
+    selected: bool,
+    badge_text: Option<&str>,
+) -> egui::Response {
     let w = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 34.0), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 38.0), egui::Sense::click());
     let hov = resp.hovered();
     let p = ui.painter();
     if selected {
         p.rect_filled(rect, 8.0, SURFACE_2);
-        p.rect_stroke(
-            rect,
-            8.0,
-            egui::Stroke::new(1.0, BORDER),
-            egui::StrokeKind::Inside,
-        );
-        p.rect_filled(
-            egui::Rect::from_min_size(
-                egui::pos2(rect.left(), rect.top() + 9.0),
-                egui::vec2(2.5, rect.height() - 18.0),
-            ),
-            1.5,
-            ACCENT,
-        );
     } else if hov {
         p.rect_filled(rect, 8.0, SURFACE);
     }
     let cy = rect.center().y;
     p.text(
-        egui::pos2(rect.left() + 14.0, cy),
+        egui::pos2(rect.left() + 12.0, cy),
         egui::Align2::LEFT_CENTER,
         icon,
-        FontId::proportional(16.0),
+        FontId::proportional(18.0),
         if selected {
             ACCENT
         } else if hov {
             FG
         } else {
-            MUTED
+            TEXT_2
         },
     );
     p.text(
         egui::pos2(rect.left() + 40.0, cy),
         egui::Align2::LEFT_CENTER,
         label,
-        medium(13.5),
+        medium(14.5),
         if selected || hov { FG } else { TEXT_2 },
     );
+    if let Some(b) = badge_text {
+        let galley = ui.fonts(|f| f.layout_no_wrap(b.to_string(), medium(11.5), ON_ACCENT));
+        let pad = egui::vec2(8.0, 3.0);
+        let size = galley.size() + pad * 2.0;
+        let r = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - 10.0 - size.x / 2.0, cy),
+            size,
+        );
+        let p = ui.painter();
+        p.rect_filled(r, r.height() / 2.0, ACCENT);
+        p.galley(r.min + pad, galley, ON_ACCENT);
+    }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 

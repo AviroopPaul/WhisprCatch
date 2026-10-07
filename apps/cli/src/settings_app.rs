@@ -1,11 +1,12 @@
 //! Settings & history window (eframe/egui), launched as
-//! `whisper-catch settings [--tab home|history|cleanup|settings|permissions|about]`
+//! `whisper-catch settings [--tab home|history|cleanup|about|settings|general|catcher|system|permissions]`
 //! from the tray menu or the shell.
 //!
-//! Layout per docs/DESIGN.md: a left nav rail (Home, History, Text cleanup,
-//! Settings, Permissions, About) beside a content area. History is a list pane
-//! beside a detail card; the other pages are a centered column of cards.
-//! Dark-only, black + orange.
+//! Layout per docs/DESIGN.md: a left nav rail (Home, History, Text cleanup;
+//! Settings and About at the bottom) beside a rounded content sheet. Settings
+//! is a modal over the whole window (General, Catcher, System, Permissions).
+//! History is a list pane beside a detail card; the other pages are a
+//! centered column of cards. Dark-only, black + orange.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
@@ -18,28 +19,81 @@ use wc_models::ModelId;
 // Not re-exported from the crate root, unlike the six `*Config` types.
 use wc_text::fillers::FillerLevel;
 
+use crate::insights::Stats;
 use crate::{autostart, config, theme};
 use wc_core::history;
 
 const SIDEBAR_W: f32 = 232.0;
 /// Widest the centered page column grows.
-const PAGE_COL: f32 = 720.0;
+const PAGE_COL: f32 = 980.0;
 const GITHUB_URL: &str = "https://github.com/AviroopPaul/whisper-catch";
 const SITE_URL: &str = "https://whisper-catch.vercel.app";
 
-#[derive(PartialEq, Clone, Copy)]
+/// Main sidebar pages. To add one (Insights, Notes): add a variant here, a
+/// line in `parse_tab`, an entry in the `items` array in `App::sidebar`, and an
+/// arm in the `match self.tab` in `App::update`.
+#[derive(PartialEq, Clone, Copy, Debug)]
 enum Tab {
     Home,
+    Insights,
     History,
+    Notes,
     Cleanup,
-    Settings,
-    Permissions,
     About,
+}
+
+/// Sections of the Settings modal.
+#[derive(PartialEq, Clone, Copy, Debug)]
+enum Section {
+    General,
+    Catcher,
+    System,
+    Permissions,
+}
+
+impl Section {
+    const ALL: [(Section, &'static str, &'static str); 4] = [
+        (Section::General, icons::SLIDERS_HORIZONTAL, "General"),
+        (Section::Catcher, icons::MICROPHONE, "Catcher"),
+        (Section::System, icons::LAPTOP, "System"),
+        (Section::Permissions, icons::SHIELD_CHECK, "Permissions"),
+    ];
+
+    fn title(self) -> &'static str {
+        Self::ALL.iter().find(|(s, ..)| *s == self).map_or("", |t| t.2)
+    }
+}
+
+/// `--tab` value to what the window opens on: a page, or the Settings modal on
+/// a section. `settings` and `permissions` open the modal (permissions on its
+/// own section); anything unknown opens Home.
+fn parse_tab(tab: Option<&str>) -> (Tab, Option<Section>) {
+    match tab {
+        Some("insights") => (Tab::Insights, None),
+        Some("history") => (Tab::History, None),
+        Some("notes") => (Tab::Notes, None),
+        Some("cleanup") | Some("text-cleanup") => (Tab::Cleanup, None),
+        Some("about") => (Tab::About, None),
+        Some("settings") | Some("general") => (Tab::Home, Some(Section::General)),
+        Some("catcher") => (Tab::Home, Some(Section::Catcher)),
+        Some("system") => (Tab::Home, Some(Section::System)),
+        Some("permissions") => (Tab::Home, Some(Section::Permissions)),
+        _ => (Tab::Home, None),
+    }
 }
 
 /// Opening size of the settings window, in points.
 const WINDOW_W: f32 = 1000.0;
 const WINDOW_H: f32 = 680.0;
+
+/// macOS draws the traffic lights over our own UI (no title bar), as Wispr
+/// does. Elsewhere the system title bar stays and nothing here applies.
+const FULLSIZE: bool = cfg!(target_os = "macos");
+/// Height of the strip at the top of the window that holds the traffic lights
+/// and drags the window.
+const TOP_INSET: f32 = 44.0;
+/// Gap above the content sheet; part of the drag strip too.
+const SHEET_GAP: f32 = 10.0;
 
 /// Opening size, unless `WC_WINDOW=1440x900` says otherwise.
 ///
@@ -116,27 +170,102 @@ fn demo_rows() -> [(u64, f32, f32, &'static str, Option<&'static str>); 7] {
 /// Dev-only: `WC_DEMO_HISTORY=1` swaps the real transcript log for a fixed
 /// sample set. Screenshots for the README and the website are taken with this
 /// on, so nobody's actual dictation ends up published.
-fn demo_history() -> Option<(Vec<history::Entry>, (u64, u64, f32))> {
+fn demo_history() -> Option<Vec<history::Entry>> {
     if std::env::var("WC_DEMO_HISTORY").is_err() {
         return None;
     }
-    let entries: Vec<history::Entry> = demo_rows()
+    // The app each of `demo_rows` was dictated into, in order.
+    const APPS: [&str; 7] = ["Mail", "Slack", "Xcode", "Notes", "Safari", "Slack", "Notes"];
+    let mut entries: Vec<history::Entry> = demo_rows()
         .iter()
-        .map(|(ts, dur_s, infer_s, text, raw)| history::Entry {
+        .zip(APPS)
+        .map(|((ts, dur_s, infer_s, text, raw), app)| history::Entry {
             ts: *ts,
             dur_s: *dur_s,
             infer_s: *infer_s,
             text: (*text).to_string(),
             raw: raw.map(str::to_string),
+            app: Some(app.to_string()),
         })
         .collect();
-    let words = entries
-        .iter()
-        .map(|e| e.text.split_whitespace().count() as u64)
-        .sum();
-    let secs = entries.iter().map(|e| e.dur_s).sum();
-    let count = entries.len() as u64;
-    Some((entries, (count, words, secs)))
+    entries.extend(demo_backlog());
+    Some(entries)
+}
+
+/// Older sample dictations behind the heatmap and the app bars: a ten-day run
+/// up to "today", then a patchy twelve weeks. Deterministic and always older
+/// than the `demo_rows`, so the top of History is unchanged.
+fn demo_backlog() -> Vec<history::Entry> {
+    const PHRASES: [&str; 5] = [
+        "Sounds good, let's lock it in for Thursday and I will send the invite after lunch.",
+        "Quick update on the build: green on both platforms, and the flaky test is gone.",
+        "Remind me to review the pull request before the standup tomorrow morning.",
+        "Thanks for the notes, I folded the feedback into the second draft last night.",
+        "The latency numbers look better, so I would ship it behind the flag this week.",
+    ];
+    const APPS: [&str; 6] = ["Mail", "Notes", "Slack", "Xcode", "Safari", "Slack"];
+    let base = demo_rows()[0].0;
+    let mut out = Vec::new();
+    let mut n = 0usize;
+    for d in 1..=84u64 {
+        // Every day for ten days, then most days with a few gaps.
+        if d > 10 && (d * 7 + 3) % 5 < 2 {
+            continue;
+        }
+        for k in 0..(1 + (d as usize + k_seed(d)) % 3) {
+            n += 1;
+            let phrase = PHRASES[(n * 3 + k) % PHRASES.len()];
+            let mut text = phrase.to_string();
+            for _ in 0..(n % 4) {
+                text.push(' ');
+                text.push_str(PHRASES[(n + 1) % PHRASES.len()]);
+            }
+            let words = text.split_whitespace().count() as f32;
+            let raw = n.is_multiple_of(4).then(|| format!("um {text}"));
+            out.push(history::Entry {
+                ts: base - d * 86_400 - (k as u64) * 3_000,
+                dur_s: words / 2.3,
+                infer_s: 0.2,
+                text,
+                raw,
+                app: Some(APPS[(n * 5 + d as usize) % APPS.len()].to_string()),
+            });
+        }
+    }
+    out
+}
+
+fn k_seed(d: u64) -> usize {
+    (d as usize * 5) % 4
+}
+
+/// Local calendar day of a unix timestamp.
+fn local_date(ts: u64) -> chrono::NaiveDate {
+    use chrono::TimeZone;
+    chrono::Local
+        .timestamp_opt(ts as i64, 0)
+        .single()
+        .map(|d| d.date_naive())
+        .unwrap_or_default()
+}
+
+/// Everything the window needs from history, in one read: the newest 500
+/// entries for the lists, the all-time totals, the Insights stats and the day
+/// that counts as "today".
+fn load_history() -> (Vec<history::Entry>, (u64, u64, f32), Stats, chrono::NaiveDate) {
+    let (all, today) = match demo_history() {
+        // Captures repeat only if "today" does.
+        Some(demo) => (demo, local_date(demo_rows()[0].0)),
+        None => (
+            history::load(usize::MAX).unwrap_or_default(),
+            chrono::Local::now().date_naive(),
+        ),
+    };
+    let stats = Stats::compute(&all, today, local_date);
+    let totals = (stats.dictations, stats.total_words, stats.speech_secs);
+    let mut entries = all;
+    entries.truncate(500);
+    (entries, totals, stats, today)
 }
 
 pub fn run(tab: Option<String>) -> Result<()> {
@@ -148,7 +277,10 @@ pub fn run(tab: Option<String>) -> Result<()> {
         // would keep reproducing that, and this always opens composed.
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(window_size())
-            .with_min_inner_size([720.0, 480.0]),
+            .with_min_inner_size([720.0, 480.0])
+            .with_fullsize_content_view(FULLSIZE)
+            .with_title_shown(!FULLSIZE)
+            .with_titlebar_shown(!FULLSIZE),
         centered: true,
         persist_window: false,
         ..Default::default()
@@ -183,13 +315,22 @@ enum DlMsg {
 
 struct App {
     tab: Tab,
+    /// The Settings modal, open on this section.
+    modal: Option<Section>,
     /// Cached `permissions::all_granted()`, refreshed about once a second.
     perm_ok: bool,
+    /// The same snapshot, for the sidebar card's list of what is left to do.
+    perm: crate::permissions::Status,
     perm_checked: Instant,
     cfg: config::Config,
     autostart_on: bool,
     entries: Vec<history::Entry>,
     totals: (u64, u64, f32),
+    /// Insights numbers, computed from the whole history on open and on
+    /// reload, never per frame.
+    stats: Stats,
+    /// "Today" for Insights (fixed under `WC_DEMO_HISTORY` so captures repeat).
+    today: chrono::NaiveDate,
     status: String,
     saved_ok: bool,
     confirm_clear: bool,
@@ -206,6 +347,7 @@ struct App {
     /// dictations replayed through the current settings. Rebuilt only when
     /// `[polish]` changes; see [`Cleanup`].
     cleanup: Cleanup,
+    notes: notes_page::NotesState,
     /// Cleared after the opening size has been asserted once.
     needs_size: bool,
     shot: crate::shot::Shot,
@@ -214,10 +356,7 @@ struct App {
 impl App {
     fn new(cfg: config::Config, tab: Option<&str>) -> Self {
         let autostart_on = autostart::is_enabled();
-        let (entries, totals) = match demo_history() {
-            Some(demo) => demo,
-            None => (history::load(500).unwrap_or_default(), history::totals()),
-        };
+        let (entries, totals, stats, today) = load_history();
         let selected = entries.first().map(|e| e.ts);
         let mut cfg = cfg;
         // A hand-edited `enabled = true` with `level = "off"` is a transform in
@@ -229,21 +368,19 @@ impl App {
             cfg.polish.fillers.enabled = false;
         }
         let cleanup = Cleanup::build(&cfg.polish, &entries);
+        let (tab, modal) = parse_tab(tab);
         Self {
-            tab: match tab {
-                Some("history") => Tab::History,
-                Some("settings") => Tab::Settings,
-                Some("permissions") => Tab::Permissions,
-                Some("cleanup") | Some("text-cleanup") => Tab::Cleanup,
-                Some("about") => Tab::About,
-                _ => Tab::Home,
-            },
-            perm_ok: crate::permissions::all_granted(),
+            tab,
+            modal,
+            perm_ok: perm_status().all_granted(),
+            perm: perm_status(),
             perm_checked: Instant::now(),
             cfg,
             autostart_on,
             entries,
             totals,
+            stats,
+            today,
             status: String::new(),
             saved_ok: false,
             confirm_clear: false,
@@ -253,6 +390,7 @@ impl App {
             copied: None,
             dl: None,
             cleanup,
+            notes: notes_page::NotesState::new(),
             needs_size: true,
             shot: crate::shot::Shot::from_env(),
         }
@@ -315,7 +453,10 @@ impl App {
     }
 
     fn reload_history(&mut self) {
-        if let Some((entries, totals)) = demo_history() {
+        let (entries, totals, stats, today) = load_history();
+        self.stats = stats;
+        self.today = today;
+        if demo_history().is_some() {
             self.entries = entries;
             self.totals = totals;
             self.selected = self.entries.first().map(|e| e.ts);
@@ -323,8 +464,8 @@ impl App {
             self.cleanup = Cleanup::build(&self.cfg.polish, &self.entries);
             return;
         }
-        self.entries = history::load(500).unwrap_or_default();
-        self.totals = history::totals();
+        self.entries = entries;
+        self.totals = totals;
         if !self
             .entries
             .iter()
@@ -407,6 +548,70 @@ fn seg_button(ui: &mut egui::Ui, selected: bool, label: &str, min_w: f32) -> boo
     ui.add(btn).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
+/// Live permission status; `WC_PERMS_OK=1` fakes "everything granted" so the
+/// ready state of the sidebar can be captured (dev only, see DESIGN.md B7).
+fn perm_status() -> crate::permissions::Status {
+    use crate::permissions::{Mic, Status};
+    if std::env::var("WC_PERMS_OK").is_ok() {
+        return Status {
+            mic: Mic::Granted,
+            accessibility: true,
+            input_monitoring: true,
+            uses_fn: false,
+            fn_free: true,
+        };
+    }
+    crate::permissions::status()
+}
+
+/// What is still to do, one short line each.
+fn setup_todo(s: &crate::permissions::Status) -> Vec<&'static str> {
+    use crate::permissions::Mic;
+    let mut v = Vec::new();
+    if s.mic != Mic::Granted {
+        v.push("Allow Microphone");
+    }
+    if !s.accessibility {
+        v.push("Allow Accessibility");
+    }
+    if !s.input_monitoring {
+        v.push("Allow Input Monitoring");
+    }
+    if s.uses_fn && !s.fn_free {
+        v.push("Set fn to Do Nothing");
+    }
+    v
+}
+
+/// Dragging the empty top of the window moves it; a double-click zooms it, as
+/// in any macOS window. Covers the sidebar's top inset and the gap above the
+/// sheet, never the content.
+fn window_drag_strip(ctx: &egui::Context) {
+    let screen = ctx.screen_rect();
+    let strips = [
+        egui::Rect::from_min_max(screen.min, egui::pos2(screen.min.x + SIDEBAR_W, screen.min.y + TOP_INSET - 10.0)),
+        egui::Rect::from_min_max(
+            egui::pos2(screen.min.x + SIDEBAR_W, screen.min.y),
+            egui::pos2(screen.max.x, screen.min.y + SHEET_GAP),
+        ),
+    ];
+    for (i, rect) in strips.into_iter().enumerate() {
+        egui::Area::new(egui::Id::new(("window-drag", i)))
+            .order(egui::Order::Middle)
+            .fixed_pos(rect.min)
+            .show(ctx, |ui| {
+                let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                if resp.drag_started_by(egui::PointerButton::Primary) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                if resp.double_clicked() {
+                    let zoomed = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!zoomed));
+                }
+            });
+    }
+}
+
 /// Top-center segmented control (History | Settings).
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -417,13 +622,14 @@ impl eframe::App for App {
         if self.needs_size {
             self.needs_size = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(window_size()));
-            // Opened from the tray or the pill, this process starts behind
+            // Opened from the tray or the Catcher, this process starts behind
             // whatever app is in front; the window the user asked for should
             // not need a hunt.
             #[cfg(target_os = "macos")]
             crate::permissions::mac::bring_to_front(ctx);
         }
         self.shot.tick(ctx);
+        self.notes.tick(ctx);
         self.poll_download();
         if self.dl.is_some() {
             ctx.request_repaint_after(Duration::from_millis(200));
@@ -436,58 +642,71 @@ impl eframe::App for App {
         }
         // Permissions can change while the window is open; re-read once a second.
         if self.perm_checked.elapsed() >= Duration::from_secs(1) {
-            self.perm_ok = crate::permissions::all_granted();
+            self.perm = perm_status();
+            self.perm_ok = self.perm.all_granted();
             self.perm_checked = Instant::now();
         }
         ctx.request_repaint_after(Duration::from_secs(1));
 
-        let nav = egui::SidePanel::left("nav")
+        egui::SidePanel::left("nav")
             .exact_width(SIDEBAR_W)
             .resizable(false)
             .show_separator_line(false)
-            .frame(
-                egui::Frame::default()
-                    .fill(theme::SIDEBAR)
-                    .inner_margin(12.0),
-            )
+            .frame(egui::Frame::default().fill(theme::BG).inner_margin(egui::Margin {
+                left: 14,
+                right: 14,
+                top: if FULLSIZE { TOP_INSET as i8 } else { 14 },
+                bottom: 14,
+            }))
             .show(ctx, |ui| self.sidebar(ui));
-        // 1px hairline on the right edge of the rail.
-        let r = nav.response.rect;
-        ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Foreground,
-            egui::Id::new("nav-edge"),
-        ))
-        .vline(
-            r.right() - 0.5,
-            r.y_range(),
-            egui::Stroke::new(1.0, theme::BORDER),
-        );
+        if FULLSIZE {
+            window_drag_strip(ctx);
+        }
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme::BG))
-            .show(ctx, |ui| match self.tab {
-                Tab::Home => self.scroll_col(ui, |s, ui| s.home_page(ui)),
-                Tab::History => self.history_page(ui),
-                Tab::Cleanup => {
-                    self.save_footer(ui);
-                    self.scroll_col(ui, |s, ui| s.cleanup_page(ui));
+            .frame(egui::Frame::default().fill(theme::BG).inner_margin(egui::Margin {
+                left: 0,
+                right: 10,
+                top: SHEET_GAP as i8,
+                bottom: 10,
+            }))
+            .show(ctx, |ui| {
+                // The sheet: a rounded, bordered surface the pages sit on.
+                let rect = ui.available_rect_before_wrap();
+                ui.painter().rect_filled(rect, 14.0, theme::SHEET);
+                ui.painter().rect_stroke(
+                    rect,
+                    14.0,
+                    egui::Stroke::new(1.0, theme::BORDER),
+                    egui::StrokeKind::Inside,
+                );
+                let inner = rect.shrink(1.0);
+                let mut sheet = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(inner)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                );
+                sheet.set_clip_rect(inner);
+                let ui = &mut sheet;
+                match self.tab {
+                    Tab::Home => self.scroll_col(ui, |s, ui| s.home_page(ui)),
+                    Tab::Insights => self.scroll_col(ui, |s, ui| s.insights_page(ui)),
+                    Tab::History => self.history_page(ui),
+                    Tab::Notes if self.notes.editing() => self.note_editor_page(ui),
+                    Tab::Notes => self.scroll_col(ui, |s, ui| s.notes_page(ui)),
+                    Tab::Cleanup => {
+                        self.save_footer(ui);
+                        self.scroll_col(ui, |s, ui| s.cleanup_page(ui));
+                    }
+                    Tab::About => self.scroll_col(ui, |s, ui| s.about_page(ui)),
                 }
-                Tab::Settings => {
-                    self.save_footer(ui);
-                    self.scroll_col(ui, |s, ui| s.settings_page(ui));
-                }
-                Tab::Permissions => self.scroll_col(ui, |_, ui| {
-                    theme::page_header(
-                        ui,
-                        "Permissions",
-                        "WhisprCatch needs three macOS permissions to hear the hotkey, use the \
-                         microphone and type for you.",
-                    );
-                    ui.add_space(20.0);
-                    crate::permissions::panel(ui);
-                }),
-                Tab::About => self.scroll_col(ui, |s, ui| s.about_page(ui)),
             });
+
+        self.settings_modal(ctx);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.notes.flush();
     }
 }
 
@@ -499,69 +718,109 @@ impl App {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
-            ui.add_space(4.0);
-            theme::logo(ui, 28.0);
+            ui.add_space(6.0);
+            theme::logo(ui, 26.0);
             ui.label(
                 egui::RichText::new(crate::app_name())
-                    .font(theme::semibold(15.0))
+                    .font(theme::semibold(18.0))
                     .color(theme::FG),
             );
         });
-        ui.add_space(18.0);
+        ui.add_space(22.0);
 
         let items = [
-            (Tab::Home, icons::HOUSE, "Home"),
-            (Tab::History, icons::CLOCK_COUNTER_CLOCKWISE, "History"),
-            (Tab::Cleanup, icons::MAGIC_WAND, "Text cleanup"),
-            (Tab::Settings, icons::GEAR_SIX, "Settings"),
-            (Tab::Permissions, icons::SHIELD_CHECK, "Permissions"),
-            (Tab::About, icons::INFO, "About"),
+            (Tab::Home, icons::HOUSE, "Home", None),
+            (Tab::Insights, icons::CHART_BAR, "Insights", None),
+            (
+                Tab::History,
+                icons::CLOCK_COUNTER_CLOCKWISE,
+                "History",
+                None,
+            ),
+            (Tab::Notes, icons::NOTE_PENCIL, "Notes", Some("New")),
+            (Tab::Cleanup, icons::MAGIC_WAND, "Text cleanup", None),
         ];
-        for (tab, icon, label) in items {
-            let resp = theme::nav_item(ui, icon, label, self.tab == tab);
-            if tab == Tab::Permissions && !self.perm_ok {
-                let c = egui::pos2(resp.rect.right() - 16.0, resp.rect.center().y);
-                ui.painter().circle_filled(c, 3.5, theme::AMBER);
-            }
-            if resp.clicked() {
+        for (tab, icon, label, badge) in items {
+            if theme::nav_item_with_badge(ui, icon, label, self.tab == tab, badge).clicked() {
+                if tab == Tab::Notes && self.tab != Tab::Notes {
+                    self.notes.reload();
+                }
                 self.tab = tab;
             }
         }
 
+        // Bottom-up: the last row added sits on top.
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-            egui::Frame::default()
-                .fill(theme::SURFACE)
-                .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                .corner_radius(egui::CornerRadius::same(10))
-                .inner_margin(12.0)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
-                    // bottom-up layout: the last row added sits on top
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        ui.label(egui::RichText::new("Hold").size(12.5).color(theme::MUTED));
-                        theme::kbd(ui, self.key_label());
-                        ui.label(
-                            egui::RichText::new("to dictate")
-                                .size(12.5)
-                                .color(theme::MUTED),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        let (led, state) = if self.perm_ok {
-                            (theme::ACCENT, "Ready")
-                        } else {
-                            (theme::AMBER, "Setup needed")
-                        };
-                        theme::led(ui, led, false);
-                        ui.label(
-                            egui::RichText::new(state)
-                                .font(theme::medium(13.0))
-                                .color(theme::FG),
-                        );
-                    });
+            ui.spacing_mut().item_spacing.y = 2.0;
+            if theme::nav_item(ui, icons::INFO, "About", self.tab == Tab::About).clicked() {
+                self.tab = Tab::About;
+            }
+            let resp = theme::nav_item(ui, icons::GEAR_SIX, "Settings", self.modal.is_some());
+            if !self.perm_ok {
+                let c = egui::pos2(resp.rect.right() - 14.0, resp.rect.center().y);
+                ui.painter().circle_filled(c, 3.5, theme::AMBER);
+            }
+            if resp.clicked() {
+                self.modal = Some(Section::General);
+            }
+            ui.add_space(8.0);
+            theme::hairline(ui);
+            ui.add_space(12.0);
+            if self.perm_ok {
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    theme::led(ui, theme::ACCENT, false);
+                    ui.label(
+                        egui::RichText::new("Ready")
+                            .font(theme::medium(13.5))
+                            .color(theme::TEXT_2),
+                    );
                 });
+            } else {
+                let todo = setup_todo(&self.perm);
+                let mut finish = false;
+                // The sidebar bottom is laid out bottom-up, where a frame has
+                // no height of its own to shrink to, so give it the height its
+                // lines need: chrome, title, one line per item, the button.
+                let h = 94.0 + 25.0 * todo.len() as f32;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), h),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                theme::card(ui)
+                    .inner_margin(14.0)
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .show(ui, |ui| {
+                        // The sidebar bottom is laid out bottom-up; this card
+                        // reads top-down.
+                        ui.set_width(ui.available_width());
+                        ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 8.0;
+                        ui.horizontal(|ui| {
+                            theme::led(ui, theme::AMBER, false);
+                            ui.label(
+                                egui::RichText::new("Setup needed")
+                                    .font(theme::medium(14.0))
+                                    .color(theme::FG),
+                            );
+                        });
+                        for line in todo {
+                            ui.label(egui::RichText::new(line).size(13.0).color(theme::TEXT_2));
+                        }
+                        ui.add_space(2.0);
+                        if theme::button_with(ui, theme::Variant::Secondary, None, "Finish setup", true)
+                            .clicked()
+                        {
+                            finish = true;
+                        }
+                        });
+                    });
+                    },
+                );
+                if finish {
+                    self.modal = Some(Section::Permissions);
+                }
+            }
         });
     }
 
@@ -572,196 +831,106 @@ impl App {
             area = area.vertical_scroll_offset(offset);
         }
         area.show(ui, |ui| {
-            ui.add_space(32.0);
-            let w = (ui.available_width() - 48.0).clamp(200.0, PAGE_COL);
+            ui.add_space(36.0);
+            let w = (ui.available_width() - 80.0).clamp(200.0, PAGE_COL);
             centered_col(ui, w, |ui| body(self, ui));
-            ui.add_space(32.0);
+            ui.add_space(36.0);
         });
     }
 
-    /// Sticky bottom bar on Settings and Text cleanup: status left, save right.
+    /// Save status (left) and the Save button (right), in whatever row it is
+    /// given. Shared by Text cleanup's footer and the Settings modal.
+    fn save_row(&mut self, ui: &mut egui::Ui) {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if theme::primary_button(ui, "Save changes").clicked() {
+                self.save();
+            }
+            if !self.status.is_empty() {
+                let color = if self.saved_ok {
+                    theme::ACCENT
+                } else {
+                    theme::RED
+                };
+                let prefix = if self.saved_ok {
+                    icons::CHECK
+                } else {
+                    icons::WARNING
+                };
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("{prefix} {}", self.status))
+                                .size(12.5)
+                                .color(color),
+                        )
+                        .truncate(),
+                    );
+                });
+            }
+        });
+    }
+
+    /// Sticky bottom bar on Text cleanup: status left, save right.
     fn save_footer(&mut self, ui: &mut egui::Ui) {
         egui::TopBottomPanel::bottom("save-footer")
-            .exact_height(60.0)
+            .exact_height(64.0)
             .show_separator_line(false)
             .frame(
                 egui::Frame::default()
-                    .fill(theme::BG)
-                    .inner_margin(egui::Margin::symmetric(24, 0)),
+                    .fill(egui::Color32::TRANSPARENT)
+                    .inner_margin(egui::Margin::symmetric(40, 0)),
             )
             .show_inside(ui, |ui| {
                 let r = ui.max_rect();
                 ui.painter().hline(
-                    r.x_range().expand(24.0),
+                    r.x_range().expand(40.0),
                     r.top(),
                     egui::Stroke::new(1.0, theme::BORDER),
                 );
                 let w = ui.available_width().min(PAGE_COL);
                 centered_col(ui, w, |ui| {
-                    ui.set_min_height(60.0);
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            if theme::primary_button(ui, "Save changes").clicked() {
-                                self.save();
-                            }
-                            if !self.status.is_empty() {
-                                let color = if self.saved_ok {
-                                    theme::ACCENT
-                                } else {
-                                    theme::RED
-                                };
-                                let prefix =
-                                    if self.saved_ok { icons::CHECK } else { icons::WARNING };
-                                ui.with_layout(
-                                    egui::Layout::left_to_right(egui::Align::Center),
-                                    |ui| {
-                                        ui.add(
-                                            egui::Label::new(
-                                                egui::RichText::new(format!(
-                                                    "{prefix} {}",
-                                                    self.status
-                                                ))
-                                                .size(12.5)
-                                                .color(color),
-                                            )
-                                            .truncate(),
-                                        );
-                                    },
-                                );
-                            }
-                        },
-                    );
+                    ui.set_min_height(64.0);
+                    self.save_row(ui);
                 });
             });
     }
 }
 
+mod insights_page;
+mod notes_page;
+
 // ------------------------------------------------------------------- home
 
 impl App {
     fn home_page(&mut self, ui: &mut egui::Ui) {
-        theme::page_header(
-            ui,
-            "Home",
-            "Hold the key, speak, release. Your words appear where you are typing.",
+        theme::page_header(ui, "Home", "");
+        ui.add_space(18.0);
+
+        let headline = format!(
+            "Hold {} and talk. Your words land where you type.",
+            self.key_label()
         );
-        ui.add_space(20.0);
-
-        if !self.perm_ok {
-            let mut review = false;
-            theme::card(ui)
-                .fill(theme::SURFACE)
-                .stroke(egui::Stroke::new(1.0, theme::tint_strong(theme::AMBER)))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(icons::WARNING)
-                                .size(18.0)
-                                .color(theme::AMBER),
-                        );
-                        ui.vertical(|ui| {
-                            ui.set_max_width((ui.available_width() - 190.0).max(160.0));
-                            ui.spacing_mut().item_spacing.y = 2.0;
-                            ui.label(
-                                egui::RichText::new("Finish setup")
-                                    .font(theme::semibold(15.0))
-                                    .color(theme::FG),
-                            );
-                            ui.label(
-                                egui::RichText::new(
-                                    "A macOS permission is missing, so dictation cannot work yet.",
-                                )
-                                .size(13.0)
-                                .color(theme::TEXT_2),
-                            );
-                        });
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if theme::button(ui, theme::Variant::Primary, "Review permissions")
-                                    .clicked()
-                                {
-                                    review = true;
-                                }
-                            },
-                        );
-                    });
-                });
-            if review {
-                self.tab = Tab::Permissions;
-            }
-            ui.add_space(16.0);
-        }
-
-        // Stat tiles.
-        let (n, words, secs) = self.totals;
-        let mins = secs / 60.0;
-        let mins_s = if mins < 10.0 {
-            format!("{mins:.1}")
-        } else {
-            format!("{mins:.0}")
-        };
-        let gap = 12.0;
-        let tile_w = ((ui.available_width() - gap * 2.0) / 3.0).floor();
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = gap;
-            for (value, label) in [
-                (words.to_string(), "Words dictated"),
-                (n.to_string(), "Dictations"),
-                (mins_s, "Minutes spoken"),
-            ] {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(tile_w, 0.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        theme::card(ui).show(ui, |ui| {
-                            ui.set_width(tile_w - 42.0);
-                            ui.spacing_mut().item_spacing.y = 4.0;
-                            ui.label(
-                                egui::RichText::new(value)
-                                    .font(theme::semibold(26.0))
-                                    .color(theme::FG),
-                            );
-                            ui.label(egui::RichText::new(label).size(13.0).color(theme::MUTED));
-                        });
-                    },
-                );
-            }
-        });
-        ui.add_space(16.0);
-
-        theme::card(ui).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            theme::card_header(ui, "How it works", "");
-            ui.add_space(8.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                theme::kbd(ui, self.key_label());
-                ui.label(
-                    egui::RichText::new("Hold, speak, release. Text appears at your cursor.")
-                        .size(14.0)
-                        .color(theme::FG),
-                );
-            });
-            ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(format!(
-                    "{}  Everything runs on this Mac. No audio leaves the device.",
-                    icons::SHIELD_CHECK
-                ))
-                .size(13.0)
-                .color(theme::TEXT_2),
-            );
-        });
-        ui.add_space(16.0);
-
         let mut goto_history = false;
+        theme::hero(
+            ui,
+            &headline,
+            "Everything runs on this machine. No audio, no text and no account ever leave it.",
+            |ui| {
+                if theme::button(ui, theme::Variant::Light, "View history").clicked() {
+                    goto_history = true;
+                }
+            },
+        );
+        ui.add_space(16.0);
+
         theme::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Recent").font(theme::semibold(15.0)).color(theme::FG));
+                ui.label(
+                    egui::RichText::new("Recent dictations")
+                        .font(theme::semibold(15.0))
+                        .color(theme::FG),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if theme::button_with(
                         ui,
@@ -784,7 +953,7 @@ impl App {
                         .color(theme::MUTED),
                 );
             }
-            for (i, e) in self.entries.iter().take(3).enumerate() {
+            for (i, e) in self.entries.iter().take(4).enumerate() {
                 if i > 0 {
                     ui.add_space(2.0);
                     theme::hairline(ui);
@@ -828,10 +997,10 @@ impl App {
     fn history_page(&mut self, ui: &mut egui::Ui) {
         egui::Frame::default()
             .inner_margin(egui::Margin {
-                left: 24,
-                right: 24,
-                top: 32,
-                bottom: 24,
+                left: 40,
+                right: 40,
+                top: 36,
+                bottom: 28,
             })
             .show(ui, |ui| {
                 theme::page_header(
@@ -1264,21 +1433,22 @@ fn row_sep(ui: &mut egui::Ui) {
     ui.add_space(14.0);
 }
 
-impl App {
-    fn settings_page(&mut self, ui: &mut egui::Ui) {
-        theme::page_header(
-            ui,
-            "Settings",
-            "Everything runs on this Mac. Changes apply after the daemon restarts.",
-        );
-        ui.add_space(20.0);
-        self.engine_card(ui);
-        ui.add_space(16.0);
-        self.hotkey_card(ui);
-        ui.add_space(16.0);
-        self.output_card(ui);
-    }
+/// Largest the Settings modal grows, and its left column.
+const MODAL_MAX: egui::Vec2 = egui::vec2(1120.0, 780.0);
+const MODAL_NAV_W: f32 = 240.0;
 
+/// Show a folder in the system file manager.
+pub(crate) fn open_folder(dir: &std::path::Path) {
+    let _ = std::fs::create_dir_all(dir);
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(opener).arg(dir).spawn();
+}
+
+impl App {
     fn cleanup_page(&mut self, ui: &mut egui::Ui) {
         theme::page_header(
             ui,
@@ -1343,85 +1513,79 @@ impl App {
         });
     }
 
-    fn engine_card(&mut self, ui: &mut egui::Ui) {
+    /// Model picker and its download state, as rows of a settings group.
+    fn model_rows(&mut self, ui: &mut egui::Ui) {
         let selected = self.selected_model();
         let complete = selected.spec().is_complete(&wc_core::models_dir());
         let downloading = self.dl.as_ref().map(|d| d.model) == Some(selected);
         let mut do_download: Option<ModelId> = None;
 
-        theme::card(ui).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            theme::card_header(
-                ui,
-                "Engine",
-                "The speech model that turns your voice into text, on this Mac.",
-            );
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.add_space(16.0);
-            Self::setting_row(ui, "Speech model", selected.blurb(), |ui| {
-                egui::ComboBox::from_id_salt("model")
-                    .selected_text(selected.label())
-                    .show_ui(ui, |ui| {
-                        for m in ModelId::ALL {
-                            ui.selectable_value(
-                                &mut self.cfg.model,
-                                m.slug().to_string(),
-                                m.label(),
-                            );
-                        }
-                    });
-            });
-            row_sep(ui);
-
-            let readout = format!("{} · {} MB download", selected.ram_hint(), selected.download_mb());
-            if downloading {
-                let dl = self.dl.as_ref().unwrap();
-                let frac = if dl.total > 0 {
-                    dl.done as f32 / dl.total as f32
-                } else {
-                    0.0
-                };
-                Self::setting_row(ui, "Status", &readout, |ui| {
-                    theme::badge(ui, "Downloading", theme::Tone::Neutral);
-                });
-                ui.add_space(12.0);
-                theme::progress(ui, frac);
-                ui.add_space(8.0);
-                if let Some(e) = &dl.error {
-                    ui.label(egui::RichText::new(e).size(12.5).color(theme::RED));
-                } else {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{:.0}% · {:.0} / {:.0} MB · {}",
-                            frac * 100.0,
-                            dl.done as f64 / 1e6,
-                            dl.total as f64 / 1e6,
-                            if dl.file.is_empty() { "preparing" } else { &dl.file }
-                        ))
-                        .font(egui::FontId::monospace(11.5))
-                        .color(theme::MUTED),
-                    );
-                }
-            } else if complete {
-                Self::setting_row(ui, "Status", &readout, |ui| {
-                    theme::badge(ui, "Ready", theme::Tone::Accent);
-                });
-            } else {
-                Self::setting_row(ui, "Status", &readout, |ui| {
-                    if theme::button_with(
-                        ui,
-                        theme::Variant::Outline,
-                        Some(icons::DOWNLOAD_SIMPLE),
-                        &format!("Download ({} MB)", selected.download_mb()),
-                        true,
-                    )
-                    .clicked()
-                    {
-                        do_download = Some(selected);
+        theme::row(ui, "Speech model", selected.blurb(), |ui| {
+            egui::ComboBox::from_id_salt("model")
+                .selected_text(selected.label())
+                .show_ui(ui, |ui| {
+                    for m in ModelId::ALL {
+                        ui.selectable_value(&mut self.cfg.model, m.slug().to_string(), m.label());
                     }
                 });
-            }
         });
+
+        let readout = format!(
+            "{} · {} MB download",
+            selected.ram_hint(),
+            selected.download_mb()
+        );
+        if downloading {
+            let dl = self.dl.as_ref().unwrap();
+            let frac = if dl.total > 0 {
+                dl.done as f32 / dl.total as f32
+            } else {
+                0.0
+            };
+            theme::row(ui, "Model status", &readout, |ui| {
+                theme::badge(ui, "Downloading", theme::Tone::Neutral);
+            });
+            theme::progress(ui, frac);
+            ui.add_space(8.0);
+            if let Some(e) = &dl.error {
+                ui.label(egui::RichText::new(e).size(12.5).color(theme::RED));
+            } else {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{:.0}% · {:.0} / {:.0} MB · {}",
+                        frac * 100.0,
+                        dl.done as f64 / 1e6,
+                        dl.total as f64 / 1e6,
+                        if dl.file.is_empty() {
+                            "preparing"
+                        } else {
+                            &dl.file
+                        }
+                    ))
+                    .font(egui::FontId::monospace(11.5))
+                    .color(theme::MUTED),
+                );
+            }
+            ui.add_space(16.0);
+        } else if complete {
+            theme::row(ui, "Model status", &readout, |ui| {
+                theme::badge(ui, "Ready", theme::Tone::Accent);
+            });
+        } else {
+            theme::row(ui, "Model status", &readout, |ui| {
+                if theme::button_with(
+                    ui,
+                    theme::Variant::Outline,
+                    Some(icons::DOWNLOAD_SIMPLE),
+                    &format!("Download ({} MB)", selected.download_mb()),
+                    true,
+                )
+                .clicked()
+                {
+                    do_download = Some(selected);
+                }
+            });
+        }
 
         if let Some(m) = do_download {
             let ctx = ui.ctx().clone();
@@ -1429,68 +1593,275 @@ impl App {
         }
     }
 
-    fn hotkey_card(&mut self, ui: &mut egui::Ui) {
-        theme::card(ui).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            theme::card_header(ui, "Hotkey", "The key you hold to dictate.");
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.add_space(16.0);
-            Self::setting_row(
-                ui,
-                "Push-to-talk key",
-                "Held to record, released to type",
-                |ui| {
-                    egui::ComboBox::from_id_salt("key")
-                        .selected_text(config::key_label(&self.cfg.key))
-                        .show_ui(ui, |ui| {
-                            for (k, label) in config::KEYS {
-                                ui.selectable_value(&mut self.cfg.key, k.to_string(), *label);
-                            }
-                        });
-                },
-            );
-            ui.add_space(14.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                ui.label(egui::RichText::new("Hold").size(13.0).color(theme::MUTED));
-                theme::kbd(ui, config::key_label(&self.cfg.key));
-                ui.label(
-                    egui::RichText::new("and speak. Release to type.")
-                        .size(13.0)
-                        .color(theme::MUTED),
-                );
+    /// Settings modal, General section.
+    fn section_general(&mut self, ui: &mut egui::Ui) {
+        theme::group(ui, |ui| {
+            let desc = format!("Hold {} and speak. Release to type.", self.key_label());
+            theme::row(ui, "Shortcut", &desc, |ui| {
+                egui::ComboBox::from_id_salt("key")
+                    .selected_text(config::key_label(&self.cfg.key))
+                    .show_ui(ui, |ui| {
+                        for (k, label) in config::KEYS {
+                            ui.selectable_value(&mut self.cfg.key, k.to_string(), *label);
+                        }
+                    });
             });
-            crate::permissions::fn_key_notice(ui, &self.cfg.key);
+            self.model_rows(ui);
+            theme::row(ui, "Live typing", "Words appear while you speak.", |ui| {
+                theme::toggle(ui, &mut self.cfg.streaming);
+            });
+            theme::row(ui, "Keep history", "Save transcriptions on this machine.", |ui| {
+                theme::toggle(ui, &mut self.cfg.history);
+            });
         });
     }
 
-    fn output_card(&mut self, ui: &mut egui::Ui) {
-        theme::card(ui).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            theme::card_header(ui, "Output", "How your words reach the screen.");
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.add_space(16.0);
-            Self::setting_row(ui, "Live typing", "Words appear while you speak", |ui| {
-                theme::toggle(ui, &mut self.cfg.streaming);
-            });
-            row_sep(ui);
-            Self::setting_row(
+    /// Settings modal, Catcher section.
+    fn section_catcher(&mut self, ui: &mut egui::Ui) {
+        theme::group(ui, |ui| {
+            theme::row(
                 ui,
-                "Recording indicator",
-                "Floating pill while dictating",
+                "Show Catcher",
+                "The small capsule above the Dock. Hover it to dictate or open settings.",
                 |ui| {
                     theme::toggle(ui, &mut self.cfg.overlay);
                 },
             );
-            row_sep(ui);
-            Self::setting_row(ui, "Keep history", "Log transcriptions locally", |ui| {
-                theme::toggle(ui, &mut self.cfg.history);
-            });
-            row_sep(ui);
-            Self::setting_row(ui, "Start on login", "Launch the daemon with your session", |ui| {
-                theme::toggle(ui, &mut self.autostart_on);
-            });
+            theme::row(
+                ui,
+                "Notes button",
+                "Hover the Catcher to start a quick note.",
+                |ui| {
+                    theme::toggle(ui, &mut self.cfg.catcher_notes);
+                },
+            );
         });
+    }
+
+    /// Settings modal, System section.
+    fn section_system(&mut self, ui: &mut egui::Ui) {
+        theme::group(ui, |ui| {
+            theme::row(
+                ui,
+                "Launch at login",
+                "Start WhisprCatch when you sign in.",
+                |ui| {
+                    theme::toggle(ui, &mut self.autostart_on);
+                },
+            );
+        });
+        ui.add_space(8.0);
+        crate::permissions::fn_key_notice(ui, &self.cfg.key);
+        ui.add_space(20.0);
+        theme::section_label(ui, "Where your data lives");
+        ui.add_space(6.0);
+        let cfg_dir = config::config_path().parent().map(|p| p.to_path_buf());
+        let hist_dir = history::history_path().parent().map(|p| p.to_path_buf());
+        let mut places = vec![];
+        if cfg_dir == hist_dir {
+            places.push(("Settings and history", cfg_dir));
+        } else {
+            places.push(("Settings", cfg_dir));
+            places.push(("History", hist_dir));
+        }
+        places.push(("Speech models", Some(wc_core::models_dir())));
+        theme::group(ui, |ui| {
+            for (label, dir) in places {
+                let Some(dir) = dir else { continue };
+                theme::row(ui, label, &tilde(&dir), |ui| {
+                    if theme::button_with(
+                        ui,
+                        theme::Variant::Secondary,
+                        Some(icons::FOLDER_OPEN),
+                        "Open folder",
+                        true,
+                    )
+                    .clicked()
+                    {
+                        open_folder(&dir);
+                    }
+                });
+            }
+        });
+    }
+
+    /// Settings modal, Permissions section.
+    fn section_permissions(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            egui::RichText::new(
+                "WhisprCatch needs three macOS permissions to hear the hotkey, use the \
+                 microphone and type for you.",
+            )
+            .size(13.5)
+            .color(theme::TEXT_2),
+        );
+        ui.add_space(16.0);
+        crate::permissions::panel(ui);
+    }
+
+    /// The Settings modal: scrim over the window, a centered panel with a
+    /// section list on the left and the section on the right.
+    fn settings_modal(&mut self, ctx: &egui::Context) {
+        let Some(section) = self.modal else {
+            return;
+        };
+        let screen = ctx.screen_rect().size();
+        let size = egui::vec2(
+            (screen.x * 0.88).min(MODAL_MAX.x),
+            (screen.y * 0.88).min(MODAL_MAX.y),
+        );
+        let mut close = false;
+        let resp = egui::Modal::new(egui::Id::new("settings-modal"))
+            .backdrop_color(theme::SCRIM)
+            .frame(
+                egui::Frame::default()
+                    .fill(theme::SHEET)
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .corner_radius(egui::CornerRadius::same(16)),
+            )
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                self.modal_body(ui, rect, section, &mut close);
+            });
+        if resp.should_close() || close {
+            self.modal = None;
+        }
+    }
+
+    fn modal_body(&mut self, ui: &mut egui::Ui, rect: egui::Rect, section: Section, close: &mut bool) {
+        let nav = egui::Rect::from_min_max(
+            rect.min,
+            egui::pos2(rect.min.x + MODAL_NAV_W, rect.max.y),
+        );
+        let main = egui::Rect::from_min_max(egui::pos2(nav.max.x, rect.min.y), rect.max);
+        let p = ui.painter().clone();
+        p.rect_filled(
+            nav.shrink(0.5),
+            egui::CornerRadius {
+                nw: 16,
+                sw: 16,
+                ne: 0,
+                se: 0,
+            },
+            theme::SIDEBAR,
+        );
+        p.vline(
+            nav.max.x,
+            rect.y_range(),
+            egui::Stroke::new(1.0, theme::BORDER),
+        );
+
+        // Left column.
+        let mut nui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(nav.shrink2(egui::vec2(14.0, 0.0)).with_min_y(nav.min.y + 26.0))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        nui.spacing_mut().item_spacing.y = 2.0;
+        nui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new("SETTINGS")
+                    .font(theme::semibold(11.5))
+                    .color(theme::MUTED),
+            );
+        });
+        nui.add_space(10.0);
+        for (s, icon, label) in Section::ALL {
+            let resp = theme::nav_item(&mut nui, icon, label, s == section);
+            if s == Section::Permissions && !self.perm_ok {
+                let c = egui::pos2(resp.rect.right() - 14.0, resp.rect.center().y);
+                nui.painter().circle_filled(c, 3.5, theme::AMBER);
+            }
+            if resp.clicked() {
+                self.modal = Some(s);
+            }
+        }
+        p.text(
+            egui::pos2(nav.min.x + 22.0, nav.max.y - 24.0),
+            egui::Align2::LEFT_CENTER,
+            format!("{} v{}", crate::app_name(), env!("CARGO_PKG_VERSION")),
+            egui::FontId::proportional(12.0),
+            theme::MUTED,
+        );
+
+        // Right pane: scrolling body, then the save bar.
+        let has_save = section != Section::Permissions;
+        let foot_h = if has_save { 68.0 } else { 0.0 };
+        let body = egui::Rect::from_min_max(main.min, egui::pos2(main.max.x, main.max.y - foot_h));
+        let mut bui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(body)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        bui.set_clip_rect(body.intersect(ui.clip_rect()));
+        egui::ScrollArea::vertical()
+            .auto_shrink(false)
+            .id_salt(("modal-scroll", section as u8))
+            .show(&mut bui, |ui| {
+                egui::Frame::default()
+                    .inner_margin(egui::Margin {
+                        left: 40,
+                        right: 40,
+                        top: 30,
+                        bottom: 28,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(
+                            egui::RichText::new(section.title())
+                                .font(theme::serif(36.0))
+                                .color(theme::FG),
+                        );
+                        ui.add_space(22.0);
+                        match section {
+                            Section::General => self.section_general(ui),
+                            Section::Catcher => self.section_catcher(ui),
+                            Section::System => self.section_system(ui),
+                            Section::Permissions => self.section_permissions(ui),
+                        }
+                    });
+            });
+        if has_save {
+            let foot = egui::Rect::from_min_max(egui::pos2(main.min.x, body.max.y), main.max);
+            p.hline(
+                foot.x_range(),
+                foot.min.y,
+                egui::Stroke::new(1.0, theme::BORDER),
+            );
+            let mut fui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(foot.shrink2(egui::vec2(40.0, 0.0)))
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            fui.set_min_height(foot_h);
+            fui.allocate_ui_with_layout(
+                egui::vec2(fui.available_width(), foot_h),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| self.save_row(ui),
+            );
+        }
+
+        // Close button, last so it sits above the scroll area.
+        let x = egui::Rect::from_min_size(
+            egui::pos2(main.max.x - 14.0 - 32.0, main.min.y + 14.0),
+            egui::vec2(32.0, 32.0),
+        );
+        let r = ui.interact(x, egui::Id::new("modal-close"), egui::Sense::click());
+        if r.hovered() {
+            p.rect_filled(x, 8.0, theme::SURFACE_2);
+        }
+        p.text(
+            x.center(),
+            egui::Align2::CENTER_CENTER,
+            icons::X,
+            egui::FontId::proportional(16.0),
+            if r.hovered() { theme::FG } else { theme::TEXT_2 },
+        );
+        if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            *close = true;
+        }
     }
 
     fn about_page(&mut self, ui: &mut egui::Ui) {
@@ -2437,6 +2808,28 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tab_flags_map_to_pages_and_modal_sections() {
+        use super::{parse_tab, Section, Tab};
+        assert_eq!(parse_tab(None), (Tab::Home, None));
+        assert_eq!(parse_tab(Some("history")), (Tab::History, None));
+        assert_eq!(parse_tab(Some("text-cleanup")), (Tab::Cleanup, None));
+        assert_eq!(parse_tab(Some("about")), (Tab::About, None));
+        assert_eq!(
+            parse_tab(Some("settings")),
+            (Tab::Home, Some(Section::General))
+        );
+        assert_eq!(
+            parse_tab(Some("permissions")),
+            (Tab::Home, Some(Section::Permissions))
+        );
+        assert_eq!(parse_tab(Some("catcher")), (Tab::Home, Some(Section::Catcher)));
+        assert_eq!(parse_tab(Some("system")), (Tab::Home, Some(Section::System)));
+        assert_eq!(parse_tab(Some("insights")), (Tab::Insights, None));
+        assert_eq!(parse_tab(Some("notes")), (Tab::Notes, None));
+        assert_eq!(parse_tab(Some("bogus")), (Tab::Home, None));
+    }
+
     use super::*;
     use wc_text::{FillersConfig, PolishConfig, SpokenConfig};
 
@@ -2447,6 +2840,7 @@ mod tests {
             infer_s: 0.1,
             text: text.into(),
             raw: raw.map(str::to_string),
+            app: None,
         }
     }
 
