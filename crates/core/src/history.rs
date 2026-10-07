@@ -27,6 +27,13 @@ pub struct Entry {
     /// lines byte-identical to the old format when nothing was polished.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw: Option<String>,
+    /// Localized name of the app that had focus when the key went down (Insights
+    /// reads it). Only the app name, never a window title or document name.
+    ///
+    /// Same reasoning as `raw`: older lines have no `app`, so it defaults, and
+    /// an entry with no app serializes byte-identical to the old format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 pub fn history_path() -> PathBuf {
@@ -132,6 +139,7 @@ mod tests {
             infer_s: 0.1,
             text: text.into(),
             raw: raw.map(str::to_string),
+            app: None,
         }
     }
 
@@ -145,6 +153,7 @@ mod tests {
         assert_eq!(e.ts, 1_754_000_000);
         assert_eq!(e.text, "hello world");
         assert_eq!(e.raw, None);
+        assert_eq!(e.app, None);
     }
 
     #[test]
@@ -190,6 +199,15 @@ mod tests {
             serde_json::from_str(r#"{"ts":1,"dur_s":1.0,"infer_s":0.1,"text":"hi","raw":null}"#)
                 .unwrap();
         assert_eq!(e.raw, None);
+    }
+
+    #[test]
+    fn app_round_trips_and_is_omitted_when_none() {
+        let mut e = entry(1, "hi", None);
+        assert!(!serde_json::to_string(&e).unwrap().contains("app"));
+        e.app = Some("Mail".into());
+        let back: Entry = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
+        assert_eq!(back.app.as_deref(), Some("Mail"));
     }
 
     // ---- parse -----------------------------------------------------------

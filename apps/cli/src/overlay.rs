@@ -54,12 +54,28 @@ fn mic_rect() -> egui::Rect {
     egui::Rect::from_center_size(egui::pos2(WIN_W / 2.0, pill_centre_y(MIC.y)), MIC)
 }
 
-fn gear_rect() -> egui::Rect {
+/// The round button `slot` places to the right of the mic (0 is nearest).
+fn side_button_rect(slot: usize) -> egui::Rect {
     let mic = mic_rect();
+    let step = GEAR_D + GEAR_GAP;
     egui::Rect::from_center_size(
-        egui::pos2(mic.right() + GEAR_GAP + GEAR_D / 2.0, mic.center().y),
+        egui::pos2(
+            mic.right() + GEAR_GAP + GEAR_D / 2.0 + step * slot as f32,
+            mic.center().y,
+        ),
         egui::vec2(GEAR_D, GEAR_D),
     )
+}
+
+/// The Notes button, between the mic and the gear. Only exists when the
+/// Catcher's Notes button is on.
+fn notes_rect() -> egui::Rect {
+    side_button_rect(0)
+}
+
+/// The gear moves out one slot when the Notes button takes the first.
+fn gear_rect(notes: bool) -> egui::Rect {
+    side_button_rect(usize::from(notes))
 }
 
 fn active_rect() -> egui::Rect {
@@ -68,8 +84,8 @@ fn active_rect() -> egui::Rect {
 
 /// What the native click target covers in each state, in window points.
 /// Idle: a 64×22 patch over the tiny capsule, so the rest stays click-through.
-/// Hovered: the mic and the gear. Listening: the pill, which a click finishes.
-fn target_rect(state: Target) -> egui::Rect {
+/// Hovered: the mic, the Notes button when on, and the gear. Listening: the pill, which a click finishes.
+fn target_rect(state: Target, notes: bool) -> egui::Rect {
     match state {
         Target::Idle => egui::Rect::from_min_max(
             egui::pos2(WIN_W / 2.0 - 32.0, WIN_H - 22.0),
@@ -77,7 +93,7 @@ fn target_rect(state: Target) -> egui::Rect {
         ),
         Target::Controls => egui::Rect::from_min_max(
             egui::pos2(mic_rect().left() - 6.0, mic_rect().top() - 6.0),
-            egui::pos2(gear_rect().right() + 6.0, WIN_H),
+            egui::pos2(gear_rect(notes).right() + 6.0, WIN_H),
         ),
         Target::Pill => active_rect().expand(4.0),
     }
@@ -102,6 +118,7 @@ enum Mode {
 enum Zone {
     None,
     Mic,
+    Notes,
     Gear,
     /// The listening pill.
     Pill,
@@ -140,10 +157,12 @@ fn forced_mode() -> Option<Mode> {
     }
 }
 
-/// Dev-only: `WC_OVERLAY_HOVER=mic|gear|pill` puts the pointer there.
+/// Dev-only: `WC_OVERLAY_HOVER=mic|notes|gear|pill` puts the pointer there.
+/// `notes` also turns the Notes button on, whatever the config says.
 fn forced_zone() -> Option<Zone> {
     match std::env::var("WC_OVERLAY_HOVER").ok()?.as_str() {
         "mic" | "1" => Some(Zone::Mic),
+        "notes" => Some(Zone::Notes),
         "gear" => Some(Zone::Gear),
         "pill" => Some(Zone::Pill),
         _ => None,
@@ -214,6 +233,9 @@ pub fn run() -> anyhow::Result<()> {
                 shared: st,
                 forced: forced.is_some(),
                 forced_zone: forced_zone(),
+                notes: forced_zone() == Some(Zone::Notes) || notes_on(),
+                cfg_mtime: crate::config::modified(),
+                next_cfg_check: 0.0,
                 bars: [0.0; BARS],
                 placed_at: None,
                 next_place_check: 0.0,
@@ -269,6 +291,12 @@ struct Overlay {
     shared: Arc<Mutex<Shared>>,
     forced: bool,
     forced_zone: Option<Zone>,
+    /// Show the Notes button on hover (`catcher_notes` in the config).
+    notes: bool,
+    /// `config.toml`'s mtime when `notes` was last read.
+    cfg_mtime: Option<std::time::SystemTime>,
+    /// `ctx` time of the next look at that mtime.
+    next_cfg_check: f64,
     /// Displayed bar heights (0..1), eased toward their targets every frame.
     bars: [f32; BARS],
     /// Where the window was last moved to, so it is only moved on a change.
@@ -299,11 +327,12 @@ impl Overlay {
         None
     }
 
-    fn zone_at(mode: Mode, p: egui::Pos2) -> Zone {
+    fn zone_at(mode: Mode, notes: bool, p: egui::Pos2) -> Zone {
         match mode {
-            Mode::Idle if gear_rect().expand(3.0).contains(p) => Zone::Gear,
-            Mode::Idle if target_rect(Target::Controls).contains(p) => Zone::Mic,
-            Mode::Listening if target_rect(Target::Pill).contains(p) => Zone::Pill,
+            Mode::Idle if gear_rect(notes).expand(3.0).contains(p) => Zone::Gear,
+            Mode::Idle if notes && notes_rect().expand(3.0).contains(p) => Zone::Notes,
+            Mode::Idle if target_rect(Target::Controls, notes).contains(p) => Zone::Mic,
+            Mode::Listening if target_rect(Target::Pill, notes).contains(p) => Zone::Pill,
             _ => Zone::None,
         }
     }
@@ -326,6 +355,17 @@ impl eframe::App for Overlay {
         }
         let now = ctx.input(|i| i.time);
 
+        // The Catcher outlives Settings, so pick up `catcher_notes` from the
+        // config file: a stat every 2s, a parse only when the mtime moved.
+        if !self.forced && now >= self.next_cfg_check {
+            self.next_cfg_check = now + 2.0;
+            let mtime = crate::config::modified();
+            if mtime != self.cfg_mtime {
+                self.cfg_mtime = mtime;
+                self.notes = notes_on();
+            }
+        }
+
         #[cfg(target_os = "macos")]
         if !self.configured {
             self.configured = mac::configure_window();
@@ -345,7 +385,7 @@ impl eframe::App for Overlay {
             Some(z) => z,
             None if inside => self
                 .pointer()
-                .map(|p| Self::zone_at(mode, p))
+                .map(|p| Self::zone_at(mode, self.notes, p))
                 .unwrap_or(Zone::None),
             None => Zone::None,
         };
@@ -356,9 +396,10 @@ impl eframe::App for Overlay {
         // clicks: mic starts hands-free, gear opens Settings, the listening
         // pill finishes
         if self.ui_state.clicked.swap(false, Ordering::Relaxed) {
-            let at = self.pointer().map(|p| Self::zone_at(mode, p));
+            let at = self.pointer().map(|p| Self::zone_at(mode, self.notes, p));
             match (mode, at) {
                 (Mode::Idle, Some(Zone::Gear)) => open_settings(),
+                (Mode::Idle, Some(Zone::Notes)) => open_note(),
                 (Mode::Idle, _) => send_toggle(),
                 (Mode::Listening, _) => send_toggle(),
                 (Mode::Transcribing, _) => {}
@@ -391,6 +432,7 @@ impl eframe::App for Overlay {
         // when hovered, the pill while listening
         #[cfg(target_os = "macos")]
         if let Some(hit) = &self.hit {
+            hit.set_notes(self.notes);
             hit.cover(match mode {
                 Mode::Idle if self.zone != Zone::None => Some(Target::Controls),
                 Mode::Idle => Some(Target::Idle),
@@ -409,6 +451,8 @@ impl eframe::App for Overlay {
             ctx.animate_bool_with_time(egui::Id::new("pill-mic"), self.zone == Zone::Mic, 0.12);
         let gear_hot =
             ctx.animate_bool_with_time(egui::Id::new("pill-gear"), self.zone == Zone::Gear, 0.12);
+        let notes_hot =
+            ctx.animate_bool_with_time(egui::Id::new("pill-notes"), self.zone == Zone::Notes, 0.12);
         if self.zone != Zone::None {
             self.tip = self.zone;
         }
@@ -445,6 +489,7 @@ impl eframe::App for Overlay {
 
         let label = match self.tip {
             Zone::Mic => Some(("Dictate", Some(self.key.as_str()))),
+            Zone::Notes => Some(("New note", None)),
             Zone::Gear => Some(("Settings", None)),
             Zone::Pill => Some(("Click to finish", None)),
             Zone::None => None,
@@ -455,11 +500,15 @@ impl eframe::App for Overlay {
                 let origin = ui.max_rect().min.to_vec2();
                 paint_pill(ui, mode, open, controls, mic_hot, &self.bars, now);
                 if controls > 0.0 {
-                    paint_gear(ui, origin, controls, gear_hot);
+                    if self.notes {
+                        paint_side_button(ui, notes_rect(), origin, controls, notes_hot, icons::NOTE_PENCIL);
+                    }
+                    paint_side_button(ui, gear_rect(self.notes), origin, controls, gear_hot, icons::GEAR_SIX);
                 }
                 if let (Some((text, key)), true) = (label, tip > 0.0) {
                     let over = match self.tip {
-                        Zone::Gear => gear_rect(),
+                        Zone::Gear => gear_rect(self.notes),
+                        Zone::Notes => notes_rect(),
                         Zone::Pill => active_rect(),
                         _ => mic_rect(),
                     };
@@ -467,7 +516,7 @@ impl eframe::App for Overlay {
                 }
             });
 
-        let animating = [open, controls, mic_hot, gear_hot, tip]
+        let animating = [open, controls, mic_hot, notes_hot, gear_hot, tip]
             .iter()
             .any(|v| *v > 0.0 && *v < 1.0);
         if mode != Mode::Idle
@@ -482,14 +531,28 @@ impl eframe::App for Overlay {
     }
 }
 
+/// Whether the config asks for the Notes button. Unreadable means off.
+fn notes_on() -> bool {
+    crate::config::load().map(|c| c.catcher_notes).unwrap_or(false)
+}
+
 /// Opens the main window on its Settings page. The window brings itself to
 /// the front on its first frame (settings_app).
 fn open_settings() {
+    spawn_self(&["settings", "--tab", "settings"], "Settings");
+}
+
+/// Opens the quick note window (single instance, brings itself to the front).
+fn open_note() {
+    spawn_self(&["note"], "a note");
+}
+
+fn spawn_self(args: &[&str], what: &str) {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
     match std::process::Command::new(exe)
-        .args(["settings", "--tab", "settings"])
+        .args(args)
         // our stdout is the daemon's command pipe; keep the child off it
         .stdout(std::process::Stdio::null())
         .spawn()
@@ -500,7 +563,7 @@ fn open_settings() {
                 let _ = child.wait();
             });
         }
-        Err(e) => log::warn!("could not open Settings: {e}"),
+        Err(e) => log::warn!("could not open {what}: {e}"),
     }
 }
 
@@ -613,10 +676,17 @@ fn paint_pill(
     }
 }
 
-/// The round Settings button beside the mic, scaling and fading in with the
-/// controls.
-fn paint_gear(ui: &mut egui::Ui, origin: egui::Vec2, t: f32, hot: f32) {
-    let full = gear_rect().translate(origin);
+/// A round button beside the mic (Notes, Settings), scaling and fading in
+/// with the controls.
+fn paint_side_button(
+    ui: &mut egui::Ui,
+    at: egui::Rect,
+    origin: egui::Vec2,
+    t: f32,
+    hot: f32,
+    icon: &str,
+) {
+    let full = at.translate(origin);
     let rect = egui::Rect::from_center_size(full.center(), full.size() * (0.6 + 0.4 * t));
     let r = rect.width() / 2.0;
     let p = ui.painter();
@@ -642,7 +712,7 @@ fn paint_gear(ui: &mut egui::Ui, origin: egui::Vec2, t: f32, hot: f32) {
     p.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        icons::GEAR_SIX,
+        icon,
         egui::FontId::proportional(16.0 * (0.6 + 0.4 * t)),
         mix(theme::TEXT_2, theme::ACCENT, hot).gamma_multiply(t),
     );
@@ -658,11 +728,12 @@ fn paint_label(ui: &mut egui::Ui, over: egui::Rect, t: f32, text: &str, key: Opt
     let gap = 6.0;
     let w = body.size().x + key_g.as_ref().map(|g| gap + g.size().x).unwrap_or(0.0) + 28.0;
     let h = 28.0;
+    // Centred over its button, but kept inside the window: the gear sits near
+    // the right edge once the Notes button is on, and the window clips.
+    let bounds = ui.clip_rect().shrink(4.0);
+    let x = (over.center().x - w / 2.0).clamp(bounds.left(), (bounds.right() - w).max(bounds.left()));
     let rect = egui::Rect::from_min_size(
-        egui::pos2(
-            over.center().x - w / 2.0,
-            over.top() - 8.0 - h + 4.0 * (1.0 - t),
-        ),
+        egui::pos2(x, over.top() - 8.0 - h + 4.0 * (1.0 - t)),
         egui::vec2(w, h),
     );
     p.rect_filled(rect, h / 2.0, CHROME.gamma_multiply(t));
@@ -804,6 +875,8 @@ mod mac {
         /// Top-left of the pill window (winit coordinates), once placed.
         win: Cell<Option<(f32, f32)>>,
         covering: Cell<Option<Target>>,
+        /// The Notes button is on, so the hovered controls are wider.
+        notes: Cell<bool>,
     }
 
     impl Hit {
@@ -841,7 +914,17 @@ mod mac {
                 panel,
                 win: Cell::new(None),
                 covering: Cell::new(None),
+                notes: Cell::new(false),
             })
+        }
+
+        /// Widens or narrows the hovered controls' target to match.
+        pub fn set_notes(&self, on: bool) {
+            if self.notes.replace(on) != on {
+                if let Some(t) = self.covering.take() {
+                    self.cover(Some(t));
+                }
+            }
         }
 
         pub fn place(&self, win: (f32, f32)) {
@@ -864,7 +947,7 @@ mod mac {
             let Some(primary_h) = primary_height() else {
                 return;
             };
-            let r = target_rect(target);
+            let r = target_rect(target, self.notes.get());
             // window points (top-left origin) -> Cocoa screen points
             let bottom = primary_h - win.1 as f64 - WIN_H as f64;
             let frame = NSRect::new(
@@ -977,16 +1060,19 @@ mod tests {
     #[test]
     fn controls_and_targets_fit_the_window() {
         let win = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIN_W, WIN_H));
-        for r in [
-            mic_rect(),
-            gear_rect(),
-            active_rect(),
-            target_rect(Target::Idle),
-            target_rect(Target::Controls),
-            target_rect(Target::Pill),
-        ] {
-            assert!(win.contains_rect(r), "{r:?} outside {win:?}");
+        for notes in [false, true] {
+            for r in [
+                mic_rect(),
+                gear_rect(notes),
+                active_rect(),
+                target_rect(Target::Idle, notes),
+                target_rect(Target::Controls, notes),
+                target_rect(Target::Pill, notes),
+            ] {
+                assert!(win.contains_rect(r), "{r:?} outside {win:?} (notes {notes})");
+            }
         }
+        assert!(win.contains_rect(notes_rect()));
         // a label (28 tall, 8 above its control) fits above the mic and the pill
         for r in [mic_rect(), active_rect()] {
             assert!(
@@ -1000,16 +1086,41 @@ mod tests {
     /// pointer would land on nothing the moment the controls open.
     #[test]
     fn the_controls_cover_the_idle_target() {
-        assert!(target_rect(Target::Controls).contains_rect(target_rect(Target::Idle)));
+        for notes in [false, true] {
+            assert!(target_rect(Target::Controls, notes)
+                .contains_rect(target_rect(Target::Idle, notes)));
+        }
     }
 
     #[test]
     fn zones_resolve_by_mode() {
         let mic = mic_rect().center();
-        let gear = gear_rect().center();
-        assert_eq!(Overlay::zone_at(Mode::Idle, mic), Zone::Mic);
-        assert_eq!(Overlay::zone_at(Mode::Idle, gear), Zone::Gear);
-        assert_eq!(Overlay::zone_at(Mode::Listening, mic), Zone::Pill);
-        assert_eq!(Overlay::zone_at(Mode::Transcribing, mic), Zone::None);
+        let gear = gear_rect(false).center();
+        assert_eq!(Overlay::zone_at(Mode::Idle, false, mic), Zone::Mic);
+        assert_eq!(Overlay::zone_at(Mode::Idle, false, gear), Zone::Gear);
+        assert_eq!(Overlay::zone_at(Mode::Listening, false, mic), Zone::Pill);
+        assert_eq!(Overlay::zone_at(Mode::Transcribing, false, mic), Zone::None);
+    }
+
+    /// With the Notes button on, it sits between the mic and the gear, the
+    /// gear moves out one slot, and nothing overlaps.
+    #[test]
+    fn the_notes_button_sits_between_the_mic_and_the_gear() {
+        let (mic, notes, gear) = (mic_rect(), notes_rect(), gear_rect(true));
+        assert!(mic.right() < notes.left() && notes.right() < gear.left());
+        assert_eq!(gear_rect(false), notes, "off: the gear keeps its old place");
+        assert_eq!(Overlay::zone_at(Mode::Idle, true, mic.center()), Zone::Mic);
+        assert_eq!(Overlay::zone_at(Mode::Idle, true, notes.center()), Zone::Notes);
+        assert_eq!(Overlay::zone_at(Mode::Idle, true, gear.center()), Zone::Gear);
+        // off: the notes slot is the gear, and the Notes zone cannot occur
+        assert_eq!(
+            Overlay::zone_at(Mode::Idle, false, notes.center()),
+            Zone::Gear
+        );
+        // only an idle Catcher has these buttons
+        assert_eq!(
+            Overlay::zone_at(Mode::Listening, true, notes.center()),
+            Zone::None
+        );
     }
 }

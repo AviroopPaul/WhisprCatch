@@ -61,6 +61,10 @@ code.
 2. **Frontend changes require screenshots in the PR.** Any change to `site/` (or anything user-visible) must include screenshots for review: desktop (1440px) and mobile (390px and 360px), before/after for visual changes, plus any interactive states touched (e.g. form errors). Host them on the `pr-assets` orphan branch under `pr-<N>/` and hot-link via `https://raw.githubusercontent.com/AviroopPaul/whisper-catch/pr-assets/pr-<N>/<file>.png`. Never merge or delete `pr-assets`.
 3. **Keep this file current.** Any change to architecture, deployment, or workflow lands with a matching update to CLAUDE.md in the same PR. Keep it lean — pointers and rules, not essays.
 
+## Main window
+
+`apps/cli/src/settings_app.rs`: sidebar pages (`Tab`) in a rounded sheet, and **Settings is a modal** (`Section`: General, Catcher, System, Permissions), not a page. `--tab settings|permissions|...` opens the modal. The pill/overlay is called the **Catcher** in all user-facing text (code keeps `overlay`). Layout and tokens: `docs/DESIGN.md` Part B.
+
 ## App screenshots
 
 Captures for the README and the landing page are produced by the app itself, never
@@ -114,6 +118,8 @@ While the key is held the daemon re-transcribes recent audio every `STREAM_INTER
 - **One transform per module file**, each owning its own `Config` and its `Transform` impl. `lib.rs` holds the chain and nothing transform-specific, so the six cleanup issues can land in parallel without touching the same file.
 - **The chain order is fixed and load-bearing**: dictionary → snippets → spoken → self_correct → fillers → numbers. `self_correct` must run before `fillers` — "I mean" is both a correction marker and a hedge filler removal strips, so reversing them breaks self-correction silently. `self_correct_runs_before_fillers` is the test that catches it.
 - **`prefix_stable()` is a promise to the streaming loop**, not a label. It means `apply(prefix)` is a prefix of `apply(whole)` — much stronger than "never shortens the text", because a streaming pass has already typed `apply(prefix)` and cannot take it back until injector replace (#41) lands. **All six return `false`**, each with a counterexample in its own module: a substitution done "in place" still breaks the property whenever its trigger straddles the streaming boundary ("twenty" → `20`, then "twenty five" → `25`). Returning `true` needs a proof against `prefix_violation` in `testing.rs`, not an intuition.
+- **Notes are plain files the user owns.** One `<unix_millis>.md` per note in `<data_dir>/whisper-catch/notes/` (`apps/cli/src/notes.rs`; the folder is injectable for tests). Saves are atomic (temp file + rename); saving blank text removes the file, so an empty note never leaves one. The editor (`notes_ui.rs`) is shared by the Notes page and `whisper-catch note [--id]`, the single-instance quick note window opened from the Catcher. The Catcher's Notes button is `catcher_notes` in `config.toml` (default off); the long-lived overlay re-reads the config every ~2s when its mtime changes, so toggling it never needs a restart. No cloud, no sync.
+- **History records the focused app name, local only.** `history::Entry::app` is the localized name of the frontmost app when the key went down (macOS `NSWorkspace`; `None` elsewhere), never a window title or document name. `Option` + `#[serde(default)]` like `raw`. Only the Insights page (`apps/cli/src/insights.rs`) reads it.
 - **Everything ships disabled.** Output must stay byte-identical with a default config; `history::Entry::raw` stores the pre-polish text only when a transform actually changed it, and is `Option` + `#[serde(default)]` so pre-v0.5 `history.jsonl` files keep loading.
 
 ## Text injection — read before touching `crates/inject`

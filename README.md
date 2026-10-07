@@ -18,7 +18,7 @@ Local push-to-talk dictation for **macOS and Linux** — no cloud, no account, n
 
 ---
 
-![WhisprCatch demo — the push-to-talk key is held, a listening pill appears, and the spoken sentence is typed punctuated into a Slack message](docs/demo.gif)
+![WhisprCatch demo — the push-to-talk key is held, the Catcher appears, and the spoken sentence is typed punctuated into a Slack message](docs/demo.gif)
 
 ## Why
 
@@ -28,7 +28,7 @@ Local push-to-talk dictation for **macOS and Linux** — no cloud, no account, n
 
 ## The app
 
-Most of the time it's a menu-bar icon and a small pill while you talk. Open it and
+Most of the time it's a menu-bar icon and a small Catcher capsule while you talk. Open it and
 there's a searchable log of what you've dictated, plus settings — all local.
 
 ![The WhisprCatch window: a sidebar of pages, then a searchable list of past transcripts beside the selected transcript with its duration, word count and inference time](docs/screenshots/app-history.png)
@@ -83,7 +83,7 @@ Configuration lives at `~/Library/Application Support/whisper-catch/config.toml`
 | `key` | `fn` / `ralt` | Push-to-talk key (`fn`, `rcmd`, `lcmd`, `ralt`, `lalt`, `rctrl`, `lctrl`, `super`, `f13`, `scrolllock`, …) |
 | `model` | `moonshine` / `parakeet` | `parakeet` (best accuracy, ~660 MB) or `moonshine` (tiny, ~64 MB) |
 | `streaming` | `true` | Type words live while speaking instead of all at once on release |
-| `overlay` | `true` | Show the floating recording pill while dictating |
+| `overlay` | `true` | Show the Catcher (the capsule above the Dock) while dictating |
 | `history` | `true` | Keep a local log of transcriptions (`history.jsonl`) |
 
 Defaults differ per platform: macOS starts on Moonshine, Linux on Parakeet.

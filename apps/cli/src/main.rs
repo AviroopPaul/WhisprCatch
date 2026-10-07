@@ -1,5 +1,9 @@
 mod autostart;
 mod config;
+mod insights;
+mod note_window;
+mod notes;
+mod notes_ui;
 mod overlay;
 mod permissions;
 mod settings_app;
@@ -68,11 +72,17 @@ enum Cmd {
     },
     /// Open the settings & history window
     Settings {
-        /// Tab to open: home (default), history, cleanup, settings, permissions or about
+        /// Tab to open: home (default), insights, history, notes, cleanup, about, or a Settings section (settings, general, catcher, system, permissions)
         #[arg(long)]
         tab: Option<String>,
     },
-    /// Internal: floating recording indicator (spawned by the daemon)
+    /// Open a quick note window (a new note, or `--id`)
+    Note {
+        /// Id of an existing note (the file name without `.md`)
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// Internal: the Catcher capsule (spawned by the daemon)
     #[command(hide = true)]
     Overlay,
     /// Internal: the drag-to-grant panel shown beside System Settings
@@ -113,6 +123,7 @@ fn main() -> Result<()> {
     // subcommands that don't need the engine
     match &cmd {
         Cmd::Settings { tab } => return settings_app::run(tab.clone()),
+        Cmd::Note { id } => return note_window::run(id.clone()),
         Cmd::Overlay => return overlay::run(),
         Cmd::DragHelper { pane } => return permissions::drag_helper(pane),
         Cmd::Wizard => {
@@ -311,6 +322,7 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Settings { .. }
+        | Cmd::Note { .. }
         | Cmd::Overlay
         | Cmd::DragHelper { .. }
         | Cmd::Wizard
@@ -644,6 +656,8 @@ fn run_ptt(
     let mut capture: Option<Capture> = None;
     let mut last_use = std::time::Instant::now();
     let mut armed = false;
+    // App that had focus when the key went down (macOS only), for history.
+    let mut press_app: Option<String> = None;
     let mut overlay_proc: Option<OverlayProc> = cfg.overlay.then(|| OverlayProc::start(&self_exe));
 
     // rolling-transcription state for the current utterance
@@ -692,6 +706,7 @@ fn run_ptt(
                 let cap = capture.as_ref().unwrap();
                 cap.begin();
                 armed = true;
+                press_app = frontmost_app_name();
                 stream.reset();
                 modifier_lifted = false;
                 last_pass = std::time::Instant::now();
@@ -790,6 +805,7 @@ fn run_ptt(
                                 infer_s,
                                 text: text.clone(),
                                 raw: polished_from,
+                                app: press_app.take(),
                             };
                             if let Err(e) = wc_core::history::append(&entry) {
                                 log::warn!("history write failed: {e:#}");
@@ -984,6 +1000,22 @@ fn simulate_stream(engine: &mut Engine, wav: &std::path::Path, window: f32) -> R
     Ok(())
 }
 
+/// Localized name of the frontmost app, for the history entry (Insights).
+/// Cheap, never blocks, never panics: any failure is `None`. App name only,
+/// never a window title or document name.
+#[cfg(target_os = "macos")]
+fn frontmost_app_name() -> Option<String> {
+    let app = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    let name = app.localizedName()?.to_string();
+    (!name.trim().is_empty()).then_some(name)
+}
+
+/// Other platforms: no cheap, portable way to ask (Wayland has none), so None.
+#[cfg(not(target_os = "macos"))]
+fn frontmost_app_name() -> Option<String> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1055,6 +1087,7 @@ mod tests {
                 infer_s: 0.31,
                 text,
                 raw: stored,
+                app: None,
             })
             .unwrap()
         };

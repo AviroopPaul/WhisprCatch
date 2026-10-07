@@ -798,7 +798,7 @@ impl eframe::App for Wizard {
                                     ui.spacing_mut().item_spacing.y = 8.0;
                                     for (dot, line) in [
                                         (theme::ACCENT, "Text lands wherever your cursor is."),
-                                        (theme::ACCENT, "The pill at the bottom of the screen grows while it listens."),
+                                        (theme::ACCENT, "The Catcher at the bottom of the screen grows while it listens."),
                                         (theme::ACCENT, "History and settings live in the menu bar."),
                                     ] {
                                         ui.horizontal(|ui| {
