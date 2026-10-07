@@ -36,7 +36,7 @@ impl App {
                              Turn it on in Settings > General.",
                         )
                         .size(14.0)
-                        .color(theme::TEXT_2),
+                        .color(theme::text_2()),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if theme::button(ui, theme::Variant::Secondary, "Open Settings").clicked()
@@ -80,13 +80,13 @@ impl App {
         ui.add_space(22.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            ui.label(egui::RichText::new(icons::LOCK_SIMPLE).size(14.0).color(theme::MUTED));
+            ui.label(egui::RichText::new(icons::LOCK_SIMPLE).size(14.0).color(theme::muted()));
             ui.label(
                 egui::RichText::new(
                     "Worked out on this Mac from your history. Nothing is sent anywhere.",
                 )
                 .size(12.5)
-                .color(theme::MUTED),
+                .color(theme::muted()),
             );
         });
     }
@@ -144,14 +144,14 @@ fn card_at(ui: &mut egui::Ui, w: f32, h: f32, add: impl FnOnce(&mut egui::Ui, f3
 }
 
 fn big_number(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).font(theme::semibold(34.0)).color(theme::FG));
+    ui.label(egui::RichText::new(text).font(theme::semibold(34.0)).color(theme::fg()));
 }
 
 /// Mono uppercase caption, with an optional info icon and tooltip after it.
 fn caption(ui: &mut egui::Ui, text: &str, tip: Option<&str>) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        ui.label(theme::mono_upper(text, 11.5, theme::TEXT_2));
+        ui.label(theme::mono_upper(text, 11.5, theme::text_2()));
         if let Some(tip) = tip {
             info(ui, tip);
         }
@@ -160,7 +160,7 @@ fn caption(ui: &mut egui::Ui, text: &str, tip: Option<&str>) {
 
 pub(super) fn info(ui: &mut egui::Ui, tip: &str) {
     ui.add(
-        egui::Label::new(egui::RichText::new(icons::INFO).size(14.0).color(theme::MUTED))
+        egui::Label::new(egui::RichText::new(icons::INFO).size(14.0).color(theme::muted()))
             .sense(egui::Sense::hover()),
     )
     .on_hover_text(tip);
@@ -172,7 +172,7 @@ fn info_row(ui: &mut egui::Ui, text: &str, tip: &str) {
         ui.spacing_mut().item_spacing.x = 8.0;
         ui.scope(|ui| {
             ui.set_max_width((ui.available_width() - 24.0).max(40.0));
-            ui.add(egui::Label::new(egui::RichText::new(text).size(14.0).color(theme::FG)).wrap());
+            ui.add(egui::Label::new(egui::RichText::new(text).size(14.0).color(theme::fg())).wrap());
         });
         info(ui, tip);
     });
@@ -181,9 +181,9 @@ fn info_row(ui: &mut egui::Ui, text: &str, tip: &str) {
 /// A label on the left, a value on the right.
 fn kv_row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).size(14.0).color(theme::TEXT_2));
+        ui.label(egui::RichText::new(label).size(14.0).color(theme::text_2()));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new(value).font(theme::medium(14.0)).color(theme::FG));
+            ui.label(egui::RichText::new(value).font(theme::medium(14.0)).color(theme::fg()));
         });
     });
 }
@@ -226,10 +226,10 @@ fn gauge(ui: &mut egui::Ui, wpm: f32) {
             p.circle_filled(end, thick / 2.0, color);
         }
     };
-    draw(1.0, theme::SURFACE_3);
+    draw(1.0, theme::surface_3());
     let frac = (wpm / GAUGE_MAX_WPM).clamp(0.0, 1.0);
     if frac > 0.0 {
-        draw(frac, theme::ACCENT);
+        draw(frac, theme::accent_ink());
     }
     let times = wpm / TYPING_WPM;
     p.text(
@@ -237,14 +237,14 @@ fn gauge(ui: &mut egui::Ui, wpm: f32) {
         egui::Align2::CENTER_CENTER,
         format!("{times:.1}x"),
         theme::semibold(22.0),
-        theme::FG,
+        theme::fg(),
     );
     p.text(
         egui::pos2(c.x, c.y - 4.0),
         egui::Align2::CENTER_CENTER,
         "faster than typing",
         egui::FontId::proportional(11.0),
-        theme::TEXT_2,
+        theme::text_2(),
     );
 }
 
@@ -291,18 +291,18 @@ fn words_card(ui: &mut egui::Ui, s: &Stats) {
 /// Card title with a mono readout on the right, or under it when the card is
 /// too narrow for both on one line.
 fn card_title(ui: &mut egui::Ui, title: &str, right: &str, inner: f32) {
-    let title = egui::RichText::new(title).font(theme::semibold(24.0)).color(theme::FG);
+    let title = egui::RichText::new(title).font(theme::semibold(24.0)).color(theme::fg());
     if inner >= TITLE_ROW_MIN {
         ui.horizontal(|ui| {
             ui.label(title);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(theme::mono_upper(right, 11.5, theme::TEXT_2));
+                ui.label(theme::mono_upper(right, 11.5, theme::text_2()));
             });
         });
     } else {
         ui.label(title);
         ui.add_space(4.0);
-        ui.label(theme::mono_upper(right, 11.5, theme::TEXT_2));
+        ui.label(theme::mono_upper(right, 11.5, theme::text_2()));
     }
 }
 
@@ -313,7 +313,7 @@ fn apps_card(ui: &mut egui::Ui, s: &Stats, inner: f32) {
         ui.label(
             egui::RichText::new("Dictate in a few apps to see where your words go.")
                 .size(14.0)
-                .color(theme::MUTED),
+                .color(theme::muted()),
         );
         return;
     }
@@ -333,7 +333,7 @@ fn apps_card(ui: &mut egui::Ui, s: &Stats, inner: f32) {
             egui::Align2::LEFT_CENTER,
             icon,
             egui::FontId::proportional(20.0),
-            theme::TEXT_2,
+            theme::text_2(),
         );
         let share = *words as f32 / total as f32;
         let pct = if share > 0.0 && share < 0.01 {
@@ -348,11 +348,14 @@ fn apps_card(ui: &mut egui::Ui, s: &Stats, inner: f32) {
         );
         let big = bar_w >= 64.0;
         let (fill, text_color) = if big {
-            (theme::ACCENT, theme::ON_ACCENT)
+            (theme::accent(), theme::on_accent())
         } else {
-            (theme::tint_strong(theme::ACCENT), theme::ACCENT)
+            (theme::tint_strong(theme::accent_ink()), theme::accent_ink())
         };
         p.rect_filled(bar, 6.0, fill);
+        if big {
+            p.rect_stroke(bar, 6.0, egui::Stroke::new(1.0, theme::fill_edge()), egui::StrokeKind::Inside);
+        }
         p.text(
             bar.center(),
             egui::Align2::CENTER_CENTER,
@@ -370,7 +373,7 @@ fn apps_card(ui: &mut egui::Ui, s: &Stats, inner: f32) {
                 .max_rect(label)
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
             |ui| {
-                ui.add(egui::Label::new(theme::mono_upper(&text, 11.5, theme::TEXT_2)).truncate());
+                ui.add(egui::Label::new(theme::mono_upper(&text, 11.5, theme::text_2())).truncate());
             },
         );
     }
@@ -426,7 +429,7 @@ fn heatmap(ui: &mut egui::Ui, s: &Stats, today: NaiveDate, inner: f32) {
             egui::Align2::LEFT_CENTER,
             *name,
             label_font.clone(),
-            theme::MUTED,
+            theme::muted(),
         );
     }
     for col in 0..HEATMAP_WEEKS {
@@ -437,7 +440,7 @@ fn heatmap(ui: &mut egui::Ui, s: &Stats, today: NaiveDate, inner: f32) {
                 egui::Align2::LEFT_TOP,
                 month_name(first.month()),
                 label_font.clone(),
-                theme::MUTED,
+                theme::muted(),
             );
         }
         for row in 0..7 {
@@ -453,7 +456,7 @@ fn heatmap(ui: &mut egui::Ui, s: &Stats, today: NaiveDate, inner: f32) {
         p.rect_stroke(
             cell_rect(col, row).expand(1.0),
             3.0,
-            egui::Stroke::new(1.0, theme::FG),
+            egui::Stroke::new(1.0, theme::fg()),
             egui::StrokeKind::Outside,
         );
         let day = day_at(col, row);
@@ -473,14 +476,14 @@ fn heatmap(ui: &mut egui::Ui, s: &Stats, today: NaiveDate, inner: f32) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         ui.add_space(label_w);
-        ui.label(egui::RichText::new("Less").size(11.5).color(theme::MUTED));
+        ui.label(egui::RichText::new("Less").size(11.5).color(theme::muted()));
         ui.add_space(2.0);
         for level in 1..=4 {
             let (r, _) = ui.allocate_exact_size(egui::vec2(cell, cell), egui::Sense::hover());
             ui.painter().rect_filled(r, 3.0, theme::heat(level));
         }
         ui.add_space(2.0);
-        ui.label(egui::RichText::new("More").size(11.5).color(theme::MUTED));
+        ui.label(egui::RichText::new("More").size(11.5).color(theme::muted()));
     });
 }
 

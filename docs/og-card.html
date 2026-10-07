@@ -6,18 +6,18 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,300..500;1,6..72,300..500&display=swap" rel="stylesheet">
 <style>
-  /* Tokens mirror docs/DESIGN.md Part A ("black + orange"). Render at 1200x630. */
+  /* Tokens mirror docs/DESIGN.md Part A (dark charcoal + yellow). Render at 1200x630. */
   :root {
-    --bg: #0a0a0a;
-    --sheet: #121212;
-    --fg: #fafafa;
-    --fg-2: #a3a3a3;
-    --muted: #8c8c8c;
-    --border: #242424;
-    --accent: #f97316;
-    --on-accent: #140a02;
-    --accent-glow: rgba(249, 115, 22, .30);
-    --red: #ef4444;
+    --bg: #222831;
+    --sheet: #2e333c;
+    --fg: #eeeeee;
+    --fg-2: #b8b9bc;
+    --muted: #a6a8ab;
+    --border: #494e55;
+    --accent: #ffd369;
+    --on-accent: #222831;
+    --accent-glow: rgba(255, 211, 105, .30);
+    --strike: #a6a8ab;
     --sans: "Geist", sans-serif;
     --serif: "Newsreader", Georgia, serif;
     --mono: "Geist Mono", monospace;
@@ -32,7 +32,7 @@
     position: relative;
   }
 
-  /* the same orange bloom the hero has */
+  /* the same yellow bloom the hero has */
   .glow {
     position: absolute; inset: 0;
     background: radial-gradient(46% 58% at 82% 8%, var(--accent-glow), transparent 70%);
@@ -67,7 +67,7 @@
     border-radius: 999px; padding: 10px 10px 10px 24px;
     font-size: 20px; color: var(--fg-2);
   }
-  .pricetag s { color: var(--muted); text-decoration-color: var(--red); text-decoration-thickness: 2px; }
+  .pricetag s { color: var(--muted); text-decoration-color: var(--strike); text-decoration-thickness: 2px; }
   .pricetag b {
     background: var(--accent); color: var(--on-accent); font-weight: 600;
     padding: 10px 20px; border-radius: 999px; font-size: 20px;
@@ -82,9 +82,7 @@
 
   <div class="card">
     <div class="brand">
-      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v3.5"/>
-      </svg>
+      <svg width="33" height="33" viewBox="0 0 512 512" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="48" stroke-linecap="round"><path d="M76 222v68M146 180v152M366 180v152M436 222v68"/><path d="M256 116v280M216 116h80M216 396h80"/></g></svg>
       WhisprCatch
     </div>
 

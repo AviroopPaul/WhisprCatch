@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
   <!-- WhisprCatch symbolic (tray) icon: single color, GNOME symbolic convention.
        #bebebe is recolored by the shell; keep one flat color only. -->
-  <path fill="#bebebe" fill-rule="evenodd"
-        d="M5.75 3.25A2.25 2.25 0 0 1 8 1a2.25 2.25 0 0 1 2.25 2.25v3.5A2.25 2.25 0 0 1 8 9a2.25 2.25 0 0 1-2.25-2.25ZM7.4 3.8a.6.6 0 0 1 1.2 0v2.4a.6.6 0 0 1-1.2 0Z"/>
-  <path fill="none" stroke="#bebebe" stroke-width="1.5" stroke-linecap="round"
-        d="M3.5 7.25V8a4.5 4.5 0 0 0 9 0v-.75M8 12.5v2"/>
+  <g transform="translate(8 8) scale(0.0368) translate(-256 -256)" fill="none" stroke="#bebebe" stroke-width="48" stroke-linecap="round">
+    <path d="M76 222v68M146 180v152M366 180v152M436 222v68"/>
+    <path d="M256 116v280M216 116h80M216 396h80"/>
+  </g>
 </svg>

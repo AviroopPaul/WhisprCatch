@@ -6,7 +6,7 @@
 //! Settings and About at the bottom) beside a rounded content sheet. Settings
 //! is a modal over the whole window (General, Catcher, System, Permissions).
 //! History is a list pane beside a detail card; the other pages are a
-//! centered column of cards. Dark-only, black + orange.
+//! centered column of cards. Charcoal + yellow, light and dark.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
@@ -331,8 +331,19 @@ struct App {
     stats: Stats,
     /// "Today" for Insights (fixed under `WC_DEMO_HISTORY` so captures repeat).
     today: chrono::NaiveDate,
+    /// Last save error, shown in red until the next successful save.
     status: String,
     saved_ok: bool,
+    /// Serialized config as last written (or loaded); autosave compares to it.
+    saved_snap: String,
+    /// Serialized config as of the previous frame, to time the last edit.
+    seen_snap: String,
+    /// Autostart state last applied to the OS.
+    applied_autostart: bool,
+    /// When the config last changed while unsaved, for the typing debounce.
+    changed_at: Option<Instant>,
+    /// When the last successful save happened, for the brief "Saved" label.
+    saved_at: Option<Instant>,
     confirm_clear: bool,
     search: String,
     /// Timestamp of the entry shown in the detail pane.
@@ -353,6 +364,27 @@ struct App {
     shot: crate::shot::Shot,
 }
 
+/// Always-visible note on where edits take effect.
+const RESTART_NOTE: &str = "Changes save automatically. Model, key and cleanup changes apply after the daemon restarts.";
+/// How long the "Saved" label stays up.
+const SAVED_SHOWN: Duration = Duration::from_secs(2);
+/// A text edit saves this long after the last keystroke.
+const TYPING_PAUSE: Duration = Duration::from_millis(600);
+/// Height of the status strip under a page or the modal body.
+const FOOT_H: f32 = 44.0;
+
+/// The config as TOML; autosave compares these instead of deriving PartialEq
+/// across every nested type.
+fn snapshot(cfg: &config::Config) -> String {
+    toml::to_string(cfg).unwrap_or_default()
+}
+
+/// Debounce decision. `idle` is the time since the last edit; a focused text
+/// field waits for a pause, anything else saves at once.
+fn should_save(idle: Option<Duration>, typing: bool) -> bool {
+    !typing || idle.is_none_or(|d| d >= TYPING_PAUSE)
+}
+
 impl App {
     fn new(cfg: config::Config, tab: Option<&str>) -> Self {
         let autostart_on = autostart::is_enabled();
@@ -369,6 +401,7 @@ impl App {
         }
         let cleanup = Cleanup::build(&cfg.polish, &entries);
         let (tab, modal) = parse_tab(tab);
+        let snap = snapshot(&cfg);
         Self {
             tab,
             modal,
@@ -383,6 +416,11 @@ impl App {
             today,
             status: String::new(),
             saved_ok: false,
+            saved_snap: snap.clone(),
+            seen_snap: snap,
+            applied_autostart: autostart_on,
+            changed_at: None,
+            saved_at: None,
             confirm_clear: false,
             search: String::new(),
             selected,
@@ -531,15 +569,15 @@ fn centered_col<R>(ui: &mut egui::Ui, w_max: f32, add: impl FnOnce(&mut egui::Ui
 fn seg_button(ui: &mut egui::Ui, selected: bool, label: &str, min_w: f32) -> bool {
     let text = egui::RichText::new(label)
         .font(theme::medium(12.5))
-        .color(if selected { theme::FG } else { theme::MUTED });
+        .color(if selected { theme::fg() } else { theme::muted() });
     let btn = egui::Button::new(text)
         .fill(if selected {
-            theme::SURFACE_3
+            theme::surface_3()
         } else {
             egui::Color32::TRANSPARENT
         })
         .stroke(if selected {
-            egui::Stroke::new(1.0, theme::RING)
+            egui::Stroke::new(1.0, theme::ring())
         } else {
             egui::Stroke::NONE
         })
@@ -615,6 +653,7 @@ fn window_drag_strip(ctx: &egui::Context) {
 /// Top-center segmented control (History | Settings).
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        theme::begin_frame(ctx);
         // macOS hands a resizable window back at whatever size it was last
         // seen, which for anyone who ran the old maximized build means a
         // 27-inch window of mostly background. Assert the designed size once,
@@ -652,7 +691,7 @@ impl eframe::App for App {
             .exact_width(SIDEBAR_W)
             .resizable(false)
             .show_separator_line(false)
-            .frame(egui::Frame::default().fill(theme::BG).inner_margin(egui::Margin {
+            .frame(egui::Frame::default().fill(theme::bg()).inner_margin(egui::Margin {
                 left: 14,
                 right: 14,
                 top: if FULLSIZE { TOP_INSET as i8 } else { 14 },
@@ -664,7 +703,7 @@ impl eframe::App for App {
         }
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme::BG).inner_margin(egui::Margin {
+            .frame(egui::Frame::default().fill(theme::bg()).inner_margin(egui::Margin {
                 left: 0,
                 right: 10,
                 top: SHEET_GAP as i8,
@@ -673,11 +712,11 @@ impl eframe::App for App {
             .show(ctx, |ui| {
                 // The sheet: a rounded, bordered surface the pages sit on.
                 let rect = ui.available_rect_before_wrap();
-                ui.painter().rect_filled(rect, 14.0, theme::SHEET);
+                ui.painter().rect_filled(rect, 14.0, theme::sheet());
                 ui.painter().rect_stroke(
                     rect,
                     14.0,
-                    egui::Stroke::new(1.0, theme::BORDER),
+                    egui::Stroke::new(1.0, theme::border()),
                     egui::StrokeKind::Inside,
                 );
                 let inner = rect.shrink(1.0);
@@ -703,9 +742,11 @@ impl eframe::App for App {
             });
 
         self.settings_modal(ctx);
+        self.autosave(ctx);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_now();
         self.notes.flush();
     }
 }
@@ -723,7 +764,7 @@ impl App {
             ui.label(
                 egui::RichText::new(crate::app_name())
                     .font(theme::semibold(18.0))
-                    .color(theme::FG),
+                    .color(theme::fg()),
             );
         });
         ui.add_space(22.0);
@@ -758,7 +799,7 @@ impl App {
             let resp = theme::nav_item(ui, icons::GEAR_SIX, "Settings", self.modal.is_some());
             if !self.perm_ok {
                 let c = egui::pos2(resp.rect.right() - 14.0, resp.rect.center().y);
-                ui.painter().circle_filled(c, 3.5, theme::AMBER);
+                ui.painter().circle_filled(c, 3.5, theme::amber());
             }
             if resp.clicked() {
                 self.modal = Some(Section::General);
@@ -769,11 +810,10 @@ impl App {
             if self.perm_ok {
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    theme::led(ui, theme::ACCENT, false);
                     ui.label(
                         egui::RichText::new("Ready")
                             .font(theme::medium(13.5))
-                            .color(theme::TEXT_2),
+                            .color(theme::text_2()),
                     );
                 });
             } else {
@@ -797,15 +837,15 @@ impl App {
                         ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 8.0;
                         ui.horizontal(|ui| {
-                            theme::led(ui, theme::AMBER, false);
+                            theme::led(ui, theme::amber(), false);
                             ui.label(
                                 egui::RichText::new("Setup needed")
                                     .font(theme::medium(14.0))
-                                    .color(theme::FG),
+                                    .color(theme::fg()),
                             );
                         });
                         for line in todo {
-                            ui.label(egui::RichText::new(line).size(13.0).color(theme::TEXT_2));
+                            ui.label(egui::RichText::new(line).size(13.0).color(theme::text_2()));
                         }
                         ui.add_space(2.0);
                         if theme::button_with(ui, theme::Variant::Secondary, None, "Finish setup", true)
@@ -838,42 +878,43 @@ impl App {
         });
     }
 
-    /// Save status (left) and the Save button (right), in whatever row it is
-    /// given. Shared by Text cleanup's footer and the Settings modal.
-    fn save_row(&mut self, ui: &mut egui::Ui) {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if theme::primary_button(ui, "Save changes").clicked() {
-                self.save();
-            }
-            if !self.status.is_empty() {
-                let color = if self.saved_ok {
-                    theme::ACCENT
-                } else {
-                    theme::RED
-                };
-                let prefix = if self.saved_ok {
-                    icons::CHECK
-                } else {
-                    icons::WARNING
-                };
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+    /// Quiet status line: the static restart note on the left, then a brief
+    /// "Saved" (about 2s) or a save error that stays until the next save.
+    fn save_status(&self, ui: &mut egui::Ui) {
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(RESTART_NOTE)
+                        .size(12.5)
+                        .color(theme::muted()),
+                )
+                .truncate(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !self.saved_ok && !self.status.is_empty() {
                     ui.add(
                         egui::Label::new(
-                            egui::RichText::new(format!("{prefix} {}", self.status))
+                            egui::RichText::new(format!("{} {}", icons::WARNING, self.status))
                                 .size(12.5)
-                                .color(color),
+                                .color(theme::red()),
                         )
                         .truncate(),
                     );
-                });
-            }
+                } else if self.saved_at.is_some_and(|t| t.elapsed() < SAVED_SHOWN) {
+                    ui.label(
+                        egui::RichText::new(format!("{} Saved", icons::CHECK))
+                            .size(12.5)
+                            .color(theme::muted()),
+                    );
+                }
+            });
         });
     }
 
-    /// Sticky bottom bar on Text cleanup: status left, save right.
+    /// Sticky bottom strip on Text cleanup: the status line only.
     fn save_footer(&mut self, ui: &mut egui::Ui) {
         egui::TopBottomPanel::bottom("save-footer")
-            .exact_height(64.0)
+            .exact_height(FOOT_H)
             .show_separator_line(false)
             .frame(
                 egui::Frame::default()
@@ -885,12 +926,12 @@ impl App {
                 ui.painter().hline(
                     r.x_range().expand(40.0),
                     r.top(),
-                    egui::Stroke::new(1.0, theme::BORDER),
+                    egui::Stroke::new(1.0, theme::border()),
                 );
                 let w = ui.available_width().min(PAGE_COL);
                 centered_col(ui, w, |ui| {
-                    ui.set_min_height(64.0);
-                    self.save_row(ui);
+                    ui.set_min_height(FOOT_H);
+                    self.save_status(ui);
                 });
             });
     }
@@ -929,7 +970,7 @@ impl App {
                 ui.label(
                     egui::RichText::new("Recent dictations")
                         .font(theme::semibold(15.0))
-                        .color(theme::FG),
+                        .color(theme::fg()),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if theme::button_with(
@@ -950,7 +991,7 @@ impl App {
                 ui.label(
                     egui::RichText::new("Nothing dictated yet.")
                         .size(13.5)
-                        .color(theme::MUTED),
+                        .color(theme::muted()),
                 );
             }
             for (i, e) in self.entries.iter().take(4).enumerate() {
@@ -969,15 +1010,15 @@ impl App {
                             ui.label(
                                 egui::RichText::new(list_time(e.ts))
                                     .font(egui::FontId::monospace(11.5))
-                                    .color(theme::MUTED),
+                                    .color(theme::muted()),
                             );
                         },
                     );
                     let t = e.text.split_whitespace().collect::<Vec<_>>().join(" ");
                     let (t, color) = if t.is_empty() {
-                        ("(nothing was said)".to_string(), theme::MUTED)
+                        ("(nothing was said)".to_string(), theme::muted())
                     } else {
-                        (t, theme::TEXT_2)
+                        (t, theme::text_2())
                     };
                     ui.add(
                         egui::Label::new(egui::RichText::new(t).size(13.5).color(color)).truncate(),
@@ -1039,14 +1080,14 @@ impl App {
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::hover());
             let p = ui.painter();
-            p.circle_filled(rect.center(), 32.0, theme::SURFACE);
-            p.circle_stroke(rect.center(), 32.0, egui::Stroke::new(1.0, theme::BORDER));
+            p.circle_filled(rect.center(), 32.0, theme::surface());
+            p.circle_stroke(rect.center(), 32.0, egui::Stroke::new(1.0, theme::border()));
             p.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 icons::MICROPHONE,
                 egui::FontId::proportional(26.0),
-                theme::MUTED,
+                theme::muted(),
             );
             ui.add_space(18.0);
             theme::display(ui, "Nothing said ", "yet.", 27.0);
@@ -1055,9 +1096,9 @@ impl App {
                 let w = 240.0;
                 ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
                 ui.spacing_mut().item_spacing.x = 6.0;
-                ui.label(egui::RichText::new("Hold").color(theme::TEXT_2));
+                ui.label(egui::RichText::new("Hold").color(theme::text_2()));
                 theme::kbd(ui, self.key_label());
-                ui.label(egui::RichText::new("and speak to dictate.").color(theme::TEXT_2));
+                ui.label(egui::RichText::new("and speak to dictate.").color(theme::text_2()));
             });
         });
     }
@@ -1065,8 +1106,8 @@ impl App {
     fn history_list(&mut self, ui: &mut egui::Ui) {
         // Search input with a leading magnifier.
         egui::Frame::default()
-            .fill(theme::SURFACE_2)
-            .stroke(egui::Stroke::new(1.0, theme::BORDER))
+            .fill(theme::surface_2())
+            .stroke(egui::Stroke::new(1.0, theme::border()))
             .corner_radius(egui::CornerRadius::same(8))
             .inner_margin(egui::Margin::symmetric(10, 4))
             .show(ui, |ui| {
@@ -1075,12 +1116,12 @@ impl App {
                     ui.label(
                         egui::RichText::new(icons::MAGNIFYING_GLASS)
                             .size(14.0)
-                            .color(theme::MUTED),
+                            .color(theme::muted()),
                     );
                     ui.add(
                         egui::TextEdit::singleline(&mut self.search)
                             .frame(false)
-                            .hint_text(egui::RichText::new("Search").color(theme::MUTED))
+                            .hint_text(egui::RichText::new("Search").color(theme::muted()))
                             .desired_width(f32::INFINITY),
                     );
                 });
@@ -1113,7 +1154,7 @@ impl App {
                         ui.label(
                             egui::RichText::new("No matches")
                                 .size(13.0)
-                                .color(theme::MUTED),
+                                .color(theme::muted()),
                         );
                     });
                 }
@@ -1133,7 +1174,7 @@ impl App {
             ui.label(theme::mono_upper(
                 &format!("{} transcripts", shown.len()),
                 10.0,
-                theme::MUTED,
+                theme::muted(),
             ));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if self.confirm_clear {
@@ -1168,9 +1209,9 @@ impl App {
                 |ui| {
                     let hovered = ui.rect_contains_pointer(ui.max_rect());
                     let fill = if selected {
-                        theme::SURFACE_2
+                        theme::surface_2()
                     } else if hovered {
-                        theme::SURFACE
+                        theme::surface()
                     } else {
                         egui::Color32::TRANSPARENT
                     };
@@ -1191,7 +1232,7 @@ impl App {
                                 ui.label(theme::mono_upper(
                                     &list_time(ts),
                                     10.5,
-                                    if selected { theme::TEXT_2 } else { theme::MUTED },
+                                    if selected { theme::text_2() } else { theme::muted() },
                                 ));
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
@@ -1199,7 +1240,7 @@ impl App {
                                         ui.label(theme::mono_upper(
                                             &format!("{dur:.1}s"),
                                             10.5,
-                                            theme::MUTED,
+                                            theme::muted(),
                                         ));
                                     },
                                 );
@@ -1213,11 +1254,11 @@ impl App {
                                 egui::TextFormat {
                                     font_id: egui::FontId::proportional(13.0),
                                     color: if blank {
-                                        theme::MUTED
+                                        theme::muted()
                                     } else if selected {
-                                        theme::FG
+                                        theme::fg()
                                     } else {
-                                        theme::TEXT_2
+                                        theme::text_2()
                                     },
                                     italics: blank,
                                     ..Default::default()
@@ -1238,7 +1279,7 @@ impl App {
             ui.painter().rect_stroke(
                 resp.rect,
                 egui::CornerRadius::same(8),
-                egui::Stroke::new(1.0, theme::BORDER),
+                egui::Stroke::new(1.0, theme::border()),
                 egui::StrokeKind::Inside,
             );
             let r = resp.rect;
@@ -1248,7 +1289,7 @@ impl App {
                     egui::vec2(2.0, r.height() - 16.0),
                 ),
                 egui::CornerRadius::same(1),
-                theme::ACCENT,
+                theme::accent_ink(),
             );
         }
         resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
@@ -1360,7 +1401,7 @@ impl App {
                 ui.label(theme::mono_upper(
                     &detail_time(entry.ts),
                     11.0,
-                    theme::MUTED,
+                    theme::muted(),
                 ));
                 if wide {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1397,7 +1438,7 @@ impl App {
                             egui::RichText::new("Nothing was said in this one.")
                                 .size(15.0)
                                 .italics()
-                                .color(theme::MUTED),
+                                .color(theme::muted()),
                         );
                         return;
                     }
@@ -1406,7 +1447,7 @@ impl App {
                             egui::RichText::new(&entry.text)
                                 .size(15.0)
                                 .line_height(Some(22.5))
-                                .color(theme::FG),
+                                .color(theme::fg()),
                         )
                         .wrap(),
                     );
@@ -1465,26 +1506,72 @@ impl App {
         self.preview_card(ui);
     }
 
-    fn save(&mut self) {
-        let mut ok = true;
-        if let Err(e) = config::save(&self.cfg) {
-            self.status = format!("save failed: {e}");
-            ok = false;
+    /// Autosave, once per frame: write only when the config (or the autostart
+    /// toggle) differs from what was last saved. Text edits wait for focus to
+    /// leave or for a short pause; everything else saves at once.
+    fn autosave(&mut self, ctx: &egui::Context) {
+        let cur = snapshot(&self.cfg);
+        if cur != self.seen_snap {
+            self.seen_snap = cur.clone();
+            self.changed_at = Some(Instant::now());
         }
-        let res = if self.autostart_on {
-            autostart::enable()
-        } else {
-            autostart::disable()
-        };
-        if let Err(e) = res {
-            self.status = format!("autostart failed: {e}");
-            ok = false;
+        let dirty = cur != self.saved_snap || self.autostart_on != self.applied_autostart;
+        if dirty {
+            let idle = self.changed_at.map(|t| t.elapsed());
+            if should_save(idle, ctx.wants_keyboard_input()) {
+                self.save_now();
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
         }
-        if ok {
-            self.status =
-                "Saved. Model, key and cleanup changes apply after the daemon restarts.".into();
+        if let Some(t) = self.saved_at {
+            let left = SAVED_SHOWN.saturating_sub(t.elapsed());
+            if !left.is_zero() {
+                ctx.request_repaint_after(left);
+            }
         }
-        self.saved_ok = ok;
+    }
+
+    /// Write whatever is pending, now. Used by autosave, the modal closing
+    /// and exit; a no-op when nothing changed.
+    fn save_now(&mut self) {
+        let cur = snapshot(&self.cfg);
+        let cfg_dirty = cur != self.saved_snap;
+        let auto_dirty = self.autostart_on != self.applied_autostart;
+        if !cfg_dirty && !auto_dirty {
+            return;
+        }
+        let mut err = None;
+        if cfg_dirty {
+            if let Err(e) = config::save(&self.cfg) {
+                err = Some(format!("Could not save: {e}"));
+            }
+            // Even on failure: retry on the next edit, not every frame.
+            self.saved_snap = cur;
+        }
+        if auto_dirty {
+            let res = if self.autostart_on {
+                autostart::enable()
+            } else {
+                autostart::disable()
+            };
+            if let Err(e) = res {
+                err = Some(format!("Could not change launch at login: {e}"));
+            }
+            self.applied_autostart = self.autostart_on;
+        }
+        self.changed_at = None;
+        match err {
+            Some(e) => {
+                self.status = e;
+                self.saved_ok = false;
+            }
+            None => {
+                self.status.clear();
+                self.saved_ok = true;
+                self.saved_at = Some(Instant::now());
+            }
+        }
     }
 
     /// Label + muted description on the left, control on the right.
@@ -1503,10 +1590,10 @@ impl App {
                 ui.label(
                     egui::RichText::new(label)
                         .font(theme::medium(14.0))
-                        .color(theme::FG),
+                        .color(theme::fg()),
                 );
                 if !desc.is_empty() {
-                    ui.label(egui::RichText::new(desc).size(12.5).color(theme::MUTED));
+                    ui.label(egui::RichText::new(desc).size(12.5).color(theme::muted()));
                 }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), control);
@@ -1548,7 +1635,7 @@ impl App {
             theme::progress(ui, frac);
             ui.add_space(8.0);
             if let Some(e) = &dl.error {
-                ui.label(egui::RichText::new(e).size(12.5).color(theme::RED));
+                ui.label(egui::RichText::new(e).size(12.5).color(theme::red()));
             } else {
                 ui.label(
                     egui::RichText::new(format!(
@@ -1563,7 +1650,7 @@ impl App {
                         }
                     ))
                     .font(egui::FontId::monospace(11.5))
-                    .color(theme::MUTED),
+                    .color(theme::muted()),
                 );
             }
             ui.add_space(16.0);
@@ -1693,7 +1780,7 @@ impl App {
                  microphone and type for you.",
             )
             .size(13.5)
-            .color(theme::TEXT_2),
+            .color(theme::text_2()),
         );
         ui.add_space(16.0);
         crate::permissions::panel(ui);
@@ -1712,11 +1799,11 @@ impl App {
         );
         let mut close = false;
         let resp = egui::Modal::new(egui::Id::new("settings-modal"))
-            .backdrop_color(theme::SCRIM)
+            .backdrop_color(theme::scrim())
             .frame(
                 egui::Frame::default()
-                    .fill(theme::SHEET)
-                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .fill(theme::sheet())
+                    .stroke(egui::Stroke::new(1.0, theme::border()))
                     .corner_radius(egui::CornerRadius::same(16)),
             )
             .show(ctx, |ui| {
@@ -1725,6 +1812,7 @@ impl App {
                 self.modal_body(ui, rect, section, &mut close);
             });
         if resp.should_close() || close {
+            self.save_now();
             self.modal = None;
         }
     }
@@ -1744,12 +1832,12 @@ impl App {
                 ne: 0,
                 se: 0,
             },
-            theme::SIDEBAR,
+            theme::sidebar(),
         );
         p.vline(
             nav.max.x,
             rect.y_range(),
-            egui::Stroke::new(1.0, theme::BORDER),
+            egui::Stroke::new(1.0, theme::border()),
         );
 
         // Left column.
@@ -1764,7 +1852,7 @@ impl App {
             ui.label(
                 egui::RichText::new("SETTINGS")
                     .font(theme::semibold(11.5))
-                    .color(theme::MUTED),
+                    .color(theme::muted()),
             );
         });
         nui.add_space(10.0);
@@ -1772,7 +1860,7 @@ impl App {
             let resp = theme::nav_item(&mut nui, icon, label, s == section);
             if s == Section::Permissions && !self.perm_ok {
                 let c = egui::pos2(resp.rect.right() - 14.0, resp.rect.center().y);
-                nui.painter().circle_filled(c, 3.5, theme::AMBER);
+                nui.painter().circle_filled(c, 3.5, theme::amber());
             }
             if resp.clicked() {
                 self.modal = Some(s);
@@ -1783,12 +1871,12 @@ impl App {
             egui::Align2::LEFT_CENTER,
             format!("{} v{}", crate::app_name(), env!("CARGO_PKG_VERSION")),
             egui::FontId::proportional(12.0),
-            theme::MUTED,
+            theme::muted(),
         );
 
-        // Right pane: scrolling body, then the save bar.
+        // Right pane: scrolling body, then the quiet status strip.
         let has_save = section != Section::Permissions;
-        let foot_h = if has_save { 68.0 } else { 0.0 };
+        let foot_h = if has_save { FOOT_H } else { 0.0 };
         let body = egui::Rect::from_min_max(main.min, egui::pos2(main.max.x, main.max.y - foot_h));
         let mut bui = ui.new_child(
             egui::UiBuilder::new()
@@ -1812,7 +1900,7 @@ impl App {
                         ui.label(
                             egui::RichText::new(section.title())
                                 .font(theme::serif(36.0))
-                                .color(theme::FG),
+                                .color(theme::fg()),
                         );
                         ui.add_space(22.0);
                         match section {
@@ -1828,7 +1916,7 @@ impl App {
             p.hline(
                 foot.x_range(),
                 foot.min.y,
-                egui::Stroke::new(1.0, theme::BORDER),
+                egui::Stroke::new(1.0, theme::border()),
             );
             let mut fui = ui.new_child(
                 egui::UiBuilder::new()
@@ -1839,7 +1927,7 @@ impl App {
             fui.allocate_ui_with_layout(
                 egui::vec2(fui.available_width(), foot_h),
                 egui::Layout::top_down(egui::Align::Min),
-                |ui| self.save_row(ui),
+                |ui| self.save_status(ui),
             );
         }
 
@@ -1850,14 +1938,14 @@ impl App {
         );
         let r = ui.interact(x, egui::Id::new("modal-close"), egui::Sense::click());
         if r.hovered() {
-            p.rect_filled(x, 8.0, theme::SURFACE_2);
+            p.rect_filled(x, 8.0, theme::surface_2());
         }
         p.text(
             x.center(),
             egui::Align2::CENTER_CENTER,
             icons::X,
             egui::FontId::proportional(16.0),
-            if r.hovered() { theme::FG } else { theme::TEXT_2 },
+            if r.hovered() { theme::fg() } else { theme::text_2() },
         );
         if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             *close = true;
@@ -1879,7 +1967,7 @@ impl App {
                         ui.label(
                             egui::RichText::new(crate::app_name())
                                 .font(theme::semibold(18.0))
-                                .color(theme::FG),
+                                .color(theme::fg()),
                         );
                         theme::badge(
                             ui,
@@ -1892,7 +1980,7 @@ impl App {
                             "Push-to-talk dictation that runs entirely on your machine.",
                         )
                         .size(13.0)
-                        .color(theme::TEXT_2),
+                        .color(theme::text_2()),
                     );
                 });
             });
@@ -1927,7 +2015,7 @@ impl App {
                     "No account, no telemetry, no cloud. Audio and text never leave this machine.",
                 )
                 .size(13.5)
-                .color(theme::TEXT_2),
+                .color(theme::text_2()),
             );
             ui.add_space(14.0);
             theme::section_label(ui, "Config file");
@@ -1936,7 +2024,7 @@ impl App {
             ui.label(
                 egui::RichText::new(config::config_path().display().to_string())
                     .font(egui::FontId::monospace(11.5))
-                    .color(theme::MUTED),
+                    .color(theme::muted()),
             );
         });
     }
@@ -2353,17 +2441,17 @@ fn pick_level(cfg: &mut wc_text::FillersConfig, level: FillerLevel) {
 fn diff_format(change: Change, font: &egui::FontId) -> egui::TextFormat {
     let mut f = egui::TextFormat {
         font_id: font.clone(),
-        color: theme::TEXT_2,
+        color: theme::text_2(),
         ..Default::default()
     };
     match change {
         Change::Same => {}
         Change::Removed => {
-            f.color = theme::RED;
-            f.strikethrough = egui::Stroke::new(1.0, theme::RED);
+            f.color = theme::red();
+            f.strikethrough = egui::Stroke::new(1.0, theme::red());
         }
-        Change::Added => f.color = theme::ACCENT,
-        Change::Elided => f.color = theme::MUTED,
+        Change::Added => f.color = theme::accent_ink(),
+        Change::Elided => f.color = theme::muted(),
     }
     f
 }
@@ -2464,7 +2552,7 @@ impl App {
                                  with a literal word-for-character rule.",
                             )
                             .small()
-                            .color(theme::MUTED),
+                            .color(theme::muted()),
                         );
                     });
                 });
@@ -2480,7 +2568,7 @@ impl App {
                      left alone: a comma is not proof that one is filler.",
                 )
                 .small()
-                .color(theme::MUTED),
+                .color(theme::muted()),
             );
 
             row_sep(ui);
@@ -2507,7 +2595,7 @@ impl App {
                         self.cleanup.chain.join(" then ")
                     ),
                     10.0,
-                    theme::MUTED,
+                    theme::muted(),
                 ));
                 if self.cfg.streaming {
                     // Words typed by a streaming pass are already on the user's
@@ -2521,7 +2609,7 @@ impl App {
                             icons::WARNING
                         ))
                         .small()
-                        .color(theme::AMBER),
+                        .color(theme::amber()),
                     );
                 }
             }
@@ -2534,7 +2622,7 @@ impl App {
         ui.label(
             egui::RichText::new(facts.readout(one, many))
                 .font(egui::FontId::monospace(9.5))
-                .color(theme::MUTED),
+                .color(theme::muted()),
         );
     }
 
@@ -2545,8 +2633,8 @@ impl App {
     fn level_picker(ui: &mut egui::Ui, cfg: &mut wc_text::FillersConfig) {
         let shown = shown_level(cfg);
         egui::Frame::default()
-            .fill(theme::SURFACE_2)
-            .stroke(egui::Stroke::new(1.0, theme::BORDER))
+            .fill(theme::surface_2())
+            .stroke(egui::Stroke::new(1.0, theme::border()))
             .corner_radius(egui::CornerRadius::same(8))
             .inner_margin(3.0)
             .show(ui, |ui| {
@@ -2578,18 +2666,18 @@ impl App {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
-                ui.label(egui::RichText::new(label).color(theme::TEXT_2));
-                ui.label(egui::RichText::new(desc).small().color(theme::MUTED));
+                ui.label(egui::RichText::new(label).color(theme::text_2()));
+                ui.label(egui::RichText::new(desc).small().color(theme::muted()));
                 if on_in_config {
                     ui.label(
                         egui::RichText::new("Switched on in config.toml, and still does nothing.")
                             .small()
-                            .color(theme::AMBER),
+                            .color(theme::amber()),
                     );
                 }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(theme::mono_upper("not yet", 10.0, theme::MUTED));
+                ui.label(theme::mono_upper("not yet", 10.0, theme::muted()));
             });
         });
     }
@@ -2625,7 +2713,7 @@ impl App {
                     0.0,
                     egui::TextFormat {
                         font_id: font,
-                        color: theme::TEXT_2,
+                        color: theme::text_2(),
                         ..Default::default()
                     },
                 );
@@ -2640,11 +2728,11 @@ impl App {
                         plural(self.cleanup.faults.len(), "entry", "entries")
                     ))
                     .font(theme::medium(13.0))
-                    .color(theme::RED),
+                    .color(theme::red()),
                 );
                 ui.add_space(4.0);
                 for msg in &self.cleanup.faults {
-                    bullet(ui, theme::RED, msg);
+                    bullet(ui, theme::red(), msg);
                 }
             }
             if !self.cleanup.notes.is_empty() {
@@ -2658,11 +2746,11 @@ impl App {
                         plural(self.cleanup.notes.len(), "note", "notes")
                     ))
                     .font(theme::medium(13.0))
-                    .color(theme::AMBER),
+                    .color(theme::amber()),
                 );
                 ui.add_space(4.0);
                 for msg in &self.cleanup.notes {
-                    bullet(ui, theme::AMBER, msg);
+                    bullet(ui, theme::amber(), msg);
                 }
             }
         });
@@ -2693,7 +2781,7 @@ impl App {
                         plural(self.cleanup.scanned, "dictation", "dictations")
                     )
                 };
-                ui.label(theme::mono_upper(&head, 10.0, theme::MUTED));
+                ui.label(theme::mono_upper(&head, 10.0, theme::muted()));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if theme::button_with(
                         ui,
@@ -2712,10 +2800,10 @@ impl App {
             ui.add_space(10.0);
 
             let quiet = |ui: &mut egui::Ui, text: &str| {
-                ui.label(egui::RichText::new(text).color(theme::TEXT_2));
+                ui.label(egui::RichText::new(text).color(theme::text_2()));
             };
             let hint = |ui: &mut egui::Ui, text: &str| {
-                ui.label(egui::RichText::new(text).small().color(theme::MUTED));
+                ui.label(egui::RichText::new(text).small().color(theme::muted()));
             };
 
             if self.cleanup.chain.is_empty() {
@@ -2732,12 +2820,12 @@ impl App {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
-                        ui.label(egui::RichText::new("Hold").small().color(theme::MUTED));
+                        ui.label(egui::RichText::new("Hold").small().color(theme::muted()));
                         theme::kbd(ui, self.key_label());
                         ui.label(
                             egui::RichText::new("and say something, then come back.")
                                 .small()
-                                .color(theme::MUTED),
+                                .color(theme::muted()),
                         );
                     });
                 } else {
@@ -2769,7 +2857,7 @@ impl App {
                         ui.separator();
                         ui.add_space(6.0);
                     }
-                    ui.label(theme::mono_upper(&list_time(sample.ts), 10.0, theme::MUTED));
+                    ui.label(theme::mono_upper(&list_time(sample.ts), 10.0, theme::muted()));
                     ui.add_space(6.0);
                     diff_label(ui, &sample.pieces);
                 }
@@ -2780,10 +2868,10 @@ impl App {
                         egui::RichText::new("removed")
                             .small()
                             .strikethrough()
-                            .color(theme::RED),
+                            .color(theme::red()),
                     );
-                    ui.label(egui::RichText::new("·").small().color(theme::MUTED));
-                    ui.label(egui::RichText::new("added").small().color(theme::ACCENT));
+                    ui.label(egui::RichText::new("·").small().color(theme::muted()));
+                    ui.label(egui::RichText::new("added").small().color(theme::accent_ink()));
                     if self.cleanup.changed > self.cleanup.samples.len() {
                         ui.label(theme::mono_upper(
                             &format!(
@@ -2791,7 +2879,7 @@ impl App {
                                 self.cleanup.changed - self.cleanup.samples.len()
                             ),
                             10.0,
-                            theme::MUTED,
+                            theme::muted(),
                         ));
                     }
                 });
@@ -2808,6 +2896,16 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn autosave_waits_for_a_typing_pause_only() {
+        use super::{should_save, TYPING_PAUSE};
+        use std::time::Duration;
+        assert!(should_save(Some(Duration::ZERO), false));
+        assert!(!should_save(Some(Duration::from_millis(100)), true));
+        assert!(should_save(Some(TYPING_PAUSE), true));
+        assert!(should_save(None, true));
+    }
+
     #[test]
     fn tab_flags_map_to_pages_and_modal_sections() {
         use super::{parse_tab, Section, Tab};

@@ -233,7 +233,7 @@ mod macos {
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_tooltip(&info.app_name)
-            .with_icon(mic_icon())
+            .with_icon(menubar_icon())
             .with_icon_as_template(true)
             .build()?;
         // Keep the tray alive for the whole process.
@@ -272,7 +272,7 @@ mod macos {
     /// The app mark as a menu-bar template image: `assets/icon-menubar.png`,
     /// a 36×36 black silhouette (18pt at 2×) rendered from `icon-menubar.svg`.
     /// AppKit recolours template images for light and dark menu bars.
-    fn mic_icon() -> Icon {
+    fn menubar_icon() -> Icon {
         let img = image::load_from_memory(include_bytes!("../../../assets/icon-menubar.png"))
             .expect("bundled menu-bar icon decodes")
             .to_rgba8();
