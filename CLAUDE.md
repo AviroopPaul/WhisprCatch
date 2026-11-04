@@ -83,6 +83,17 @@ file can end up in a published PNG. Full detail in `docs/DESIGN.md` §B7. Publis
 - **App**: push a `v*` tag → the `Release` workflow (`.github/workflows/release-macos.yml`) builds the Linux .deb and macOS .dmg, attaches both to the GitHub Release, and pushes the updated cask to the tap. The site's download buttons point at `releases/latest`, so publishing the release is shipping.
 - **Homebrew**: macOS installs via `brew install --cask AviroopPaul/whisprcatch/whisprcatch`. The cask is authored at `packaging/homebrew/whisprcatch.rb` and mirrored by CI to the [`homebrew-whisprcatch`](https://github.com/AviroopPaul/homebrew-whisprcatch) tap with `version`/`sha256` rewritten. Requires the `HOMEBREW_TAP_TOKEN` secret. Edit the cask *here*, never in the tap.
 
+## Claude cleanup — read before touching `claude_cleanup.rs`
+
+Optional pass through the user's own `claude -p` (`[claude_cleanup]` in config, model `haiku` by default). **It is the only path that sends anything off the machine**: dictated text, never audio. It ships off, and the Settings row says what leaves. It does not change the on-device claim for anyone who leaves it off.
+
+- **The privacy copy follows the toggle.** Home, Text cleanup and About say "nothing leaves" only while this is off.
+- **Not a `wc_text` transform.** It spawns a process and uses the network, so it lives in `apps/cli` and runs after the polish chain.
+- **Streaming stays raw first.** Typed text is cut into segments (sentence end, or a word cap) and sent to one serial worker. A result swaps its segment in place with `replace_last`. Measured cost is ~1.7s per call, nearly all API time, which is why `--setting-sources ""` stays: loading the user's settings, hooks and MCP servers took it to ~5.5s.
+- **Every failure keeps the local transcript.** Missing CLI, not logged in, timeout and offline all do this, and a failure starts a 60s cooldown. Output must pass `plausible` before it may overwrite anything, because a dictated question can come back answered.
+- **A focus change freezes replacing** for that utterance. A click inside the same app cannot be seen from here, so that risk remains while a result is in flight.
+- `whisper-catch cleanup-test "<text>"` makes one real call with no microphone or model.
+
 ## macOS signing — read before touching packaging
 
 Releases are signed with a **self-signed certificate** (`packaging/macos/make-signing-cert.sh`), not an Apple Developer ID. This is not cosmetic: macOS keys the user's Accessibility / Input Monitoring / Microphone grants to the app's *designated requirement*, and ad-hoc signing pins that to the cdhash, which changes every build — so an ad-hoc update silently revokes all three permissions. Certificate signing pins it to the cert instead.
@@ -93,6 +104,8 @@ Releases are signed with a **self-signed certificate** (`packaging/macos/make-si
 - macOS caches TCC grants **per process**, so a just-granted permission reads as denied until relaunch. Never gate first-run setup on those checks — that traps the user in the wizard (this shipped broken once; see `wizard::need_setup`).
 
 ## Permissions, hotkey and overlay — read before touching `permissions.rs` / `overlay.rs`
+
+- **The mic choice is `mic` in `config.toml`, by device name; absent means the system default.** Settings › General and the Catcher's menu both write it. The daemon stats the config on each press and drops a warm stream if the choice changed, so a pick needs no restart. `Capture::open_device` falls back to the default when the chosen mic is missing or will not start: an unplugged mic must never stop dictation. Settings re-reads `mic` when the file moves, or its autosave would write an older choice back over the Catcher's.
 
 - **The default hotkey is fn on macOS** (`config.rs`; Right Alt on Linux, where fn is rarely reported). fn is also a modifier, so its tap watches `KeyDown` and sends `PttEvent::Cancelled` when another key goes down while fn is held (fn + Delete must not start a dictation). Holding fn only works with "Press fn key to: Do Nothing" (`AppleFnUsageType = 0`); the checklist offers that fix.
 - **`permissions.rs` is the one checklist**, shown by the wizard and Settings › Permissions. Accessibility and Input Monitoring each register the app with the system, open the pane and start `whisper-catch drag-helper <pane>`: an AppKit panel (objc2, `define_class!`) pinned under the System Settings window, whose icon is a native file drag of the `.app`. egui cannot start a native drag; keep that code AppKit.

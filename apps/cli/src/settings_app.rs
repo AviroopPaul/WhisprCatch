@@ -334,6 +334,13 @@ struct App {
     /// Last save error, shown in red until the next successful save.
     status: String,
     saved_ok: bool,
+    /// Input devices for the Microphone row, and when they were last read.
+    mics: crate::mic_list::MicList,
+    mics_read_at: Option<Instant>,
+    /// `config.toml`'s mtime and `mic` as last seen, to notice the Catcher
+    /// changing the mic while this window is open.
+    cfg_mtime: Option<std::time::SystemTime>,
+    disk_mic: Option<String>,
     /// Serialized config as last written (or loaded); autosave compares to it.
     saved_snap: String,
     /// Serialized config as of the previous frame, to time the last edit.
@@ -373,6 +380,9 @@ const TYPING_PAUSE: Duration = Duration::from_millis(600);
 /// Height of the status strip under a page or the modal body.
 const FOOT_H: f32 = 44.0;
 
+/// How often the Microphone row re-reads the device list.
+const MICS_REFRESH: Duration = Duration::from_secs(3);
+
 /// The config as TOML; autosave compares these instead of deriving PartialEq
 /// across every nested type.
 fn snapshot(cfg: &config::Config) -> String {
@@ -403,6 +413,10 @@ impl App {
         let (tab, modal) = parse_tab(tab);
         let snap = snapshot(&cfg);
         Self {
+            mics: Default::default(),
+            mics_read_at: None,
+            cfg_mtime: config::modified(),
+            disk_mic: cfg.mic.clone(),
             tab,
             modal,
             perm_ok: perm_status().all_granted(),
@@ -742,6 +756,7 @@ impl eframe::App for App {
             });
 
         self.settings_modal(ctx);
+        self.adopt_mic_from_disk();
         self.autosave(ctx);
     }
 
@@ -955,7 +970,11 @@ impl App {
         theme::hero(
             ui,
             &headline,
-            "Everything runs on this machine. No audio, no text and no account ever leave it.",
+            if self.cfg.claude_cleanup.enabled {
+                "Speech is transcribed on this machine. Claude cleanup sends the text to Anthropic."
+            } else {
+                "Everything runs on this machine. No audio, no text and no account ever leave it."
+            },
             |ui| {
                 if theme::button(ui, theme::Variant::Light, "View history").clicked() {
                     goto_history = true;
@@ -1494,7 +1513,11 @@ impl App {
         theme::page_header(
             ui,
             "Text cleanup",
-            "Tidy what the model heard before it is typed. Nothing leaves this Mac.",
+            if self.cfg.claude_cleanup.enabled {
+                "Tidy what the model heard. Only Claude cleanup sends text off this Mac."
+            } else {
+                "Tidy what the model heard before it is typed. Nothing leaves this Mac."
+            },
         );
         ui.add_space(20.0);
         self.cleanup_card(ui);
@@ -1680,6 +1703,65 @@ impl App {
         }
     }
 
+    /// Which input to dictate from. The list is re-read every few seconds while
+    /// this section is showing, so a mic plugged in now appears without a reopen.
+    fn mic_row(&mut self, ui: &mut egui::Ui) {
+        if self.mics_read_at.is_none_or(|t| t.elapsed() >= MICS_REFRESH) {
+            self.mics.refresh(ui.ctx());
+            self.mics_read_at = Some(Instant::now());
+        }
+        let mics = self.mics.get();
+        // Empty means the first read has not landed, not that it is unplugged.
+        let missing = self
+            .cfg
+            .mic
+            .clone()
+            .filter(|m| !mics.is_empty() && !mics.contains(m));
+        let shown = match (&self.cfg.mic, &missing) {
+            (None, _) => "System default".to_string(),
+            (Some(m), Some(_)) => format!("{m} (not connected)"),
+            (Some(m), None) => m.clone(),
+        };
+        theme::row(ui, "Microphone", "Applies to your next dictation.", |ui| {
+            egui::ComboBox::from_id_salt("mic")
+                .selected_text(shown)
+                .width(200.0)
+                .truncate()
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.cfg.mic, None, "System default");
+                    if let Some(m) = missing {
+                        let label = format!("{m} (not connected)");
+                        ui.selectable_value(&mut self.cfg.mic, Some(m), label);
+                    }
+                    for m in mics {
+                        ui.selectable_value(&mut self.cfg.mic, Some(m.clone()), m);
+                    }
+                });
+        });
+    }
+
+    /// The Catcher can change the mic while this window is open. Take that
+    /// change, or the next autosave here would write the old choice back.
+    fn adopt_mic_from_disk(&mut self) {
+        // A stat per frame; the file is only parsed when it moved.
+        let mtime = config::modified();
+        if mtime == self.cfg_mtime {
+            return;
+        }
+        self.cfg_mtime = mtime;
+        let Ok(disk) = config::load() else { return };
+        if disk.mic == self.disk_mic {
+            return;
+        }
+        let was_clean = snapshot(&self.cfg) == self.saved_snap;
+        self.disk_mic = disk.mic.clone();
+        self.cfg.mic = disk.mic;
+        if was_clean {
+            self.saved_snap = snapshot(&self.cfg);
+            self.seen_snap = self.saved_snap.clone();
+        }
+    }
+
     /// Settings modal, General section.
     fn section_general(&mut self, ui: &mut egui::Ui) {
         theme::group(ui, |ui| {
@@ -1693,6 +1775,7 @@ impl App {
                         }
                     });
             });
+            self.mic_row(ui);
             self.model_rows(ui);
             theme::row(ui, "Live typing", "Words appear while you speak.", |ui| {
                 theme::toggle(ui, &mut self.cfg.streaming);
@@ -2011,9 +2094,12 @@ impl App {
             theme::card_header(ui, "Privacy", "");
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new(
-                    "No account, no telemetry, no cloud. Audio and text never leave this machine.",
-                )
+                egui::RichText::new(if self.cfg.claude_cleanup.enabled {
+                    "No account, no telemetry. Audio never leaves this machine. Claude cleanup is \
+                     on, so the text of each dictation goes to Anthropic through your Claude login."
+                } else {
+                    "No account, no telemetry, no cloud. Audio and text never leave this machine."
+                })
                 .size(13.5)
                 .color(theme::text_2()),
             );
@@ -2566,6 +2652,27 @@ impl App {
                 egui::RichText::new(
                     "Light removes \"um\", \"uh\" and \"the the\". Hedges like \"you know\" are \
                      left alone: a comma is not proof that one is filler.",
+                )
+                .small()
+                .color(theme::muted()),
+            );
+
+            row_sep(ui);
+            Self::setting_row(
+                ui,
+                "Claude cleanup",
+                "Fixes false starts and typos as you speak, using Claude Code",
+                |ui| {
+                    theme::toggle(ui, &mut self.cfg.claude_cleanup.enabled);
+                },
+            );
+            // The one setting that sends anything off this machine, so it says
+            // so whether or not it is on.
+            ui.label(
+                egui::RichText::new(
+                    "Sends the text of each dictation, never the audio, to Anthropic through \
+                     your own Claude Code login, and counts toward your Claude plan. \
+                     Applies after the daemon restarts.",
                 )
                 .small()
                 .color(theme::muted()),

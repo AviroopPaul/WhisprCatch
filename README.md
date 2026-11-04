@@ -23,6 +23,8 @@ Local push-to-talk dictation for **macOS and Linux** — no cloud, no account, n
 ## Why
 
 - **On-device and private.** All inference runs locally via ONNX Runtime. Audio is never written to disk and never leaves the machine.
+- **Optional Claude cleanup.** Off by default. Turn it on and the transcribed text, never the audio, goes through your own Claude Code login to remove fillers and fix typos. It is the only feature that sends anything off the machine, and it counts toward your Claude plan.
+- **Choose your microphone.** Pick the input in Settings or from the Catcher. It applies on your next dictation.
 - **Real punctuation and capitalization.** The model emits properly punctuated text — no "period" or "comma" voice commands.
 - **Fast.** ~25× realtime on CPU; live typing streams words while you're still speaking, the rest lands the moment you release the key.
 

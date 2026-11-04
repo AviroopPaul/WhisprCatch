@@ -328,15 +328,23 @@ above the Dock, on every Space and over full-screen apps, never focused.
   (`NOTE_PENCIL`, label **New note**); the gear moves out one slot. A click runs
   `whisper-catch note`, the quick note window (see below). The Catcher re-reads `config.toml` every 2s when its
   mtime moved, so the toggle applies live. Off, the Catcher is unchanged.
+- **Microphone button**: a round 32pt button 6pt to the left of the mic (`CARET_UP`, label
+  **Microphone**). A click floats a 232pt menu 8pt above the controls: 12 radius, `CHROME`
+  fill, the same faint ring as the labels, rows 30pt tall with an 8 radius hover, a
+  yellow `CHECK` on the current input. **System default** comes first. An unplugged choice
+  stays listed as **Name (not connected)**. Past 7 rows the last one is **More in Settings**.
+  A pick saves `mic` and applies on the next key press. The menu shuts on a pick, on a
+  second click of the button, when dictation starts, or 350ms after the pointer leaves.
+  The same choice is in Settings › General.
 - **Listening**: expands to 92×30 with a centred 9-bar white waveform driven by the real
   mic level, newest level in the centre rippling outward. No LED. Hovered, a
   **Click to finish** label; a click finishes the dictation.
 - **Transcribing**: three yellow dots pulsing in sequence.
 
-The egui window (248×96: the pill, the controls and a label) draws everything and stays
+The egui window (248×270: the pill, the controls, a label and the microphone menu) draws everything and stays
 click-through. Clicks land on one AppKit non-activating panel (`overlay::mac::Hit`)
 that never takes focus from the app being typed in, and that covers only what is
-clickable now: a 64×22 patch on the idle capsule, the mic, Notes button and gear once hovered, the pill
+clickable now: a 64×22 patch on the idle capsule, the controls once hovered, those and the menu while it is open, the pill
 while listening, nothing while transcribing. It reports only enter, leave and click; the
 overlay reads the pointer every frame while it is inside to know what is hovered. A
 click that starts or finishes a dictation is written to the daemon as `toggle` on the
@@ -394,7 +402,7 @@ none is reachable from normal use:
 - `WC_THEME=light|dark` forces the theme (default: follow the OS). Published screenshots
   are dark; capture light ones to check contrast, not to publish.
 - `WC_OVERLAY=idle|listening|transcribing` pins the pill in one state with a synthetic
-  waveform (`whisper-catch overlay`); `WC_OVERLAY_HOVER=mic|notes|gear|pill` puts the pointer
+  waveform (`whisper-catch overlay`); `WC_OVERLAY_HOVER=mic|notes|gear|device|menu|pill` puts the pointer
   there (pill = the listening pill; `notes` also turns the Notes button on). The quick
   note window is `whisper-catch note [--id <id>]` with `WC_SHOT`.
 - `WC_DEMO_HISTORY=1` swaps the transcript log for a fixed sample set. **Always capture

@@ -42,7 +42,7 @@
       "about": {
         "@id": "https://whisper-catch.vercel.app/#app"
       },
-      "dateModified": "2026-08-15"
+      "dateModified": "2026-11-04"
     },
     {
       "@type": "BreadcrumbList",
@@ -240,6 +240,7 @@
           <tr><th scope="row">Windows</th><td class="us no">No</td><td><span class="yes">Yes</span></td></tr>
           <tr><th scope="row">iPhone and Android</th><td class="us no">No</td><td><span class="yes">Yes</span></td></tr>
           <tr><th scope="row">Punctuation and capitalisation</th><td class="us"><span class="yes">Yes, from the model</span></td><td><span class="yes">Yes</span></td></tr>
+          <tr><th scope="row">AI cleanup of ums and typos</th><td class="us"><span class="yes">Optional, with your own Claude plan</span></td><td><span class="yes">Yes</span></td></tr>
           <tr><th scope="row">AI tone rewriting</th><td class="us no">No, it types what you said</td><td><span class="yes">Yes</span></td></tr>
           <tr><th scope="row">Learns your vocabulary</th><td class="us no">Not yet</td><td><span class="yes">Yes</span></td></tr>
           <tr><th scope="row">Snippets and shortcuts</th><td class="us no">No</td><td><span class="yes">Yes</span></td></tr>
@@ -264,6 +265,30 @@
       <p>
         The point isn't that $15 is outrageous. It's that the transcription is
         happening on a chip you already paid for.
+      </p>
+
+      <h2 id="bring-your-own-claude">Bring your own Claude</h2>
+      <p>
+        Here's the funny thing about AI subscriptions: you probably have one already. Your
+        $20 Claude plan spends most of the month waiting for you to break something, while a
+        second subscription asks for $15 to take the "um" out of your sentences. That's a lot
+        of monthly billing for one small syllable.
+      </p>
+      <p>
+        So WhisprCatch can borrow the one you've got. Turn on Claude cleanup and each sentence,
+        once your laptop has transcribed it, takes a quick trip through the Claude Code you're
+        already logged in to. The ums go, the false starts go, and "tomorow" gets its second r
+        back. The fix lands in place a second or two later, while you keep talking. No new
+        account, no API key, no second invoice. We measured a call at about two hundredths of a
+        cent of Haiku, so your plan will barely notice your hesitations.
+      </p>
+      <p>
+        The small print, in normal-sized type: this is the one feature that sends anything
+        off your machine. Your audio still never leaves. The text of what you said goes to
+        Anthropic under your own login and your plan's terms, and it counts toward your plan's
+        usage. That's why it's off by default and says so in Settings. It needs Claude Code
+        installed. If Claude is missing, logged out or offline, you get the local transcript as
+        usual, and with it switched off nothing changes at all.
       </p>
 
       <h2>Which one should you actually use?</h2>

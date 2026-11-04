@@ -14,8 +14,9 @@
 //! Always the DARK palette, in both modes (it floats over other apps).
 //! Look per docs/DESIGN.md §B5: idle is a 40×9 black capsule with a grey
 //! ring, always visible. Under the pointer it opens into hover controls, a
-//! mic button (click: dictate hands-free) and a gear (Settings), with a label
-//! above whichever is hovered. Listening expands it to 92×30 with a live
+//! microphone button (click: a floating menu of input devices), a mic button
+//! (click: dictate hands-free) and a gear (Settings), with a label above
+//! whichever is hovered. Listening expands it to 92×30 with a live
 //! waveform; transcribing swaps the waveform for three yellow dots.
 
 use std::collections::VecDeque;
@@ -32,7 +33,17 @@ use crate::theme;
 /// Everything outside what is drawn is transparent, and the window itself is
 /// click-through; the clickable part is a separate native panel (`mac::Hit`).
 const WIN_W: f32 = 248.0;
-const WIN_H: f32 = 96.0;
+/// Tall enough for the microphone menu above the controls. The extra height is
+/// transparent and click-through, so it costs nothing while the menu is shut.
+const WIN_H: f32 = 270.0;
+/// The microphone menu: its size, and the most rows it shows. A longer list
+/// ends in a row that opens Settings, which lists them all.
+const MENU_W: f32 = 232.0;
+const MENU_ROW_H: f32 = 30.0;
+const MENU_PAD: f32 = 6.0;
+const MENU_ROWS: usize = 7;
+/// How long the pointer may be away before the menu shuts.
+const MENU_GRACE_S: f64 = 0.35;
 const IDLE: egui::Vec2 = egui::vec2(40.0, 9.0);
 const ACTIVE: egui::Vec2 = egui::vec2(92.0, 30.0);
 /// The capsule as a mic button, under the pointer.
@@ -83,9 +94,38 @@ fn active_rect() -> egui::Rect {
     egui::Rect::from_center_size(egui::pos2(WIN_W / 2.0, pill_centre_y(ACTIVE.y)), ACTIVE)
 }
 
+/// The microphone button, to the left of the mic.
+fn device_rect() -> egui::Rect {
+    let mic = mic_rect();
+    egui::Rect::from_center_size(
+        egui::pos2(mic.left() - GEAR_GAP - GEAR_D / 2.0, mic.center().y),
+        egui::vec2(GEAR_D, GEAR_D),
+    )
+}
+
+/// The open menu, 8pt above the controls, centred on the mic.
+fn menu_rect(rows: usize) -> egui::Rect {
+    let h = MENU_PAD * 2.0 + MENU_ROW_H * rows as f32;
+    let bottom = mic_rect().top() - 8.0;
+    egui::Rect::from_min_max(
+        egui::pos2(WIN_W / 2.0 - MENU_W / 2.0, bottom - h),
+        egui::pos2(WIN_W / 2.0 + MENU_W / 2.0, bottom),
+    )
+}
+
+fn menu_row_rect(rows: usize, i: usize) -> egui::Rect {
+    let m = menu_rect(rows);
+    let top = m.top() + MENU_PAD + MENU_ROW_H * i as f32;
+    egui::Rect::from_min_max(
+        egui::pos2(m.left() + MENU_PAD, top),
+        egui::pos2(m.right() - MENU_PAD, top + MENU_ROW_H),
+    )
+}
+
 /// What the native click target covers in each state, in window points.
 /// Idle: a 64×22 patch over the tiny capsule, so the rest stays click-through.
-/// Hovered: the mic, the Notes button when on, and the gear. Listening: the pill, which a click finishes.
+/// Hovered: the microphone button, the mic, the Notes button when on, and the
+/// gear. Menu: those and the menu. Listening: the pill, which a click finishes.
 fn target_rect(state: Target, notes: bool) -> egui::Rect {
     match state {
         Target::Idle => egui::Rect::from_min_max(
@@ -93,9 +133,10 @@ fn target_rect(state: Target, notes: bool) -> egui::Rect {
             egui::pos2(WIN_W / 2.0 + 32.0, WIN_H),
         ),
         Target::Controls => egui::Rect::from_min_max(
-            egui::pos2(mic_rect().left() - 6.0, mic_rect().top() - 6.0),
+            egui::pos2(device_rect().left() - 6.0, mic_rect().top() - 6.0),
             egui::pos2(gear_rect(notes).right() + 6.0, WIN_H),
         ),
+        Target::Menu(rows) => menu_rect(rows).union(target_rect(Target::Controls, notes)),
         Target::Pill => active_rect().expand(4.0),
     }
 }
@@ -104,7 +145,64 @@ fn target_rect(state: Target, notes: bool) -> egui::Rect {
 enum Target {
     Idle,
     Controls,
+    /// The controls plus an open menu of this many rows.
+    Menu(usize),
     Pill,
+}
+
+/// What clicking a menu row does.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum RowAction {
+    /// Use this device, or the system default for `None`.
+    Pick(Option<String>),
+    OpenSettings,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct MenuRow {
+    label: String,
+    action: RowAction,
+    selected: bool,
+}
+
+/// The menu's rows. A chosen mic that is unplugged stays listed, so the menu
+/// does not claim the choice was the system default.
+fn build_menu(devices: &[String], chosen: Option<&str>) -> Vec<MenuRow> {
+    let pick = |label: String, device: Option<&str>, selected| MenuRow {
+        label,
+        action: RowAction::Pick(device.map(str::to_string)),
+        selected,
+    };
+    let mut rows = vec![pick("System default".into(), None, chosen.is_none())];
+    if let Some(name) = chosen.filter(|c| !devices.iter().any(|d| d == c)) {
+        rows.push(pick(format!("{name} (not connected)"), Some(name), true));
+    }
+    for d in devices {
+        rows.push(pick(d.clone(), Some(d), chosen == Some(d)));
+    }
+    if rows.len() > MENU_ROWS {
+        rows.truncate(MENU_ROWS - 1);
+        rows.push(MenuRow {
+            label: "More in Settings".into(),
+            action: RowAction::OpenSettings,
+            selected: false,
+        });
+    }
+    rows
+}
+
+/// Saves the choice, changing nothing else in the config. The daemon picks it
+/// up on the next key press.
+fn save_mic(choice: Option<String>) {
+    match crate::config::load() {
+        Ok(mut cfg) => {
+            cfg.mic = choice;
+            if let Err(e) = crate::config::save(&cfg) {
+                log::warn!("could not save the mic choice: {e:#}");
+            }
+        }
+        Err(e) => log::warn!("could not read the config to save the mic choice: {e:#}"),
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -121,6 +219,10 @@ enum Zone {
     Mic,
     Notes,
     Gear,
+    /// The microphone button.
+    Device,
+    /// The open menu: a row, or the space around the rows.
+    Menu(Option<usize>),
     /// The listening pill.
     Pill,
 }
@@ -158,13 +260,16 @@ fn forced_mode() -> Option<Mode> {
     }
 }
 
-/// Dev-only: `WC_OVERLAY_HOVER=mic|notes|gear|pill` puts the pointer there.
-/// `notes` also turns the Notes button on, whatever the config says.
+/// Dev-only: `WC_OVERLAY_HOVER=mic|notes|gear|device|menu|pill` puts the pointer
+/// there. `notes` also turns the Notes button on, whatever the config says, and
+/// `menu` opens the microphone menu.
 fn forced_zone() -> Option<Zone> {
     match std::env::var("WC_OVERLAY_HOVER").ok()?.as_str() {
         "mic" | "1" => Some(Zone::Mic),
         "notes" => Some(Zone::Notes),
         "gear" => Some(Zone::Gear),
+        "device" => Some(Zone::Device),
+        "menu" => Some(Zone::Menu(Some(1))),
         "pill" => Some(Zone::Pill),
         _ => None,
     }
@@ -245,6 +350,12 @@ pub fn run() -> anyhow::Result<()> {
                 key,
                 zone: Zone::None,
                 tip: Zone::None,
+                menu: Vec::new(),
+                menu_open: false,
+                menu_away_since: None,
+                mics: Default::default(),
+                mic_choice: None,
+                was_hovering: false,
                 #[cfg(target_os = "macos")]
                 hit: None,
                 shot: crate::shot::Shot::from_env(),
@@ -313,6 +424,16 @@ struct Overlay {
     zone: Zone,
     /// The last zone that had a label, kept while the label fades out.
     tip: Zone,
+    /// The microphone menu's rows, read when it opens and kept while it fades.
+    menu: Vec<MenuRow>,
+    menu_open: bool,
+    /// `ctx` time the pointer left the open menu.
+    menu_away_since: Option<f64>,
+    mics: crate::mic_list::MicList,
+    /// The saved choice, read when the menu opens.
+    mic_choice: Option<String>,
+    /// The pointer was on the Catcher last frame.
+    was_hovering: bool,
     /// The native click target (macOS), created once the window exists.
     #[cfg(target_os = "macos")]
     hit: Option<mac::Hit>,
@@ -332,9 +453,40 @@ impl Overlay {
         match mode {
             Mode::Idle if gear_rect(notes).expand(3.0).contains(p) => Zone::Gear,
             Mode::Idle if notes && notes_rect().expand(3.0).contains(p) => Zone::Notes,
+            Mode::Idle if device_rect().expand(3.0).contains(p) => Zone::Device,
             Mode::Idle if target_rect(Target::Controls, notes).contains(p) => Zone::Mic,
             Mode::Listening if target_rect(Target::Pill, notes).contains(p) => Zone::Pill,
             _ => Zone::None,
+        }
+    }
+
+    /// As `zone_at`, with a menu of `rows` rows open (0 for none).
+    fn zone_with_menu(mode: Mode, notes: bool, rows: usize, p: egui::Pos2) -> Zone {
+        let zone = Self::zone_at(mode, notes, p);
+        if zone != Zone::None || mode != Mode::Idle || rows == 0 {
+            return zone;
+        }
+        if !target_rect(Target::Menu(rows), notes).contains(p) {
+            return Zone::None;
+        }
+        Zone::Menu((0..rows).find(|i| menu_row_rect(rows, *i).contains(p)))
+    }
+
+    /// Opens at once on the list last read; a fresh read lands while it is open.
+    fn open_menu(&mut self, ctx: &egui::Context) {
+        self.mic_choice = crate::config::load().ok().and_then(|c| c.mic);
+        self.mics.refresh(ctx);
+        self.menu = build_menu(&self.mics.get(), self.mic_choice.as_deref());
+        self.menu_open = true;
+        self.menu_away_since = None;
+    }
+
+    /// Rows the pointer can land on right now.
+    fn live_rows(&self) -> usize {
+        if self.menu_open {
+            self.menu.len()
+        } else {
+            0
         }
     }
 }
@@ -382,11 +534,33 @@ impl eframe::App for Overlay {
         // on the pointer is read every frame, so the zone and the moment it
         // leaves are exact even if an exit event is missed.
         let inside = self.ui_state.inside.load(Ordering::Relaxed);
+        if matches!(self.forced_zone, Some(Zone::Menu(_))) && !self.menu_open {
+            self.open_menu(ctx);
+        }
+        // Read the list as the pointer arrives, so the menu has it on the click.
+        let hovering = inside && mode == Mode::Idle;
+        if hovering && !self.was_hovering {
+            self.mics.refresh(ctx);
+        }
+        self.was_hovering = hovering;
+        if self.menu_open {
+            // A forced capture ends up in public screenshots, and real device
+            // names can carry a person's name ("Sam's iPhone Microphone").
+            let devices = if self.forced_zone.is_some() {
+                ["MacBook Pro Microphone", "Studio USB Mic", "AirPods Pro"]
+                    .map(str::to_string)
+                    .to_vec()
+            } else {
+                self.mics.get()
+            };
+            self.menu = build_menu(&devices, self.mic_choice.as_deref());
+        }
+        let rows = self.live_rows();
         self.zone = match self.forced_zone {
             Some(z) => z,
             None if inside => self
                 .pointer()
-                .map(|p| Self::zone_at(mode, self.notes, p))
+                .map(|p| Self::zone_with_menu(mode, self.notes, rows, p))
                 .unwrap_or(Zone::None),
             None => Zone::None,
         };
@@ -394,11 +568,45 @@ impl eframe::App for Overlay {
             self.ui_state.inside.store(false, Ordering::Relaxed);
         }
 
-        // clicks: mic starts hands-free, gear opens Settings, the listening
-        // pill finishes
+        // The menu is for an idle Catcher, and shuts shortly after the pointer
+        // leaves. There is no "click elsewhere": this process never has focus.
+        if self.menu_open && self.forced_zone.is_none() {
+            if self.zone != Zone::None {
+                self.menu_away_since = None;
+            } else {
+                let since = *self.menu_away_since.get_or_insert(now);
+                if now - since >= MENU_GRACE_S {
+                    self.menu_open = false;
+                }
+            }
+            if mode != Mode::Idle {
+                self.menu_open = false;
+            }
+        }
+
+        // clicks: mic starts hands-free, gear opens Settings, the microphone
+        // button opens its menu, the listening pill finishes
         if self.ui_state.clicked.swap(false, Ordering::Relaxed) {
-            let at = self.pointer().map(|p| Self::zone_at(mode, self.notes, p));
+            let at = self
+                .pointer()
+                .map(|p| Self::zone_with_menu(mode, self.notes, self.live_rows(), p));
             match (mode, at) {
+                (Mode::Idle, Some(Zone::Device)) => {
+                    if self.menu_open {
+                        self.menu_open = false;
+                    } else {
+                        self.open_menu(ctx);
+                    }
+                }
+                (Mode::Idle, Some(Zone::Menu(row))) => {
+                    if let Some(action) = row.and_then(|i| self.menu.get(i)).map(|r| r.action.clone()) {
+                        match action {
+                            RowAction::Pick(choice) => save_mic(choice),
+                            RowAction::OpenSettings => open_general_settings(),
+                        }
+                        self.menu_open = false;
+                    }
+                }
                 (Mode::Idle, Some(Zone::Gear)) => open_settings(),
                 (Mode::Idle, Some(Zone::Notes)) => open_note(),
                 (Mode::Idle, _) => send_toggle(),
@@ -411,7 +619,7 @@ impl eframe::App for Overlay {
         // Follow the pointer's display, and the Dock: checked twice a second,
         // and on every key-down so the pill opens where the user is looking.
         // Not while hovered, so the controls cannot slide away mid-click.
-        let check_now = (self.zone == Zone::None || self.placed_at.is_none())
+        let check_now = ((self.zone == Zone::None && !self.menu_open) || self.placed_at.is_none())
             && (now >= self.next_place_check
                 || (mode == Mode::Listening && self.bars.iter().all(|b| *b == 0.0)));
         if check_now {
@@ -435,6 +643,7 @@ impl eframe::App for Overlay {
         if let Some(hit) = &self.hit {
             hit.set_notes(self.notes);
             hit.cover(match mode {
+                Mode::Idle if self.menu_open => Some(Target::Menu(self.menu.len())),
                 Mode::Idle if self.zone != Zone::None => Some(Target::Controls),
                 Mode::Idle => Some(Target::Idle),
                 Mode::Listening => Some(Target::Pill),
@@ -444,9 +653,20 @@ impl eframe::App for Overlay {
 
         let controls = ctx.animate_bool_with_time_and_easing(
             egui::Id::new("pill-controls"),
-            mode == Mode::Idle && self.zone != Zone::None,
+            mode == Mode::Idle && (self.zone != Zone::None || self.menu_open),
             0.18,
             egui::emath::easing::cubic_out,
+        );
+        let menu_t = ctx.animate_bool_with_time_and_easing(
+            egui::Id::new("pill-menu"),
+            self.menu_open,
+            0.14,
+            egui::emath::easing::cubic_out,
+        );
+        let device_hot = ctx.animate_bool_with_time(
+            egui::Id::new("pill-device"),
+            self.zone == Zone::Device || self.menu_open,
+            0.12,
         );
         let mic_hot =
             ctx.animate_bool_with_time(egui::Id::new("pill-mic"), self.zone == Zone::Mic, 0.12);
@@ -454,11 +674,12 @@ impl eframe::App for Overlay {
             ctx.animate_bool_with_time(egui::Id::new("pill-gear"), self.zone == Zone::Gear, 0.12);
         let notes_hot =
             ctx.animate_bool_with_time(egui::Id::new("pill-notes"), self.zone == Zone::Notes, 0.12);
-        if self.zone != Zone::None {
+        // No labels while the menu is open: they would sit on top of it.
+        let show_tip = self.zone != Zone::None && !self.menu_open;
+        if show_tip {
             self.tip = self.zone;
         }
-        let tip =
-            ctx.animate_bool_with_time(egui::Id::new("pill-tip"), self.zone != Zone::None, 0.14);
+        let tip = ctx.animate_bool_with_time(egui::Id::new("pill-tip"), show_tip, 0.14);
 
         // expansion: 0 = idle capsule, 1 = full pill
         let open = ctx.animate_bool_with_time_and_easing(
@@ -492,8 +713,9 @@ impl eframe::App for Overlay {
             Zone::Mic => Some(("Dictate", Some(self.key.as_str()))),
             Zone::Notes => Some(("New note", None)),
             Zone::Gear => Some(("Settings", None)),
+            Zone::Device => Some(("Microphone", None)),
             Zone::Pill => Some(("Click to finish", None)),
-            Zone::None => None,
+            Zone::Menu(_) | Zone::None => None,
         };
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -501,6 +723,7 @@ impl eframe::App for Overlay {
                 let origin = ui.max_rect().min.to_vec2();
                 paint_pill(ui, mode, open, controls, mic_hot, &self.bars, now);
                 if controls > 0.0 {
+                    paint_side_button(ui, device_rect(), origin, controls, device_hot, icons::CARET_UP);
                     if self.notes {
                         paint_side_button(ui, notes_rect(), origin, controls, notes_hot, icons::NOTE_PENCIL);
                     }
@@ -510,18 +733,27 @@ impl eframe::App for Overlay {
                     let over = match self.tip {
                         Zone::Gear => gear_rect(self.notes),
                         Zone::Notes => notes_rect(),
+                        Zone::Device => device_rect(),
                         Zone::Pill => active_rect(),
                         _ => mic_rect(),
                     };
                     paint_label(ui, over.translate(origin), tip, text, key);
                 }
+                if menu_t > 0.0 {
+                    let hot = match self.zone {
+                        Zone::Menu(row) => row,
+                        _ => None,
+                    };
+                    paint_menu(ui, origin, menu_t, &self.menu, hot);
+                }
             });
 
-        let animating = [open, controls, mic_hot, notes_hot, gear_hot, tip]
+        let animating = [open, controls, mic_hot, notes_hot, gear_hot, device_hot, tip, menu_t]
             .iter()
             .any(|v| *v > 0.0 && *v < 1.0);
         if mode != Mode::Idle
             || animating
+            || self.menu_open
             || self.zone != Zone::None
             || self.bars.iter().any(|b| *b > 0.0)
         {
@@ -541,6 +773,11 @@ fn notes_on() -> bool {
 /// the front on its first frame (settings_app).
 fn open_settings() {
     spawn_self(&["settings", "--tab", "settings"], "Settings");
+}
+
+/// Settings on the General section, where the full microphone list is.
+fn open_general_settings() {
+    spawn_self(&["settings", "--tab", "general"], "Settings");
 }
 
 /// Opens the quick note window (single instance, brings itself to the front).
@@ -717,6 +954,57 @@ fn paint_side_button(
         egui::FontId::proportional(16.0 * (0.6 + 0.4 * t)),
         mix(theme::DARK.text_2, theme::DARK.accent, hot).gamma_multiply(t),
     );
+}
+
+/// The microphone menu, floating above the controls: one row per input, a
+/// yellow check on the current one. Rises 4pt in, like the labels.
+fn paint_menu(ui: &mut egui::Ui, origin: egui::Vec2, t: f32, rows: &[MenuRow], hot: Option<usize>) {
+    let rise = egui::vec2(0.0, 4.0 * (1.0 - t));
+    let shift = origin + rise;
+    let p = ui.painter();
+    let panel = menu_rect(rows.len()).translate(shift);
+    p.rect_filled(panel, 12.0, CHROME.gamma_multiply(t));
+    p.rect_stroke(
+        panel,
+        12.0,
+        egui::Stroke::new(
+            1.0,
+            Color32::from_rgba_unmultiplied(238, 238, 238, 38).gamma_multiply(t),
+        ),
+        egui::StrokeKind::Inside,
+    );
+    for (i, row) in rows.iter().enumerate() {
+        let r = menu_row_rect(rows.len(), i).translate(shift);
+        if hot == Some(i) {
+            p.rect_filled(
+                r,
+                8.0,
+                Color32::from_rgba_unmultiplied(57, 62, 70, 245).gamma_multiply(t),
+            );
+        }
+        let check_w = 22.0;
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            row.label.clone(),
+            theme::medium(13.0),
+            theme::DARK.fg.gamma_multiply(t),
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(r.width() - 16.0 - check_w);
+        let galley = ui.fonts(|f| f.layout_job(job));
+        p.galley(
+            egui::pos2(r.left() + 8.0, r.center().y - galley.size().y / 2.0),
+            galley,
+            theme::DARK.fg.gamma_multiply(t),
+        );
+        if row.selected {
+            p.text(
+                egui::pos2(r.right() - 8.0, r.center().y),
+                egui::Align2::RIGHT_CENTER,
+                icons::CHECK,
+                egui::FontId::proportional(14.0),
+                theme::DARK.accent.gamma_multiply(t),
+            );
+        }
+    }
 }
 
 /// The label above a hovered control: "Dictate fn", "Settings", "Click to
@@ -1081,6 +1369,67 @@ mod tests {
                 "no room for a label above {r:?}"
             );
         }
+    }
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    /// The tallest menu, with both the controls and every row inside the window.
+    #[test]
+    fn the_menu_fits_the_window_and_clears_the_controls() {
+        let win = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIN_W, WIN_H));
+        for rows in 1..=MENU_ROWS {
+            assert!(win.contains_rect(menu_rect(rows)), "{rows} rows");
+            for notes in [false, true] {
+                assert!(win.contains_rect(target_rect(Target::Menu(rows), notes)));
+            }
+            assert!(menu_rect(rows).bottom() < target_rect(Target::Controls, false).top());
+        }
+        assert!(win.contains_rect(device_rect()));
+    }
+
+    #[test]
+    fn zones_find_the_menu_rows_only_while_it_is_open() {
+        let row1 = menu_row_rect(3, 1).center();
+        let gap = egui::pos2(WIN_W / 2.0, menu_rect(3).bottom() + 1.0);
+        assert_eq!(Overlay::zone_with_menu(Mode::Idle, false, 3, row1), Zone::Menu(Some(1)));
+        assert_eq!(Overlay::zone_with_menu(Mode::Idle, false, 0, row1), Zone::None);
+        assert_eq!(Overlay::zone_with_menu(Mode::Listening, false, 3, row1), Zone::None);
+        // crossing from the button up to the menu must not count as leaving
+        assert_eq!(Overlay::zone_with_menu(Mode::Idle, false, 3, gap), Zone::Menu(None));
+        assert_eq!(
+            Overlay::zone_with_menu(Mode::Idle, false, 3, device_rect().center()),
+            Zone::Device
+        );
+    }
+
+    #[test]
+    fn the_menu_marks_the_current_choice() {
+        let devices = names(&["MacBook Mic", "USB Mic"]);
+        let rows = build_menu(&devices, None);
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].selected && !rows[1].selected && !rows[2].selected);
+        assert_eq!(rows[0].action, RowAction::Pick(None));
+
+        let rows = build_menu(&devices, Some("USB Mic"));
+        assert!(!rows[0].selected && rows[2].selected);
+        assert_eq!(rows[2].action, RowAction::Pick(Some("USB Mic".into())));
+    }
+
+    #[test]
+    fn an_unplugged_choice_stays_listed_as_chosen() {
+        let rows = build_menu(&names(&["MacBook Mic"]), Some("USB Mic"));
+        assert_eq!(rows[1].label, "USB Mic (not connected)");
+        assert!(rows[1].selected && !rows[0].selected);
+    }
+
+    #[test]
+    fn a_long_list_ends_in_settings_and_never_overflows() {
+        let many: Vec<String> = (0..12).map(|i| format!("Mic {i}")).collect();
+        let rows = build_menu(&many, None);
+        assert_eq!(rows.len(), MENU_ROWS);
+        assert_eq!(rows.last().unwrap().action, RowAction::OpenSettings);
     }
 
     /// The hover controls must include where the idle target was, or the
