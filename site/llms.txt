@@ -27,6 +27,9 @@ Site: https://whisper-catch.vercel.app/ · Licence: MIT · Price: $0, no paid ti
   Microphone, Accessibility and Input Monitoring in the first-run setup (drag the app icon
   into each list); setup restarts the app when it is done.
 - **Install (Linux)**: `sudo apt install ./whisper-catch_amd64.deb`, then one polkit prompt.
+- **Optional Claude cleanup**: off by default. When on, the transcribed text (never audio) goes
+  through the user's own Claude Code login to remove fillers and fix typos. It is the only
+  feature that sends anything off the machine, and it counts toward the user's Claude plan.
 - **What it deliberately does not do**: AI tone rewriting, cloud sync, learned personal
   dictionaries, snippets, phone apps, team billing. For those, a paid cloud tool such as
   Wispr Flow is a better fit.

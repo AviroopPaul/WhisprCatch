@@ -33,12 +33,57 @@ pub struct Capture {
 /// level feed; written by the audio thread, so it must not take the lock.
 pub type Level = Arc<AtomicU32>;
 
+/// Names of the input devices right now, for a picker. Asks for no mic
+/// permission: nothing is opened.
+pub fn input_device_names() -> Vec<String> {
+    let mut names: Vec<String> = cpal::default_host()
+        .input_devices()
+        .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default();
+    // macOS creates these behind the scenes; they are not something to pick.
+    names.retain(|n| !n.starts_with("CADefaultDeviceAggregate"));
+    names.dedup();
+    names
+}
+
 impl Capture {
+    /// The system default input.
     pub fn open() -> Result<Self> {
+        Self::open_device(None)
+    }
+
+    /// `preferred` by name, else the system default. A chosen mic that is
+    /// unplugged or will not start must not stop dictation, so both fall back.
+    pub fn open_device(preferred: Option<&str>) -> Result<Self> {
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .context("no default input device")?;
+        if let Some(name) = preferred {
+            // Not `input_devices()`: that queries every device's formats, which
+            // took 364ms, and this runs on a key press with the user already
+            // speaking. Read names, and ask for formats only on a match. A
+            // Bluetooth device can be two devices with one name, so that check
+            // is what picks the input side.
+            let found = host.devices().ok().and_then(|mut devices| {
+                devices.find(|d| {
+                    d.name().is_ok_and(|n| n == name)
+                        && d.supported_input_configs()
+                            .is_ok_and(|mut configs| configs.next().is_some())
+                })
+            });
+            match found {
+                Some(device) => match Self::start(device) {
+                    Ok(capture) => return Ok(capture),
+                    Err(e) => log::warn!("mic '{name}' failed, using the default: {e:#}"),
+                },
+                None => log::warn!("mic '{name}' is not connected, using the default"),
+            }
+        }
+        Self::start(
+            host.default_input_device()
+                .context("no default input device")?,
+        )
+    }
+
+    fn start(device: cpal::Device) -> Result<Self> {
         let config = device
             .default_input_config()
             .context("no default input config")?;

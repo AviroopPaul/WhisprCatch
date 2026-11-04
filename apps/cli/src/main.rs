@@ -1,6 +1,8 @@
 mod autostart;
+mod claude_cleanup;
 mod config;
 mod insights;
+mod mic_list;
 mod note_window;
 mod notes;
 mod notes_ui;
@@ -96,6 +98,9 @@ enum Cmd {
     DownloadModel,
     /// Print permission + model status (troubleshooting)
     Doctor,
+    /// Internal: one real Claude cleanup call, with no microphone or model
+    #[command(hide = true)]
+    CleanupTest { text: String },
     /// Internal: replay a WAV through the streaming loop to measure it
     #[command(hide = true)]
     SimulateStream {
@@ -126,6 +131,7 @@ fn main() -> Result<()> {
         Cmd::Note { id } => return note_window::run(id.clone()),
         Cmd::Overlay => return overlay::run(),
         Cmd::DragHelper { pane } => return permissions::drag_helper(pane),
+        Cmd::CleanupTest { text } => return claude_cleanup::test_call(&cfg.claude_cleanup, text),
         Cmd::Wizard => {
             let model_id = wc_models::ModelId::parse(&cfg.model);
             wizard::run(model_id, config::key_label(&cfg.key))?;
@@ -144,6 +150,17 @@ fn main() -> Result<()> {
             println!("  config:        {}", config::config_path().display());
             println!("  models dir:    {}", wc_core::models_dir().display());
             println!("  model:         {} ({})", model_id.slug(), model_id.label());
+            println!(
+                "  microphone:    {}",
+                cfg.mic.as_deref().unwrap_or("system default")
+            );
+            let t0 = std::time::Instant::now();
+            let mics = wc_core::audio::input_device_names();
+            println!(
+                "  available:     {} ({}ms)",
+                mics.join(", "),
+                t0.elapsed().as_millis()
+            );
             println!(
                 "  model ready:   {}",
                 yn(model_id.spec().is_complete(&wc_core::models_dir()))
@@ -261,7 +278,7 @@ fn main() -> Result<()> {
         }
         Cmd::SimulateStream { wav, window } => return simulate_stream(&mut engine, &wav, window),
         Cmd::Record { seconds } => {
-            let cap = Capture::open()?;
+            let cap = Capture::open_device(cfg.mic.as_deref())?;
             cap.begin();
             eprintln!("recording {seconds}s, speak now...");
             std::thread::sleep(Duration::from_secs(seconds));
@@ -325,6 +342,7 @@ fn main() -> Result<()> {
         | Cmd::Note { .. }
         | Cmd::Overlay
         | Cmd::DragHelper { .. }
+        | Cmd::CleanupTest { .. }
         | Cmd::Wizard
         | Cmd::DownloadModel
         | Cmd::Doctor
@@ -637,6 +655,12 @@ fn run_ptt(
         }
     }
 
+    // Off unless the user turned it on; see claude_cleanup.rs.
+    let mut cleanup = cfg.claude_cleanup.enabled.then(|| {
+        log::info!("claude cleanup: on, model {}", cfg.claude_cleanup.model);
+        claude_cleanup::Cleanup::start(&cfg.claude_cleanup)
+    });
+
     let events = wc_hotkey::listen(key)?;
     let mut injector = if print_only {
         None
@@ -656,6 +680,10 @@ fn run_ptt(
     let mut capture: Option<Capture> = None;
     let mut last_use = std::time::Instant::now();
     let mut armed = false;
+    // The mic can change in Settings or the Catcher while this runs, so the
+    // config is looked at again on each press: a stat, parsed only if it moved.
+    let mut mic_choice = cfg.mic.clone();
+    let mut cfg_mtime = config::modified();
     // App that had focus when the key went down (macOS only), for history.
     let mut press_app: Option<String> = None;
     let mut overlay_proc: Option<OverlayProc> = cfg.overlay.then(|| OverlayProc::start(&self_exe));
@@ -694,8 +722,19 @@ fn run_ptt(
                 if !state.is_enabled() || armed {
                     continue;
                 }
+                let mtime = config::modified();
+                if mtime != cfg_mtime {
+                    cfg_mtime = mtime;
+                    if let Ok(latest) = config::load() {
+                        if latest.mic != mic_choice {
+                            log::info!("mic choice changed");
+                            mic_choice = latest.mic;
+                            capture = None; // a warm stream is on the old device
+                        }
+                    }
+                }
                 if capture.is_none() {
-                    match Capture::open() {
+                    match Capture::open_device(mic_choice.as_deref()) {
                         Ok(c) => capture = Some(c),
                         Err(e) => {
                             log::error!("mic open failed: {e:#}");
@@ -708,6 +747,9 @@ fn run_ptt(
                 armed = true;
                 press_app = frontmost_app_name();
                 stream.reset();
+                if let Some(c) = cleanup.as_mut() {
+                    c.begin(injector.as_mut());
+                }
                 modifier_lifted = false;
                 last_pass = std::time::Instant::now();
                 log::info!("recording...");
@@ -780,8 +822,12 @@ fn run_ptt(
                 );
                 let t0 = std::time::Instant::now();
                 let result = engine.transcribe(&samples);
-                if let Some(o) = overlay_proc.as_mut() {
-                    o.idle();
+                // With Claude cleanup on, the Catcher stays busy until the fix
+                // lands: it is the signal to leave the cursor where it is.
+                if cleanup.is_none() {
+                    if let Some(o) = overlay_proc.as_mut() {
+                        o.idle();
+                    }
                 }
                 match result {
                     Ok(text) if text.is_empty() && stream.committed().is_empty() => {
@@ -793,7 +839,49 @@ fn run_ptt(
                         // The seam (#40): every deterministic cleanup pass runs
                         // here, on the finished transcript, before history and
                         // before a single character is typed.
-                        let (text, polished_from) = finish(&polish, raw);
+                        let (mut text, mut polished_from) = finish(&polish, raw);
+                        // True once the rest of the utterance is already typed.
+                        let mut on_screen = false;
+                        if let Some(c) = cleanup.as_mut() {
+                            let before = polished_from.clone().unwrap_or_else(|| text.clone());
+                            let cleaned = match injector.as_mut() {
+                                Some(inj) if !stream.committed().is_empty() => {
+                                    // Type the rest raw straight away, then fix
+                                    // it in place. Same splice as the path below.
+                                    let words = split_words(&text);
+                                    let start = resume_at(stream.committed(), &words);
+                                    std::thread::sleep(Duration::from_millis(150));
+                                    let tail = (start < words.len())
+                                        .then(|| join_delta(&words[start..], stream.nothing_typed()));
+                                    let landed = match &tail {
+                                        Some(t) => match inj.type_text(t) {
+                                            Ok(()) => true,
+                                            Err(e) => {
+                                                log::error!("injection failed: {e:#}");
+                                                println!("{text}");
+                                                false
+                                            }
+                                        },
+                                        None => false,
+                                    };
+                                    on_screen = true;
+                                    c.finish_on_screen(
+                                        inj,
+                                        tail.as_deref().filter(|_| landed),
+                                        &press_app,
+                                    )
+                                }
+                                _ => c.clean_now(&text),
+                            };
+                            let cleaned = cleaned.trim().to_string();
+                            if cleaned != before {
+                                polished_from = Some(before);
+                            }
+                            text = cleaned;
+                            if let Some(o) = overlay_proc.as_mut() {
+                                o.idle();
+                            }
+                        }
                         state.record_utterance(text.split_whitespace().count(), dur);
                         if cfg.history {
                             let entry = wc_core::history::Entry {
@@ -824,7 +912,9 @@ fn run_ptt(
                             stream.committed().len(),
                             start
                         );
-                        if let Some(inj) = injector.as_mut() {
+                        if on_screen {
+                            // Claude cleanup already typed and fixed it above.
+                        } else if let Some(inj) = injector.as_mut() {
                             // let the user finish releasing the modifier so
                             // injected keys don't combine with it
                             std::thread::sleep(Duration::from_millis(150));
@@ -841,6 +931,12 @@ fn run_ptt(
                         }
                     }
                     Err(e) => log::error!("transcription failed: {e:#}"),
+                }
+                // Covers the branches above that never reached the cleanup.
+                if cleanup.is_some() {
+                    if let Some(o) = overlay_proc.as_mut() {
+                        o.idle();
+                    }
                 }
                 stream.reset();
             }
@@ -900,12 +996,21 @@ fn run_ptt(
                                             // by default.
                                             log::debug!("streamed {text:?}");
                                             stream.mark_first_typed();
+                                            if let Some(c) = cleanup.as_mut() {
+                                                c.typed(&text);
+                                            }
                                         }
                                     }
                                 }
                                 Err(e) => log::warn!("streaming pass failed: {e:#}"),
                             }
                         }
+                    }
+                }
+                // swap in any segment Claude has finished cleaning
+                if armed {
+                    if let (Some(c), Some(inj)) = (cleanup.as_mut(), injector.as_mut()) {
+                        c.pump(inj, &press_app);
                     }
                 }
                 // release the mic after a quiet spell

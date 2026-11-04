@@ -22,6 +22,12 @@ pub struct Config {
     /// The Catcher process re-reads the config, so this applies live.
     #[serde(default)]
     pub catcher_notes: bool,
+    /// Input device by name; absent means the system default. Set from Settings
+    /// or the Catcher, and read again by the daemon on the next key press.
+    pub mic: Option<String>,
+    /// Optional cleanup through the user's own `claude` CLI. Off by default: it
+    /// is the only path that sends text off the machine.
+    pub claude_cleanup: crate::claude_cleanup::Config,
     /// Deterministic text cleanup (#36). Every transform ships off, so a
     /// config that predates this section behaves exactly as it did.
     ///
@@ -47,6 +53,8 @@ impl Default for Config {
             streaming: true,
             overlay: true,
             catcher_notes: false,
+            mic: None,
+            claude_cleanup: Default::default(),
             polish: wc_text::PolishConfig::default(),
         }
     }
